@@ -1,0 +1,68 @@
+import type { Database } from '@/lib/supabase/database.types';
+
+export type Category = Database['public']['Enums']['item_category'];
+
+export const CATEGORY_SLUGS = ['ration','soft-drinks','alcohol','cigar','grocery'] as const;
+export type CategorySlug = typeof CATEGORY_SLUGS[number];
+
+const SLUG_TO_DB: Record<CategorySlug, Category> = {
+  ration: 'ration',
+  'soft-drinks': 'soft_drink',
+  alcohol: 'alcohol',
+  cigar: 'cigar',
+  grocery: 'grocery',
+};
+const DB_TO_SLUG: Record<Category, CategorySlug> = {
+  ration: 'ration',
+  soft_drink: 'soft-drinks',
+  alcohol: 'alcohol',
+  cigar: 'cigar',
+  grocery: 'grocery',
+  room: 'ration',
+};
+
+export function categoryFromSlug(slug: CategorySlug): Category { return SLUG_TO_DB[slug]; }
+export function slugFromCategory(cat: Category): CategorySlug { return DB_TO_SLUG[cat]; }
+
+// The four non-ration, non-room operational categories that carry purchase
+// lots in /inventory. Ration is scale-derived (lives only in the ration
+// module) and `room` is guest-room-only — neither is stockable inventory.
+// Reuse `CATEGORY_META` for labels; this is only the allow-list + ordering.
+export const INVENTORY_CATEGORIES = [
+  'alcohol',
+  'soft_drink',
+  'cigar',
+  'grocery',
+] as const satisfies readonly Category[];
+
+export type InventoryCategory = (typeof INVENTORY_CATEGORIES)[number];
+
+// Pack-size kind each inventory category uses. Volume-kind categories
+// (alcohol, soft_drink) measure packs in millilitres; count-kind
+// categories (cigar, grocery) measure packs by a unit count. Drives the
+// kind-filtered pack-size picker and the derived-serving math.
+export const CATEGORY_PACK_KIND: Record<
+  InventoryCategory,
+  'volume' | 'count'
+> = {
+  alcohol: 'volume',
+  soft_drink: 'volume',
+  cigar: 'count',
+  grocery: 'count',
+};
+
+export function isInventoryCategory(v: unknown): v is InventoryCategory {
+  return (
+    typeof v === 'string' &&
+    (INVENTORY_CATEGORIES as readonly string[]).includes(v)
+  );
+}
+
+export const CATEGORY_META: Record<Category, { title: string; description: string; defaultUom: Database['public']['Enums']['uom'] }> = {
+  ration:     { title: 'Ration',        description: 'Issued per ration scale.',          defaultUom: 'kg' },
+  soft_drink: { title: 'Soft Drinks',   description: 'Non-alcoholic beverages.',          defaultUom: 'bottle' },
+  alcohol:    { title: 'Alcohol',       description: 'Wine, spirits, beer.',              defaultUom: 'bottle' },
+  cigar:      { title: 'Cigar',         description: 'Cigars and tobacco.',               defaultUom: 'piece' },
+  grocery:    { title: 'Grocery',       description: 'General grocery items.',            defaultUom: 'piece' },
+  room:       { title: 'Room Types',    description: 'Guest room categories and rates.',  defaultUom: 'piece' },
+};

@@ -1,0 +1,372 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  user
+  manager
+  unit_admin
+  admin
+
+  @@map("user_role")
+}
+
+enum ItemCategory {
+  ration
+  soft_drink
+  alcohol
+  cigar
+  grocery
+
+  @@map("item_category")
+}
+
+enum Uom {
+  kg
+  g
+  l
+  ml
+  piece
+  pack
+  bottle
+
+  @@map("uom")
+}
+
+enum Capability {
+  masters_read         @map("masters.read")
+  masters_write        @map("masters.write")
+  masters_write_global @map("masters.write.global")
+  attendance_read      @map("attendance.read")
+  attendance_write     @map("attendance.write")
+  attendance_finalize  @map("attendance.finalize")
+  ration_read          @map("ration.read")
+  ration_issue         @map("ration.issue")
+  ration_adjust        @map("ration.adjust")
+  bar_read             @map("bar.read")
+  bar_write            @map("bar.write")
+  bar_finalize         @map("bar.finalize")
+  rooms_read           @map("rooms.read")
+  rooms_booking_write  @map("rooms.booking.write")
+  rooms_manage         @map("rooms.manage")
+  parties_read         @map("parties.read")
+  parties_write        @map("parties.write")
+  parties_finalize     @map("parties.finalize")
+  users_read           @map("users.read")
+  users_invite         @map("users.invite")
+  users_manage         @map("users.manage")
+  reports_unit         @map("reports.unit")
+  reports_cross_unit   @map("reports.cross_unit")
+  billing_read         @map("billing.read")
+  billing_draft        @map("billing.draft")
+  billing_finalize     @map("billing.finalize")
+  inventory_read       @map("inventory.read")
+  inventory_write      @map("inventory.write")
+
+  @@map("capability")
+}
+
+enum MessType {
+  officer
+  jco
+  or
+  combined
+
+  @@map("mess_type")
+}
+
+enum RationClass {
+  officer
+  jco
+  or
+  civilian
+
+  @@map("ration_class")
+}
+
+enum RationTerrain {
+  plains
+  desert
+  high_altitude
+  field
+  sea
+
+  @@map("ration_terrain")
+}
+
+enum RelationType {
+  spouse
+  child
+  parent
+
+  @@map("relation_type")
+}
+
+model Unit {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String             @unique
+  code              String             @unique
+  description       String?
+  is_active         Boolean            @default(true)
+  mess_type         MessType?
+  terrain           RationTerrain?
+  created_at        DateTime           @default(now()) @db.Timestamptz
+  updated_at        DateTime           @default(now()) @db.Timestamptz
+  created_by        String?            @db.Uuid
+  updated_by        String?            @db.Uuid
+  
+  profiles          Profile[]
+  items             Item[]
+  user_capabilities UserCapability[]
+  dependants        Dependant[]
+  rooms             Room[]
+  bookings          Booking[]
+  room_bills        RoomBill[]
+  unit_furniture    UnitFurniture[]
+
+  @@map("units")
+}
+
+model Profile {
+  id                String             @id @db.Uuid
+  unit_id           String?            @db.Uuid
+  email             String?
+  full_name         String?
+  service_no        String?
+  rank              String?
+  role              UserRole           @default(user)
+  is_active         Boolean            @default(true)
+  created_at        DateTime           @default(now()) @db.Timestamptz
+  updated_at        DateTime           @default(now()) @db.Timestamptz
+  created_by        String?            @db.Uuid
+  updated_by        String?            @db.Uuid
+  
+  unit              Unit?              @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  user_capabilities UserCapability[]
+  dependants        Dependant[]
+
+  @@map("profiles")
+}
+
+model Item {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id       String?        @db.Uuid
+  category      ItemCategory
+  name          String
+  sku           String?
+  uom           Uom
+  is_active     Boolean        @default(true)
+  created_at    DateTime       @default(now()) @db.Timestamptz
+  updated_at    DateTime       @default(now()) @db.Timestamptz
+  created_by    String?        @db.Uuid
+  updated_by    String?        @db.Uuid
+
+  unit          Unit?          @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  versions      ItemVersion[]
+  bill_items    RoomBillItem[]
+
+  @@unique([unit_id, category, name], name: "items_name_unique_per_unit")
+  @@map("items")
+}
+
+model ItemVersion {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  item_id      String    @db.Uuid
+  rate         Decimal   @db.Decimal(12, 2)
+  ration_scale Decimal?  @db.Decimal(14, 3)
+  notes        String?
+  valid_from   DateTime  @default(now()) @db.Timestamptz
+  valid_to     DateTime? @db.Timestamptz
+  created_at   DateTime  @default(now()) @db.Timestamptz
+  created_by   String?   @db.Uuid
+
+  item         Item      @relation(fields: [item_id], references: [id], onDelete: Cascade)
+
+  @@map("item_versions")
+}
+
+model UserCapability {
+  user_id    String     @db.Uuid
+  capability Capability
+  unit_id    String     @db.Uuid
+  granted_by String?    @db.Uuid
+  granted_at DateTime   @default(now()) @db.Timestamptz
+
+  profile    Profile    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  unit       Unit       @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+
+  @@id([user_id, capability, unit_id])
+  @@map("user_capabilities")
+}
+
+model CapabilityTemplate {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String       @unique
+  description  String?
+  capabilities Capability[]
+  is_system    Boolean      @default(false)
+  created_at   DateTime     @default(now()) @db.Timestamptz
+  updated_at   DateTime     @default(now()) @db.Timestamptz
+  created_by   String?      @db.Uuid
+  updated_by   String?      @db.Uuid
+
+  @@map("capability_templates")
+}
+
+model AuditLog {
+  id           BigInt   @id @default(autoincrement())
+  table_name   String
+  record_id    String   @db.Uuid
+  action       String
+  old_data     Json?
+  new_data     Json?
+  performed_by String?  @db.Uuid
+  occurred_at  DateTime @default(now()) @db.Timestamptz
+
+  @@map("audit_log")
+}
+
+model Dependant {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profile_id   String       @db.Uuid
+  unit_id      String       @db.Uuid
+  relation_type RelationType
+  name         String
+  phone        String?
+  auth_user_id String?      @unique @db.Uuid
+  created_at   DateTime     @default(now()) @db.Timestamptz
+  updated_at   DateTime     @default(now()) @db.Timestamptz
+
+  profile      Profile      @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+  unit         Unit         @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+
+  @@map("dependants")
+}
+
+model Room {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id      String           @db.Uuid
+  name         String
+  room_type    String           @default("Standard")
+  nightly_rate Decimal          @db.Decimal(12, 2) @default(0)
+  status       String           @default("available")
+  created_at   DateTime         @default(now()) @db.Timestamptz
+  updated_at   DateTime         @default(now()) @db.Timestamptz
+
+  unit         Unit             @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  bookings     Booking[]
+  furniture    RoomFurniture[]
+
+  @@unique([unit_id, name], name: "rooms_name_unique_per_unit")
+  @@map("rooms")
+}
+
+model Booking {
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id          String       @db.Uuid
+  room_id          String       @db.Uuid
+  guest_name       String
+  guest_rank       String?
+  check_in_date    DateTime     @db.Date
+  check_out_date   DateTime     @db.Date
+  actual_check_in  DateTime?    @db.Timestamptz
+  actual_check_out DateTime?    @db.Timestamptz
+  status           String       @default("confirmed")
+  created_at       DateTime     @default(now()) @db.Timestamptz
+  updated_at       DateTime     @default(now()) @db.Timestamptz
+  created_by       String?      @db.Uuid
+
+  unit             Unit         @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  room             Room         @relation(fields: [room_id], references: [id], onDelete: Restrict)
+  bills            RoomBill[]
+
+  @@map("bookings")
+}
+
+model RoomBill {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id      String         @db.Uuid
+  booking_id   String         @db.Uuid
+  total_amount Decimal        @db.Decimal(12, 2) @default(0)
+  status       String         @default("draft")
+  created_at   DateTime       @default(now()) @db.Timestamptz
+  updated_at   DateTime       @default(now()) @db.Timestamptz
+
+  unit         Unit           @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  booking      Booking        @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  items        RoomBillItem[]
+  orders       RoomBillOrder[]
+
+  @@map("room_bills")
+}
+
+model RoomBillItem {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bill_id     String         @db.Uuid
+  category    String
+  description String
+  amount      Decimal        @db.Decimal(12, 2)
+  quantity    Decimal        @db.Decimal(12, 2) @default(1)
+  item_id     String?        @db.Uuid
+  meal_type   String?
+  order_id    String?        @db.Uuid
+  created_at  DateTime       @default(now()) @db.Timestamptz
+
+  bill        RoomBill       @relation(fields: [bill_id], references: [id], onDelete: Cascade)
+  item        Item?          @relation(fields: [item_id], references: [id], onDelete: SetNull)
+  order       RoomBillOrder? @relation(fields: [order_id], references: [id], onDelete: Cascade)
+
+  @@map("room_bill_items")
+}
+
+model RoomBillOrder {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bill_id     String         @db.Uuid
+  label       String
+  occurred_at DateTime       @default(now()) @db.Timestamptz
+  note        String?
+  created_at  DateTime       @default(now()) @db.Timestamptz
+  updated_at  DateTime       @default(now()) @db.Timestamptz
+
+  bill        RoomBill       @relation(fields: [bill_id], references: [id], onDelete: Cascade)
+  items       RoomBillItem[]
+
+  @@map("room_bill_orders")
+}
+
+model UnitFurniture {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id    String          @db.Uuid
+  name       String
+  kind       String          @default("furniture")
+  created_at DateTime        @default(now()) @db.Timestamptz
+  updated_at DateTime        @default(now()) @db.Timestamptz
+
+  unit       Unit            @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+  furniture  RoomFurniture[]
+
+  @@unique([unit_id, name], name: "unit_furniture_name_unique_per_unit")
+  @@map("unit_furniture")
+}
+
+model RoomFurniture {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id      String        @db.Uuid
+  furniture_id String        @db.Uuid
+  quantity     Int           @default(1)
+  condition    String        @default("good")
+  notes        String?
+  created_at   DateTime      @default(now()) @db.Timestamptz
+  updated_at   DateTime      @default(now()) @db.Timestamptz
+
+  room         Room          @relation(fields: [room_id], references: [id], onDelete: Cascade)
+  furniture    UnitFurniture @relation(fields: [furniture_id], references: [id], onDelete: Cascade)
+
+  @@unique([room_id, furniture_id], name: "room_furniture_unique_per_room")
+  @@map("room_furniture")
+}
