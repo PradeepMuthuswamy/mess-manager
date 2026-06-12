@@ -2,7 +2,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { updateProductSchema, updateVariantSchema } from '@/lib/schemas';
 
 export const dynamic = 'force-dynamic';
@@ -19,25 +19,22 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctxUser = await requireApiUser(req);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
 
-  const { data: variantRow } = await ctxUser.supabase
+  const { data: variantRow } = await ctx.supabase
     .from('product_variants')
     .select('id, product_id')
     .eq('id', id)
     .maybeSingle();
   if (!variantRow) throw Errors.notFound();
 
-  const { data: productRow } = await ctxUser.supabase
+  const { data: productRow } = await ctx.supabase
     .from('products')
     .select('id, unit_id, category_id, name, description')
     .eq('id', variantRow.product_id)
     .maybeSingle();
   if (!productRow) throw Errors.notFound();
-
-  const cap = productRow.unit_id ? 'masters.write' : 'masters.write.global';
-  const ctx = await requireApiCapability(req, cap, productRow.unit_id ?? null);
 
   const body = await req.json().catch(() => null);
   if (!body) throw Errors.validation({ formErrors: ['Missing body'] });
@@ -105,25 +102,22 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctxUser = await requireApiUser(req);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
 
-  const { data: variantRow } = await ctxUser.supabase
+  const { data: variantRow } = await ctx.supabase
     .from('product_variants')
     .select('id, product_id')
     .eq('id', id)
     .maybeSingle();
   if (!variantRow) throw Errors.notFound();
 
-  const { data: productRow } = await ctxUser.supabase
+  const { data: productRow } = await ctx.supabase
     .from('products')
     .select('unit_id')
     .eq('id', variantRow.product_id)
     .maybeSingle();
   if (!productRow) throw Errors.notFound();
-
-  const cap = productRow.unit_id ? 'masters.write' : 'masters.write.global';
-  const ctx = await requireApiCapability(req, cap, productRow.unit_id ?? null);
 
   const { error } = await ctx.admin
     .from('product_variants')

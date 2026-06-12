@@ -1,4 +1,4 @@
-export type Role = 'user' | 'manager' | 'unit_admin' | 'admin';
+export type Role = 'user' | 'manager' | 'unit_admin' | 'super_admin' | 'mess_secretary' | 'mess_havildar' | 'bar_nco' | 'property_nco';
 
 export const CAPABILITIES = [
   'masters.read','masters.write','masters.write.global',

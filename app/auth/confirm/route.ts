@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
           .select('role')
           .eq('id', user.id)
           .maybeSingle();
-        if (profile?.role === 'admin') {
+        if (profile?.role === 'super_admin') {
           await supabase.auth.signOut();
           return NextResponse.redirect(
             new URL('/sign-in?error=admin_console', url.origin)

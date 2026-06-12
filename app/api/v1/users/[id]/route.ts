@@ -3,6 +3,7 @@ import { withRoute, ok } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
 import { requireApiUser } from '@/lib/api/auth';
 import { updateUserSchema } from '@/lib/schemas';
+import type { Database } from '@/lib/supabase/database.types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -30,43 +31,12 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const parsed = updateUserSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const isSelf = ctx.user.id === id;
-  const role = ctx.user.role;
-
-  // Role/unit_id changes only by admin.
-  const wantsRoleChange = parsed.data.role !== undefined;
-  const wantsUnitChange = parsed.data.unit_id !== undefined;
-  if ((wantsRoleChange || wantsUnitChange) && role !== 'admin') {
-    throw Errors.forbidden('Only admin may change role or unit');
-  }
-
-  // Permission rules:
-  // - admin: all
-  // - unit_admin: profiles in their unit (RLS will also restrict, but we check up-front for clearer errors)
-  // - others: self only, non-privileged fields
-  if (role !== 'admin') {
-    // Need to look up target to check unit / existence.
-    const { data: target } = await ctx.supabase
-      .from('profiles')
-      .select('id, unit_id')
-      .eq('id', id)
-      .maybeSingle();
-    if (!target) throw Errors.notFound();
-    if (role === 'unit_admin') {
-      if (target.unit_id !== ctx.user.homeUnitId) throw Errors.forbidden();
-    } else {
-      if (!isSelf) throw Errors.forbidden();
-      // user / manager updating self — disallow is_active toggle.
-      if (parsed.data.is_active !== undefined) throw Errors.forbidden('Cannot change is_active');
-    }
-  }
-
   type ProfileUpdate = {
     full_name?: string | null;
     service_no?: string | null;
     rank?: string | null;
     is_active?: boolean;
-    role?: 'user' | 'manager' | 'unit_admin' | 'admin';
+    role?: Database["public"]["Enums"]["user_role"];
     unit_id?: string | null;
   };
   const update: ProfileUpdate = {};
@@ -74,11 +44,12 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   if (parsed.data.service_no !== undefined) update.service_no = parsed.data.service_no;
   if (parsed.data.rank !== undefined) update.rank = parsed.data.rank;
   if (parsed.data.is_active !== undefined) update.is_active = parsed.data.is_active;
-  if (parsed.data.role !== undefined) update.role = parsed.data.role;
+  if (parsed.data.role !== undefined) {
+    update.role = ((parsed.data.role as string) === 'admin' ? 'super_admin' : parsed.data.role) as Database["public"]["Enums"]["user_role"];
+  }
   if (parsed.data.unit_id !== undefined) update.unit_id = parsed.data.unit_id;
 
-  const client = role === 'admin' || role === 'unit_admin' ? ctx.admin : ctx.supabase;
-  const { data, error } = await client
+  const { data, error } = await ctx.supabase
     .from('profiles')
     .update(update)
     .eq('id', id)

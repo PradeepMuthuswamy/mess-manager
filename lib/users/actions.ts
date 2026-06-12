@@ -14,8 +14,8 @@ const USERS_PATH = '/users';
 export async function fetchUnitUsersAction(unitId?: string | null) {
   const caller = await requireUser();
   
-  // Resolve target unit: unit_admin is locked to their homeUnitId
-  const targetUnit = caller.role === 'unit_admin' ? caller.homeUnitId : unitId ?? caller.activeUnitId;
+  // Resolve target unit: unit_admin and mess_secretary are locked to their homeUnitId
+  const targetUnit = (caller.role === 'unit_admin' || caller.role === 'mess_secretary') ? caller.homeUnitId : unitId ?? caller.activeUnitId;
   
   await requireCapability('users.read', targetUnit);
 
@@ -58,10 +58,15 @@ export async function inviteUserAction(input: {
   const caller = await requireUser();
   await requireCapability('users.invite', input.unit_id);
 
+  let targetRole: any = input.role;
+  if ((targetRole as string) === 'admin') {
+    targetRole = 'super_admin';
+  }
+
   // Authorization checks for role & unit scoping
-  if (caller.role !== 'admin') {
-    if (input.role === 'admin' || input.role === 'unit_admin') {
-      return { error: 'Only super admin may grant admin or unit_admin roles.' };
+  if (caller.role !== 'super_admin') {
+    if (targetRole === 'super_admin' || targetRole === 'unit_admin') {
+      return { error: 'Only super admin may grant super_admin or unit_admin roles.' };
     }
     if (caller.role === 'unit_admin') {
       if (input.unit_id && input.unit_id !== caller.homeUnitId) {
@@ -79,7 +84,7 @@ export async function inviteUserAction(input: {
     options: {
       data: {
         ...(input.full_name ? { full_name: input.full_name } : {}),
-        role: input.role,
+        role: targetRole,
         unit_id: targetUnit,
       },
     },
@@ -91,7 +96,7 @@ export async function inviteUserAction(input: {
 
   // Update profile with specific details
   const { error: profErr } = await admin.from('profiles').update({
-    role: input.role,
+    role: targetRole,
     unit_id: targetUnit,
     ...(input.full_name ? { full_name: input.full_name } : {}),
   }).eq('id', invited.user.id);
@@ -117,7 +122,7 @@ export async function inviteUserAction(input: {
         next: '/accept-invite',
       }),
       unitName,
-      role: input.role,
+      role: targetRole,
     });
   } catch (err) {
     console.error('Failed to send invitation email via Resend:', err);
@@ -182,15 +187,28 @@ export async function updateUserAction(
 
   await requireCapability('users.manage', target.unit_id);
 
-  // Role/unit changes only by admin
+  // Role/unit changes only by super_admin
   const wantsRoleChange = input.role !== undefined;
   const wantsUnitChange = input.unit_id !== undefined;
-  if ((wantsRoleChange || wantsUnitChange) && caller.role !== 'admin') {
+  if ((wantsRoleChange || wantsUnitChange) && caller.role !== 'super_admin') {
     return { error: 'Only super admin may change user roles or units.' };
   }
 
-  if (caller.role === 'unit_admin' && target.unit_id !== caller.homeUnitId) {
+  if ((caller.role === 'unit_admin' || caller.role === 'mess_secretary') && target.unit_id !== caller.homeUnitId) {
     return { error: 'You can only edit users within your own unit.' };
+  }
+
+  let mappedRole: any = input.role;
+  if (mappedRole === 'admin') {
+    mappedRole = 'super_admin';
+  }
+
+  if (mappedRole !== undefined || input.unit_id !== undefined) {
+    const finalRole = mappedRole !== undefined ? mappedRole : target.role;
+    const finalUnitId = input.unit_id !== undefined ? input.unit_id : target.unit_id;
+    if (finalRole !== 'super_admin' && !finalUnitId) {
+      return { error: 'A unit must be specified for non-admin users.' };
+    }
   }
 
   // Update profile
@@ -201,12 +219,26 @@ export async function updateUserAction(
       ...(input.full_name !== undefined ? { full_name: input.full_name || null } : {}),
       ...(input.service_no !== undefined ? { service_no: input.service_no || null } : {}),
       ...(input.rank !== undefined ? { rank: input.rank || null } : {}),
-      ...(input.role !== undefined ? { role: input.role } : {}),
+      ...(mappedRole !== undefined ? { role: mappedRole } : {}),
       ...(input.unit_id !== undefined ? { unit_id: input.unit_id } : {}),
     })
     .eq('id', userId);
 
   if (updateErr) return { error: updateErr.message };
+
+  // Sync auth user app_metadata if role or unit changes
+  if (mappedRole !== undefined || input.unit_id !== undefined) {
+    const updateData: any = {};
+    if (mappedRole !== undefined) {
+      updateData.role = mappedRole;
+    }
+    if (input.unit_id !== undefined) {
+      updateData.unit_id = input.unit_id;
+    }
+    await admin.auth.admin.updateUserById(userId, {
+      app_metadata: updateData
+    });
+  }
 
   revalidatePath(USERS_PATH);
   return { ok: true };
@@ -232,11 +264,11 @@ export async function updateUserCapabilitiesAction(
 
   await requireCapability('users.manage', target.unit_id);
 
-  if (caller.role === 'unit_admin') {
+  if (caller.role === 'unit_admin' || caller.role === 'mess_secretary') {
     if (target.unit_id !== caller.homeUnitId) {
       return { error: 'You can only manage users within your own unit.' };
     }
-    // Check that unit_admin is only granting capabilities scoped to their home unit
+    // Check that unit_admin or mess_secretary is only granting capabilities scoped to their home unit
     for (const cap of capabilities) {
       if (cap.unitId && cap.unitId !== caller.homeUnitId) {
         return { error: 'Cannot grant capabilities outside your own unit.' };
@@ -287,7 +319,7 @@ export async function toggleUserActiveAction(userId: string, is_active: boolean)
 
   await requireCapability('users.manage', target.unit_id);
 
-  if (caller.role === 'unit_admin' && target.unit_id !== caller.homeUnitId) {
+  if ((caller.role === 'unit_admin' || caller.role === 'mess_secretary') && target.unit_id !== caller.homeUnitId) {
     return { error: 'You can only manage users within your own unit.' };
   }
 
@@ -320,7 +352,7 @@ export async function deleteUserAction(userId: string) {
 
   await requireCapability('users.manage', target.unit_id);
 
-  if (caller.role === 'unit_admin' && target.unit_id !== caller.homeUnitId) {
+  if ((caller.role === 'unit_admin' || caller.role === 'mess_secretary') && target.unit_id !== caller.homeUnitId) {
     return { error: 'You can only manage users within your own unit.' };
   }
 

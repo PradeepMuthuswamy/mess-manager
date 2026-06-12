@@ -95,7 +95,7 @@ export async function MastersView({
 
   // Super admins see the full rank×terrain matrix. Everyone else is scoped to
   // their active unit's configured mess_type (→rank class) and terrain.
-  const isSuperAdmin = user.role === 'admin';
+  const isSuperAdmin = user.role === 'super_admin';
 
   let authorisations: Record<string, AuthorisationChip[]> | undefined;
   let rationScope:

@@ -153,13 +153,20 @@ export function UsersDashboard({
   const canInvite = userHasCapability(currentUser, 'users.invite');
   const canManage = userHasCapability(currentUser, 'users.manage');
 
-  // Helper to format role names elegantly
   const formatRole = (role: string) => {
     switch (role) {
-      case 'admin':
-        return 'Admin';
+      case 'super_admin':
+        return 'Super Admin';
       case 'unit_admin':
         return 'Unit Admin';
+      case 'mess_secretary':
+        return 'Mess Secretary';
+      case 'mess_havildar':
+        return 'Mess Havildar';
+      case 'bar_nco':
+        return 'Bar NCO';
+      case 'property_nco':
+        return 'Property NCO';
       case 'manager':
         return 'Manager';
       case 'user':
@@ -169,13 +176,20 @@ export function UsersDashboard({
     }
   };
 
-  // Resolve role badge color classes
   const getRoleBadgeClasses = (role: string) => {
     switch (role) {
-      case 'admin':
+      case 'super_admin':
         return 'bg-red-500/10 text-red-500 border-red-500/20';
       case 'unit_admin':
         return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
+      case 'mess_secretary':
+        return 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20';
+      case 'mess_havildar':
+        return 'bg-purple-500/10 text-purple-500 border-purple-500/20';
+      case 'bar_nco':
+        return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
+      case 'property_nco':
+        return 'bg-pink-500/10 text-pink-500 border-pink-500/20';
       case 'manager':
         return 'bg-sky-500/10 text-sky-500 border-sky-500/20';
       default:
@@ -204,8 +218,12 @@ export function UsersDashboard({
           className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-none"
         >
           <option value="all">All Roles</option>
-          <option value="admin">Super Admin</option>
+          <option value="super_admin">Super Admin</option>
           <option value="unit_admin">Unit Admin</option>
+          <option value="mess_secretary">Mess Secretary</option>
+          <option value="mess_havildar">Mess Havildar</option>
+          <option value="bar_nco">Bar NCO</option>
+          <option value="property_nco">Property NCO</option>
           <option value="manager">Manager</option>
           <option value="user">Member</option>
         </select>

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { createBarChitSchema, listBarChitsQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -18,24 +18,10 @@ export const GET = withRoute(async (req: NextRequest) => {
   const parsed = listBarChitsQuerySchema.safeParse(Object.fromEntries(url.searchParams));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  let unitId: string | null;
-  if (ctx.user.role === 'admin') {
-    unitId = parsed.data.unit_id ?? ctx.user.activeUnitId ?? null;
-  } else {
-    unitId = ctx.user.activeUnitId;
-    if (parsed.data.unit_id && parsed.data.unit_id !== unitId) {
-      await requireApiCapability(req, 'bar.read', parsed.data.unit_id);
-      unitId = parsed.data.unit_id;
-    }
-  }
+  const unitId = parsed.data.unit_id ?? ctx.user.activeUnitId ?? ctx.user.homeUnitId ?? null;
 
   if (unitId === null) {
     return ok({ data: [] });
-  }
-
-  // Capability check
-  if (ctx.user.role !== 'admin') {
-    await requireApiCapability(req, 'bar.read', unitId);
   }
 
   const { data, error } = await ctx.supabase
@@ -77,7 +63,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   const { unit_id } = parsed.data;
 
   // Capability gate
-  const ctx = await requireApiCapability(req, 'bar.write', unit_id);
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const idemKey = getIdempotencyKey(req);

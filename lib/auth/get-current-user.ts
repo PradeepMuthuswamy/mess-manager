@@ -27,7 +27,7 @@ export const getCurrentUser = cache(async (): Promise<AuthUser | null> => {
 
   let activeUnitId: string | null;
   let isAllUnits: boolean;
-  if (role === 'admin') {
+  if (role === 'super_admin') {
     activeUnitId = cookieUnit && cookieUnit !== 'all' ? cookieUnit : null;
     isAllUnits = !activeUnitId;
   } else {

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiRole } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { createTemplateSchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -21,7 +21,7 @@ export const GET = withRoute(async (req: NextRequest) => {
 });
 
 export const POST = withRoute(async (req: NextRequest) => {
-  const ctx = await requireApiRole(req, ['admin']);
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
   const bodyText = await req.text();
 

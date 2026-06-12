@@ -1,12 +1,9 @@
 import { redirect } from 'next/navigation';
 import { requireUser } from '@/lib/auth/require-role';
 import { userHasCapability } from '@/lib/auth/require-capability';
-import {
-  listInventory,
-  listMasterItemsForPicker,
-} from '@/lib/stock/queries';
+import { listInventory } from '@/lib/stock/queries';
 import { EmptyState } from '@/components/shared/empty-state';
-import { StockTable } from '@/app/(app)/stock/_components/stock-table';
+import { StockTable } from '@/app/(app)/_shared/stock-table/stock-table';
 import {
   CATEGORY_META,
   slugFromCategory,
@@ -52,10 +49,8 @@ export default async function GroceryStockPage() {
   }
 
   const unitId = user.activeUnitId;
-  const [rows, masterItems] = await Promise.all([
-    listInventory(unitId, { category: GROCERY_CATEGORY }),
-    listMasterItemsForPicker(unitId, undefined, GROCERY_CATEGORY),
-  ]);
+  const rows = await listInventory(unitId, { category: GROCERY_CATEGORY });
+  const masterItems: any[] = [];
 
   const canWrite = userHasCapability(user, INVENTORY_WRITE, unitId);
   // Inline master-item creation posts unit_id, so createMasterItemAction

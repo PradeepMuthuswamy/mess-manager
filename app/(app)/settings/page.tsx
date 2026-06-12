@@ -34,7 +34,7 @@ export default async function SettingsPage() {
     .select('full_name, service_no, rank, email')
     .eq('id', user.id)
     .single();
-  const canManageUnit = user.role === 'admin' || user.role === 'unit_admin';
+  const canManageUnit = user.role === 'super_admin' || user.role === 'unit_admin';
   const unitId = user.activeUnitId ?? user.homeUnitId;
   type UnitCfg = {
     id: string;

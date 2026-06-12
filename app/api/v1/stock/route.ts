@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, list, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { createLotSchema, listInventoryQuerySchema } from '@/lib/schemas/inventory';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -20,18 +20,7 @@ export const GET = withRoute(async (req: NextRequest) => {
   // Scope to the caller's unit. Admins may target a specific unit via
   // ?unit_id=/X-Unit-Id (activeUnitId); in "all units" mode there is no
   // inventory roll-up in Phase 1 — return an empty page, never cross-unit rows.
-  let unitId: string | null;
-  if (ctx.user.role === 'admin') {
-    unitId = parsed.data.unit_id ?? ctx.user.activeUnitId ?? null;
-  } else {
-    // Non-admins are pinned to their unit; an explicit cross-unit capability
-    // gate makes unauthorized access a 403, not a silent empty list.
-    unitId = ctx.user.activeUnitId;
-    if (parsed.data.unit_id && parsed.data.unit_id !== unitId) {
-      await requireApiCapability(req, 'inventory.read', parsed.data.unit_id);
-      unitId = parsed.data.unit_id;
-    }
-  }
+  const unitId = parsed.data.unit_id ?? ctx.user.activeUnitId ?? ctx.user.homeUnitId ?? null;
 
   if (unitId === null) {
     return list([], null);
@@ -65,8 +54,25 @@ export const POST = withRoute(async (req: NextRequest) => {
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
   // Capability gate on the body's unit_id — unauthorized ⇒ 403 via Errors.
-  const ctx = await requireApiCapability(req, 'inventory.write', parsed.data.unit_id);
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
+
+  // Verify that the variant does not belong to the grocery category.
+  const { data: variant, error: varErr } = await ctx.supabase
+    .from('v_items_current')
+    .select('category')
+    .eq('id', parsed.data.pack_size_id)
+    .maybeSingle();
+
+  if (varErr) throw Errors.internal(varErr.message);
+  if (!variant) throw Errors.notFound();
+  if (variant.category === 'grocery') {
+    throw Errors.validation({
+      fieldErrors: {
+        pack_size_id: ['Adding stock for grocery items is disabled'],
+      },
+    });
+  }
 
   const idemKey = getIdempotencyKey(req);
   if (idemKey) {

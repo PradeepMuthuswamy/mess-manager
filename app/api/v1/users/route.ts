@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { inviteUserSchema, listUsersQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -14,7 +14,6 @@ export const runtime = 'nodejs';
 export const GET = withRoute(async (req: NextRequest) => {
   const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'read', ctx.user.id);
-  if (!['admin', 'unit_admin'].includes(ctx.user.role)) throw Errors.forbidden();
   const url = new URL(req.url);
   const parsed = listUsersQuerySchema.safeParse(Object.fromEntries(url.searchParams));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
@@ -25,7 +24,9 @@ export const GET = withRoute(async (req: NextRequest) => {
     .order('full_name', { ascending: true })
     .limit(parsed.data.limit);
   if (parsed.data.active_only) q = q.eq('is_active', true);
-  if (parsed.data.role) q = q.eq('role', parsed.data.role);
+  if (parsed.data.role) {
+    q = q.eq('role', parsed.data.role);
+  }
   if (wantUnit) q = q.eq('unit_id', wantUnit);
   if (parsed.data.q) q = q.ilike('full_name', `%${parsed.data.q}%`);
 
@@ -35,7 +36,7 @@ export const GET = withRoute(async (req: NextRequest) => {
 });
 
 export const POST = withRoute(async (req: NextRequest) => {
-  const ctx = await requireApiCapability(req, 'users.invite');
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
   const bodyText = await req.text();
   const idemKey = getIdempotencyKey(req);
@@ -45,18 +46,6 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
   const parsed = inviteUserSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
-
-  // Only admin may set role to admin or unit_admin; unit_admin can only invite as user/manager into their own unit
-  if (ctx.user.role !== 'admin') {
-    if (parsed.data.role === 'admin' || parsed.data.role === 'unit_admin') {
-      throw Errors.forbidden('Only admin may grant elevated roles');
-    }
-    if (ctx.user.role === 'unit_admin') {
-      if (parsed.data.unit_id && parsed.data.unit_id !== ctx.user.homeUnitId) {
-        throw Errors.forbidden('Cannot invite into other units');
-      }
-    }
-  }
 
   const targetUnit = parsed.data.unit_id ?? (ctx.user.role === 'unit_admin' ? ctx.user.homeUnitId : null);
 

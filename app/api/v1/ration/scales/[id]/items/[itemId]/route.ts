@@ -1,8 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
-import { userHasCapability } from '@/lib/auth/capabilities';
+import { requireApiUser } from '@/lib/api/auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -19,9 +18,6 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
     .eq('id', id)
     .maybeSingle();
   if (!scale) throw Errors.notFound('Scale not found');
-  if (!userHasCapability(ctx.user, 'ration.read', scale.unit_id)) {
-    throw Errors.forbidden('Requires capability: ration.read');
-  }
 
   const { data, error } = await ctx.supabase
     .from('ration_scale_item_versions')
@@ -35,15 +31,13 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const { id, itemId } = await params;
-  const ctxUser = await requireApiUser(req);
-  const { data: scale } = await ctxUser.supabase
+  const ctx = await requireApiUser(req);
+  const { data: scale } = await ctx.supabase
     .from('ration_scales')
     .select('unit_id')
     .eq('id', id)
     .maybeSingle();
   if (!scale) throw Errors.notFound('Scale not found');
-
-  const ctx = await requireApiCapability(req, 'ration.adjust', scale.unit_id);
 
   const { error } = await ctx.supabase
     .from('ration_scale_item_versions')

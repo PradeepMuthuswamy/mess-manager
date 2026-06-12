@@ -47,7 +47,7 @@ async function main() {
       password,
       email_confirm: true,
       user_metadata: {
-        role: 'admin',
+        role: 'super_admin',
         ...(fullName ? { full_name: fullName } : {}),
       },
     });
@@ -62,7 +62,7 @@ async function main() {
   const { error: upErr } = await admin
     .from('profiles')
     .update({
-      role: 'admin',
+      role: 'super_admin',
       unit_id: null,
       full_name: fullName ?? undefined,
     })

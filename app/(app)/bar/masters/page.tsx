@@ -1,6 +1,6 @@
 import { requireUser } from '@/lib/auth/require-role';
 import { requireCapability } from '@/lib/auth/require-capability';
-import { MastersView } from '@/app/(app)/masters/_components/masters-view';
+import { MastersView } from '@/app/(app)/_shared/masters-view/masters-view';
 import type { CategorySlug } from '@/lib/masters/categories';
 
 export const dynamic = 'force-dynamic';

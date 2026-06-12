@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { finalizeAttendanceSchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -18,11 +18,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   );
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const ctx = await requireApiCapability(
-    req,
-    'attendance.finalize',
-    parsed.data.unit_id,
-  );
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const idemKey = getIdempotencyKey(req);

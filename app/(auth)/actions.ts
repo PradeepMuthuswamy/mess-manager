@@ -56,7 +56,7 @@ export async function signInAction(
       .select('role')
       .eq('id', signedIn.user.id)
       .maybeSingle();
-    if (profile?.role === 'admin') {
+    if (profile?.role === 'super_admin') {
       await supabase.auth.signOut();
       return { error: 'Admin accounts must sign in via the Admin Console.' };
     }
@@ -95,7 +95,7 @@ export async function forgotPasswordAction(
 
   // Admin accounts reset their password via the Admin Console; respond
   // identically either way to avoid account enumeration.
-  if (profile && profile.role !== 'admin') {
+  if (profile && profile.role !== 'super_admin') {
     const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
       type: 'recovery',
       email: parsed.data.email,
@@ -222,7 +222,7 @@ export async function sendMagicLinkAction(
     .eq('email', email)
     .maybeSingle();
 
-  if (!profile || profile.role === 'admin') {
+  if (!profile || profile.role === 'super_admin') {
     // No account, or an admin account (Admin Console only) — return
     // ok: true either way to prevent account enumeration.
     return { ok: true };

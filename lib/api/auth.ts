@@ -45,7 +45,7 @@ export async function requireApiUser(req: NextRequest): Promise<ApiContext> {
 
   // App segregation: admin accounts operate through the Admin Console and
   // its API, never this ops app — mirror the web-surface block here.
-  if (profile.role === 'admin') {
+  if (profile.role === 'super_admin') {
     throw Errors.forbidden('Admin accounts must use the Admin Console API.');
   }
 
@@ -58,7 +58,7 @@ export async function requireApiUser(req: NextRequest): Promise<ApiContext> {
   const role = profile.role as Role;
   let activeUnitId: string | null = profile.unit_id;
   let isAllUnits = false;
-  if (role === 'admin') {
+  if (role === 'super_admin') {
     const url = new URL(req.url);
     const headerUnit = req.headers.get('x-unit-id');
     const queryUnit = url.searchParams.get('unit');

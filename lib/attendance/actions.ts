@@ -122,8 +122,8 @@ export async function setUnitConfigAction(input: unknown): Promise<ActionResult>
     return { error: 'Invalid input', details: parsed.error.flatten() };
 
   const { unit_id, mess_type, terrain } = parsed.data;
-  const user = await requireRole(['admin', 'unit_admin']);
-  if (user.role !== 'admin' && user.homeUnitId !== unit_id) {
+  const user = await requireRole(['super_admin', 'unit_admin']);
+  if (user.role !== 'super_admin' && user.homeUnitId !== unit_id) {
     return { error: 'You can only configure your own unit.' };
   }
 

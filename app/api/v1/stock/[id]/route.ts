@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { updateLotSchema } from '@/lib/schemas/inventory';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -25,18 +25,17 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctxUser = await requireApiUser(req);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
 
   // Resolve the lot's unit to scope the capability check.
-  const { data: existing } = await ctxUser.supabase
+  const { data: existing } = await ctx.supabase
     .from('unit_inventory')
     .select('unit_id')
     .eq('id', id)
     .maybeSingle();
   if (!existing) throw Errors.notFound();
 
-  const ctx = await requireApiCapability(req, 'inventory.write', existing.unit_id);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const bodyText = await req.text();
@@ -75,17 +74,16 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctxUser = await requireApiUser(req);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
 
-  const { data: existing } = await ctxUser.supabase
+  const { data: existing } = await ctx.supabase
     .from('unit_inventory')
     .select('unit_id')
     .eq('id', id)
     .maybeSingle();
   if (!existing) throw Errors.notFound();
 
-  const ctx = await requireApiCapability(req, 'inventory.write', existing.unit_id);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   // Soft delete — preserve the lot for audit/history. Service-role mutation

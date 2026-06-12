@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiRole } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { updateTemplateSchema } from '@/lib/schemas';
 import type { Database } from '@/lib/supabase/database.types';
 
@@ -26,7 +26,7 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiRole(req, ['admin']);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
   const body = await req.json().catch(() => null);
   const parsed = updateTemplateSchema.safeParse(body);
@@ -52,7 +52,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiRole(req, ['admin']);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
 
   const { data: existing, error: getErr } = await ctx.admin

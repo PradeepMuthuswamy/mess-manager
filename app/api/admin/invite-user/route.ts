@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { inviteUserSchema } from '@/lib/schemas';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { AuthUser, Capability, Role } from '@/lib/auth/types';
+import type { Database } from '@/lib/supabase/database.types';
 import { sendInvitationEmail } from '@/lib/email/resend';
 import { buildAuthConfirmLink } from '@/lib/auth/email-links';
 
@@ -40,11 +41,16 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = inviteUserSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  if (user.role !== 'admin') {
-    if (parsed.data.role === 'admin' || parsed.data.role === 'unit_admin') throw Errors.forbidden();
+  let mappedRole = parsed.data.role;
+  if ((mappedRole as string) === 'admin') {
+    mappedRole = 'super_admin';
+  }
+
+  if ((user.role as string) !== 'admin' && (user.role as string) !== 'super_admin') {
+    if ((mappedRole as string) === 'admin' || (mappedRole as string) === 'super_admin' || (mappedRole as string) === 'unit_admin') throw Errors.forbidden();
     if (parsed.data.unit_id && parsed.data.unit_id !== user.homeUnitId) throw Errors.forbidden();
   }
-  const targetUnit = parsed.data.unit_id ?? (user.role === 'unit_admin' ? user.homeUnitId : null);
+  const targetUnit = parsed.data.unit_id ?? (((user.role as string) === 'unit_admin' || (user.role as string) === 'mess_secretary') ? user.homeUnitId : null);
 
   const admin = createServiceClient();
   const { data: invited, error: invErr } = await admin.auth.admin.generateLink({
@@ -53,7 +59,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     options: {
       data: {
         ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-        role: parsed.data.role,
+        role: mappedRole,
         unit_id: targetUnit,
       },
     },
@@ -63,7 +69,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
 
   await admin.from('profiles').update({
-    role: parsed.data.role,
+    role: mappedRole as Database['public']['Enums']['user_role'],
     unit_id: targetUnit,
     ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
   }).eq('id', invited.user.id);
@@ -85,7 +91,7 @@ export const POST = withRoute(async (req: NextRequest) => {
         next: '/accept-invite',
       }),
       unitName,
-      role: parsed.data.role,
+      role: mappedRole,
     });
   } catch (err) {
     console.error('Failed to send invitation email via Resend in Admin API:', err);

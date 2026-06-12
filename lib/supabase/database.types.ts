@@ -1741,6 +1741,14 @@ export type Database = {
       }
     }
     Functions: {
+      recent_auth_events: {
+        Args: { p_limit?: number }
+        Returns: {
+          created_at: string
+          id: string
+          payload: Json
+        }[]
+      }
       set_ration_scale_item: {
         Args: {
           p_auth_qty: number
@@ -1798,7 +1806,15 @@ export type Database = {
       relation_type: "spouse" | "child" | "parent"
       unit_type: "ML" | "LITRE" | "GRAM" | "KG" | "PIECE"
       uom: "kg" | "g" | "l" | "ml" | "piece" | "pack" | "bottle"
-      user_role: "user" | "manager" | "unit_admin" | "admin"
+      user_role:
+        | "user"
+        | "manager"
+        | "unit_admin"
+        | "super_admin"
+        | "mess_secretary"
+        | "mess_havildar"
+        | "bar_nco"
+        | "property_nco"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -1975,7 +1991,16 @@ export const Constants = {
       relation_type: ["spouse", "child", "parent"],
       unit_type: ["ML", "LITRE", "GRAM", "KG", "PIECE"],
       uom: ["kg", "g", "l", "ml", "piece", "pack", "bottle"],
-      user_role: ["user", "manager", "unit_admin", "admin"],
+      user_role: [
+        "user",
+        "manager",
+        "unit_admin",
+        "super_admin",
+        "mess_secretary",
+        "mess_havildar",
+        "bar_nco",
+        "property_nco",
+      ],
     },
   },
 } as const

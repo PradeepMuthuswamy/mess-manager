@@ -4,8 +4,8 @@ import {
   type CategorySlug,
 } from '@/lib/masters/categories';
 
-// Tab strip over the master category slugs. Mirrors InventoryCategoryNav
-// exactly (same shadcn-token strip + active state) but is link/URL driven
+// Tab strip over the master category slugs. Same shadcn-token strip + active
+// state as the Stock tab strip, but is link/URL driven
 // (`?cat=`) so the masters surfaces stay SSR and linkable. Labels are reused
 // from CATEGORY_META so they always match the admin masters console.
 //

@@ -27,7 +27,7 @@ export const POST = withRoute(async (req: NextRequest) => {
 
   // Admin accounts reset their password via the Admin Console; respond
   // identically either way to avoid account enumeration.
-  if (profile && profile.role !== 'admin') {
+  if (profile && profile.role !== 'super_admin') {
     const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
       type: 'recovery',
       email: parsed.data.email,

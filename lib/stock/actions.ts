@@ -14,7 +14,15 @@ type UnitInventoryUpdate = Database['public']['Tables']['unit_inventory']['Updat
 
 const INVENTORY_WRITE = 'inventory.write';
 
-const ACTION_RESULT = '/stock';
+// Every route that renders a StockTable off `unit_inventory`. Grocery split
+// into its own module (/grocery/stock) but the lot actions are shared, so a
+// save from there must invalidate that route too — revalidating only '/stock'
+// left the grocery page serving a stale RSC cache after a write.
+const STOCK_ROUTES = ['/stock', '/grocery/stock'] as const;
+
+function revalidateStock(): void {
+  for (const route of STOCK_ROUTES) revalidatePath(route);
+}
 
 type ActionResult = {
   ok?: boolean;
@@ -75,7 +83,7 @@ export async function updateLotAction(
   const { error } = await supabase.from('unit_inventory').update(patch).eq('id', id);
   if (error) return { error: error.message };
 
-  revalidatePath(ACTION_RESULT);
+  revalidateStock();
   return { ok: true };
 }
 
@@ -109,7 +117,7 @@ export async function adjustQtyAction(
     .eq('id', parsed.data.id);
   if (error) return { error: error.message };
 
-  revalidatePath(ACTION_RESULT);
+  revalidateStock();
   return { ok: true };
 }
 
@@ -140,7 +148,7 @@ export async function deactivateLotAction(
     .eq('id', id);
   if (error) return { error: error.message };
 
-  revalidatePath(ACTION_RESULT);
+  revalidateStock();
   return { ok: true };
 }
 
@@ -173,7 +181,7 @@ export async function deactivateLotsAction(ids: string[]): Promise<ActionResult>
 
   if (updateError) return { error: updateError.message };
 
-  revalidatePath(ACTION_RESULT);
+  revalidateStock();
   return { ok: true };
 }
 
@@ -202,6 +210,20 @@ export async function createLotsAction(
   }
 
   const supabase = await createClient();
+
+  // Verify that none of the variants belong to the grocery category.
+  const variantIds = lots.map((l) => l.variant_id);
+  const { data: variants, error: variantErr } = await supabase
+    .from('v_items_current')
+    .select('id, category')
+    .in('id', variantIds);
+
+  if (variantErr) return { error: variantErr.message };
+  const isGrocery = variants?.some((v) => v.category === 'grocery');
+  if (isGrocery) {
+    return { error: 'Adding stock for grocery items is disabled' };
+  }
+
   const { error } = await supabase
     .from('unit_inventory')
     .insert(
@@ -217,7 +239,7 @@ export async function createLotsAction(
 
   if (error) return { error: error.message };
 
-  revalidatePath(ACTION_RESULT);
+  revalidateStock();
   return { ok: true };
 }
 

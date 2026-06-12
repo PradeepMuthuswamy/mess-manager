@@ -2,7 +2,7 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { createItemApiSchema, listItemsQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -26,13 +26,13 @@ export const GET = withRoute(async (req: NextRequest) => {
   if (parsed.data.active_only) q = q.eq('is_active', true);
 
   // Unit scoping
-  if (ctx.user.role !== 'admin') {
-    const u = ctx.user.activeUnitId;
-    if (u) q = q.or(`unit_id.is.null,unit_id.eq.${u}`);
-    else q = q.is('unit_id', null);
-  } else if (parsed.data.unit_id !== undefined) {
+  if (parsed.data.unit_id !== undefined) {
     if (parsed.data.unit_id === null) q = q.is('unit_id', null);
     else q = q.eq('unit_id', parsed.data.unit_id);
+  } else {
+    const u = ctx.user.activeUnitId ?? ctx.user.homeUnitId;
+    if (u) q = q.or(`unit_id.is.null,unit_id.eq.${u}`);
+    else q = q.is('unit_id', null);
   }
 
   if (parsed.data.q) q = q.ilike('name', `%${parsed.data.q}%`);
@@ -111,8 +111,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     sku = rawBody.sku ? String(rawBody.sku) : null;
   }
 
-  const cap = unit_id ? 'masters.write' : 'masters.write.global';
-  const ctx = await requireApiCapability(req, cap, unit_id ?? null);
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const idemKey = getIdempotencyKey(req);

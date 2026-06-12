@@ -1,9 +1,8 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { upsertScaleItemSchema } from '@/lib/schemas';
-import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 
@@ -23,9 +22,6 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
     .eq('id', id)
     .maybeSingle();
   if (!scale) throw Errors.notFound('Scale not found');
-  if (!userHasCapability(ctx.user, 'ration.read', scale.unit_id)) {
-    throw Errors.forbidden('Requires capability: ration.read');
-  }
 
   const { data, error } = await ctx.supabase
     .from('v_ration_scale_items_current')
@@ -38,15 +34,14 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
 export const PUT = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const { id } = await params;
-  const ctxUser = await requireApiUser(req);
-  const { data: scale } = await ctxUser.supabase
+  const ctx = await requireApiUser(req);
+  const { data: scale } = await ctx.supabase
     .from('ration_scales')
     .select('unit_id')
     .eq('id', id)
     .maybeSingle();
   if (!scale) throw Errors.notFound('Scale not found');
 
-  const ctx = await requireApiCapability(req, 'ration.adjust', scale.unit_id);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const bodyText = await req.text();

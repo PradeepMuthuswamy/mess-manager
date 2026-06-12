@@ -1,9 +1,8 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { listAttendanceQuerySchema, saveAttendanceSchema } from '@/lib/schemas';
-import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { getAttendanceDay } from '@/lib/attendance/queries';
@@ -23,9 +22,6 @@ export const GET = withRoute(async (req: NextRequest) => {
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
   const { unit_id, attendance_date } = parsed.data;
-  if (!userHasCapability(ctx.user, 'attendance.read', unit_id)) {
-    throw Errors.forbidden('Requires capability: attendance.read');
-  }
 
   const data = await getAttendanceDay(unit_id, attendance_date, ctx.supabase);
   return ok({ data, meta: { next_cursor: null, has_more: false } });
@@ -36,11 +32,7 @@ export const PUT = withRoute(async (req: NextRequest) => {
   const parsed = saveAttendanceSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const ctx = await requireApiCapability(
-    req,
-    'attendance.write',
-    parsed.data.unit_id,
-  );
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const idemKey = getIdempotencyKey(req);

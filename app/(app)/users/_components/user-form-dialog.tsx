@@ -221,15 +221,28 @@ export function UserFormDialog({
     });
   };
 
-  const isSuperAdmin = currentUser.role === 'admin';
-  const displayRoles = isSuperAdmin ? ['user', 'manager', 'unit_admin', 'admin'] : ['user', 'manager'];
+  const isSuperAdmin = currentUser.role === 'super_admin';
+  const isUnitManager = currentUser.role === 'unit_admin' || currentUser.role === 'mess_secretary';
+  const displayRoles = isSuperAdmin 
+    ? ['user', 'manager', 'unit_admin', 'super_admin', 'mess_secretary', 'mess_havildar', 'bar_nco', 'property_nco'] 
+    : isUnitManager
+      ? ['user', 'manager', 'mess_secretary', 'mess_havildar', 'bar_nco', 'property_nco']
+      : ['user', 'manager'];
 
   const formatRoleLabel = (r: string) => {
     switch (r) {
-      case 'admin':
+      case 'super_admin':
         return 'Super Admin';
       case 'unit_admin':
         return 'Unit Admin';
+      case 'mess_secretary':
+        return 'Mess Secretary';
+      case 'mess_havildar':
+        return 'Mess Havildar';
+      case 'bar_nco':
+        return 'Bar NCO';
+      case 'property_nco':
+        return 'Property NCO';
       case 'manager':
         return 'Manager';
       default:

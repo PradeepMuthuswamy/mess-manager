@@ -45,6 +45,7 @@ import type {
 import type { InventoryCategory } from '@/lib/masters/categories';
 import { AddStockDialog } from './add-stock-dialog';
 import { EditStockDialog } from './edit-stock-dialog';
+import { AddMasterItemDialog } from './add-master-item-dialog';
 
 function formatNum(n: number): string {
   if (!Number.isFinite(n)) return '—';
@@ -87,8 +88,15 @@ export function StockTable({
   const [editing, setEditing] = useState<InventoryLotRow | null>(null);
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
 
+  const [showNewMasterItem, setShowNewMasterItem] = useState(false);
+  const [extraItems, setExtraItems] = useState<MasterItemPick[]>([]);
+  const [selectedItemId, setSelectedItemId] = useState('');
+
   const refresh = useCallback(() => router.refresh(), [router]);
-  const closeAdd = useCallback(() => setCreating(false), []);
+  const closeAdd = useCallback(() => {
+    setCreating(false);
+    setSelectedItemId('');
+  }, []);
   const closeEdit = useCallback(() => setEditing(null), []);
 
   const selectedIds = useMemo(() => {
@@ -313,7 +321,7 @@ export function StockTable({
           </Button>
         )}
         <div className="flex-1" />
-        {canWrite ? (
+        {canWrite && category !== 'grocery' ? (
           <Button
             onClick={() => setCreating(true)}
             className="transition-ds press"
@@ -350,7 +358,11 @@ export function StockTable({
                 <TableCell colSpan={columns.length} className="p-0">
                   <EmptyState
                     title={`No ${categoryLabel.toLowerCase()} stock yet`}
-                    description={`Add a ${categoryLabel.toLowerCase()} purchase lot to start tracking stock for this unit.`}
+                    description={
+                      category === 'grocery'
+                        ? 'No grocery stock is currently tracked for this unit.'
+                        : `Add a ${categoryLabel.toLowerCase()} purchase lot to start tracking stock for this unit.`
+                    }
                     className="rounded-none border-0"
                   />
                 </TableCell>
@@ -373,14 +385,18 @@ export function StockTable({
         </Table>
       </div>
 
-      {creating ? (
+      {creating && category !== 'grocery' ? (
         <AddStockDialog
           open
           category={category}
           masterItems={masterItems}
+          extraItems={extraItems}
+          itemId={selectedItemId}
+          setItemId={setSelectedItemId}
           canManageMasters={canManageMasters}
           onClose={closeAdd}
           onChanged={refresh}
+          onCreateMasterItem={() => setShowNewMasterItem(true)}
         />
       ) : null}
       {editing ? (
@@ -389,6 +405,26 @@ export function StockTable({
           lot={editing}
           onClose={closeEdit}
           onChanged={refresh}
+        />
+      ) : null}
+      {canManageMasters && showNewMasterItem ? (
+        <AddMasterItemDialog
+          open
+          category={category}
+          onClose={() => setShowNewMasterItem(false)}
+          onCreated={(item) => {
+            setShowNewMasterItem(false);
+            const fullItem: MasterItemPick = {
+              ...item,
+              pack_label: '',
+              pack_kind: null,
+              volume_ml: null,
+              unit_count: null,
+            };
+            setExtraItems((prev) => [fullItem, ...prev]);
+            setSelectedItemId(item.id);
+            refresh();
+          }}
         />
       ) : null}
     </div>

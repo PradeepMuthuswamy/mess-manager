@@ -1,9 +1,8 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { updateScaleSchema } from '@/lib/schemas';
-import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import type { Database } from '@/lib/supabase/database.types';
@@ -27,23 +26,19 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
   if (error) throw Errors.internal(error.message);
   if (!data) throw Errors.notFound('Scale not found');
 
-  if (!userHasCapability(ctx.user, 'ration.read', data.unit_id)) {
-    throw Errors.forbidden('Requires capability: ration.read');
-  }
   return ok(data);
 });
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctxUser = await requireApiUser(req);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
-  const { data: existing } = await ctxUser.supabase
+  const { data: existing } = await ctx.supabase
     .from('ration_scales')
     .select('unit_id')
     .eq('id', id)
     .maybeSingle();
   if (!existing) throw Errors.notFound('Scale not found');
 
-  const ctx = await requireApiCapability(req, 'ration.adjust', existing.unit_id);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const bodyText = await req.text();
@@ -74,16 +69,14 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 });
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctxUser = await requireApiUser(req);
+  const ctx = await requireApiUser(req);
   const { id } = await params;
-  const { data: existing } = await ctxUser.supabase
+  const { data: existing } = await ctx.supabase
     .from('ration_scales')
     .select('unit_id')
     .eq('id', id)
     .maybeSingle();
   if (!existing) throw Errors.notFound('Scale not found');
-
-  const ctx = await requireApiCapability(req, 'ration.adjust', existing.unit_id);
 
   const { error } = await ctx.supabase
     .from('ration_scales')

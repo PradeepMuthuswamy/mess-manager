@@ -17,7 +17,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   // Admins need the list of units for the UnitSwitcher.
   let units: { id: string; name: string; code: string }[] = [];
-  if (user.role === 'admin') {
+  if (user.role === 'super_admin') {
     const supabase = await createClient();
     const { data } = await supabase
       .from('units')

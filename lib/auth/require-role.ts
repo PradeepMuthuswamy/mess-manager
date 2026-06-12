@@ -10,7 +10,7 @@ export async function requireUser(): Promise<AuthUser> {
   // Console and may not hold a session in the ops app. Any session they
   // still have here (e.g. created before this rule) is terminated via
   // the signout route — server components can't clear cookies directly.
-  if (u.role === 'admin') {
+  if (u.role === 'super_admin') {
     redirect('/auth/signout?error=admin_console');
   }
 

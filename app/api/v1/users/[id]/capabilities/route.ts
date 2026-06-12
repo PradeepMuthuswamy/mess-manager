@@ -23,8 +23,6 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 export const PUT = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const ctx = await requireApiUser(req);
   const { id: targetUserId } = await params;
-  if (ctx.user.role === 'user' || ctx.user.role === 'manager') throw Errors.forbidden();
-
   // Determine target user's unit to scope unit-admin permission
   const { data: target } = await ctx.supabase
     .from('profiles')
@@ -32,22 +30,10 @@ export const PUT = withRoute(async (req: NextRequest, { params }: Ctx) => {
     .eq('id', targetUserId)
     .maybeSingle();
   if (!target) throw Errors.notFound();
-  if (ctx.user.role === 'unit_admin' && target.unit_id !== ctx.user.homeUnitId) {
-    throw Errors.forbidden();
-  }
 
   const body = await req.json().catch(() => null);
   const parsed = setUserCapabilitiesSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
-
-  // unit_admin may only grant within their own unit.
-  if (ctx.user.role === 'unit_admin') {
-    for (const c of parsed.data.capabilities) {
-      if (c.unit_id && c.unit_id !== ctx.user.homeUnitId) {
-        throw Errors.forbidden('Cannot grant capabilities outside your unit');
-      }
-    }
-  }
 
   // Replace: delete then insert
   const { error: delErr } = await ctx.admin

@@ -9,12 +9,10 @@ import {
   listMasterItemsForPicker,
 } from '@/lib/stock/queries';
 import { EmptyState } from '@/components/shared/empty-state';
-import { StockTable } from './_components/stock-table';
-import { InventoryCategoryNav } from './_components/stock-category-nav';
+import { StockTabs, type StockCategoryData } from './_components/stock-tabs';
 import {
-  CATEGORY_META,
+  STOCK_PAGE_CATEGORIES,
   isInventoryCategory,
-  slugFromCategory,
   categoryFromSlug,
   CATEGORY_SLUGS,
   type InventoryCategory,
@@ -92,10 +90,22 @@ export default async function InventoryPage({
   }
 
   const unitId = user.activeUnitId;
-  const [rows, masterItems] = await Promise.all([
-    listInventory(unitId, { category }),
-    listMasterItemsForPicker(unitId, undefined, category),
-  ]);
+
+  // Preload every stockable category up front so the client tab strip can switch
+  // instantly with no per-tab server round-trip (the old `?cat=` link nav made
+  // each switch a full dynamic refetch that felt stuck). The dataset per unit is
+  // small; the queries run in parallel.
+  const entries = await Promise.all(
+    STOCK_PAGE_CATEGORIES.map(async (cat) => {
+      const [rows, masterItems] = await Promise.all([
+        listInventory(unitId, { category: cat }),
+        listMasterItemsForPicker(unitId, undefined, cat),
+      ]);
+      return [cat, { rows, masterItems }] as const;
+    }),
+  );
+  const categoryData: Partial<Record<InventoryCategory, StockCategoryData>> =
+    Object.fromEntries(entries);
 
   const canWrite = userHasCapability(user, INVENTORY_WRITE, unitId);
   // Inline master-item creation posts unit_id, so createMasterItemAction
@@ -115,13 +125,9 @@ export default async function InventoryPage({
         </p>
       </header>
 
-      <InventoryCategoryNav active={category} />
-
-      <StockTable
-        category={category}
-        categoryLabel={CATEGORY_META[slugFromCategory(category)]?.title ?? category}
-        rows={rows}
-        masterItems={masterItems}
+      <StockTabs
+        initialCategory={category}
+        categoryData={categoryData}
         canWrite={canWrite}
         canManageMasters={canManageMasters}
       />

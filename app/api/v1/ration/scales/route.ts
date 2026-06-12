@@ -1,9 +1,8 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { createScaleSchema, listScalesQuerySchema } from '@/lib/schemas';
-import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 
@@ -20,9 +19,6 @@ export const GET = withRoute(async (req: NextRequest) => {
 
   const unitId = parsed.data.unit_id ?? ctx.user.activeUnitId;
   if (!unitId) throw Errors.badRequest('unit_id is required');
-  if (!userHasCapability(ctx.user, 'ration.read', unitId)) {
-    throw Errors.forbidden('Requires capability: ration.read');
-  }
 
   let q = ctx.supabase
     .from('ration_scales')
@@ -48,7 +44,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = createScaleSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const ctx = await requireApiCapability(req, 'ration.adjust', parsed.data.unit_id);
+  const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const idemKey = getIdempotencyKey(req);

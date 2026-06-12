@@ -9,7 +9,7 @@ export default async function DashboardPage() {
   const user = await requireUser();
 
   // Premium Officer Role/Rank simulation
-  const mockRank = user.role === 'admin' ? 'Colonel' : user.role === 'unit_admin' ? 'Lieutenant Colonel' : 'Major';
+  const mockRank = user.role === 'super_admin' ? 'Colonel' : user.role === 'unit_admin' ? 'Lieutenant Colonel' : 'Major';
   const mockDinerId = `OM-${user.email.slice(0, 3).toUpperCase()}-402`;
 
   const todayMeals = [
