@@ -61,7 +61,7 @@ export const PUT = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
   const { data, error } = await ctx.supabase.rpc('set_ration_scale_item', {
     p_scale_id: id,
-    p_item_id: parsed.data.item_id,
+    p_variant_id: parsed.data.item_id,
     p_auth_qty: parsed.data.auth_qty,
     p_uom: parsed.data.uom,
     ...(parsed.data.notes != null ? { p_notes: parsed.data.notes } : {}),

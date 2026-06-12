@@ -28,3 +28,7 @@ export type EligibleItem = {
   category: string;
   uom: string;
 };
+
+export type RationStockTransactionRow = Database['public']['Tables']['ration_stock_transactions']['Row'];
+export type RationConsumptionRow = Database['public']['Tables']['ration_consumptions']['Row'];
+

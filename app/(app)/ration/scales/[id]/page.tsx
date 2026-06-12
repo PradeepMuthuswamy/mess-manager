@@ -36,10 +36,10 @@ export default async function RationScalePage({
 
   const [items, eligible] = await Promise.all([
     listScaleItemsCurrent(scale.id),
-    listEligibleItems(scale.unit_id),
+    listEligibleItems(scale.unit_id ?? ''),
   ]);
 
-  const canWrite = userHasCapability(user, 'ration.adjust', scale.unit_id);
+  const canWrite = userHasCapability(user, 'ration.adjust', scale.unit_id ?? undefined);
 
   return (
     <section className="space-y-6">
@@ -92,7 +92,7 @@ export default async function RationScalePage({
 
       <ScaleItemsTable
         scaleId={scale.id}
-        unitId={scale.unit_id}
+        unitId={scale.unit_id ?? ''}
         rows={items}
         eligible={eligible}
         canWrite={canWrite}

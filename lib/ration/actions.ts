@@ -87,10 +87,10 @@ export async function bulkUpdateScaleItemsAction(input: {
 
   const { data: current, error: curErr } = await supabase
     .from('ration_scale_item_versions')
-    .select('item_id, auth_qty, uom')
+    .select('variant_id, auth_qty, uom')
     .eq('scale_id', parsed.data.scale_id)
     .is('valid_to', null)
-    .in('item_id', parsed.data.item_ids);
+    .in('variant_id', parsed.data.item_ids);
   if (curErr) return { error: curErr.message };
 
   const result: BulkUpdateScaleResult = {
@@ -104,7 +104,7 @@ export async function bulkUpdateScaleItemsAction(input: {
   const effective = new Date().toISOString();
 
   for (const itemId of parsed.data.item_ids) {
-    const row = (current ?? []).find((r) => r.item_id === itemId);
+    const row = (current ?? []).find((r) => r.variant_id === itemId);
     if (!row) {
       result.skipped++;
       result.errors.push({ item_id: itemId, message: 'No open authorisation' });
@@ -132,7 +132,7 @@ export async function bulkUpdateScaleItemsAction(input: {
 
     const { error: rpcErr } = await supabase.rpc('set_ration_scale_item', {
       p_scale_id: parsed.data.scale_id,
-      p_item_id: itemId,
+      p_variant_id: itemId,
       p_auth_qty: next,
       p_uom: row.uom,
       ...(parsed.data.notes ? { p_notes: parsed.data.notes } : {}),
@@ -233,7 +233,7 @@ export async function upsertScaleItemAction(_prev: unknown, formData: FormData) 
 
   const { data, error } = await supabase.rpc('set_ration_scale_item', {
     p_scale_id: scaleId,
-    p_item_id: parsed.data.item_id,
+    p_variant_id: parsed.data.item_id,
     p_auth_qty: parsed.data.auth_qty,
     p_uom: parsed.data.uom,
     ...(parsed.data.notes != null ? { p_notes: parsed.data.notes } : {}),
@@ -267,7 +267,7 @@ export async function removeScaleItemAction(_prev: unknown, formData: FormData) 
     .from('ration_scale_item_versions')
     .update({ valid_to: new Date().toISOString() })
     .eq('scale_id', scaleId)
-    .eq('item_id', itemId)
+    .eq('variant_id', itemId)
     .is('valid_to', null);
   if (error) return { error: error.message };
 
@@ -315,7 +315,7 @@ export async function bulkImportScaleItemsAction(input: {
 
     // Resolve item_id by name within unit (or global), restricted to ration/grocery.
     const { data: matches, error: lookupErr } = await supabase
-      .from('items')
+      .from('v_items_current')
       .select('id, name')
       .ilike('name', row.item_name)
       .in('category', ['ration', 'grocery'])
@@ -348,7 +348,7 @@ export async function bulkImportScaleItemsAction(input: {
 
     const { error: rpcErr } = await supabase.rpc('set_ration_scale_item', {
       p_scale_id: input.scale_id,
-      p_item_id: matches[0].id,
+      p_variant_id: matches[0].id!,
       p_auth_qty: row.auth_qty,
       p_uom: row.uom,
       ...(row.notes != null ? { p_notes: row.notes } : {}),
@@ -388,12 +388,126 @@ export async function getScaleItemHistoryAction(
   const { data, error } = await supabase
     .from('ration_scale_item_versions')
     .select(
-      'id, scale_id, item_id, auth_qty, uom, notes, valid_from, valid_to, created_at, created_by',
+      'id, scale_id, variant_id, auth_qty, uom, notes, valid_from, valid_to, created_at, created_by',
     )
     .eq('scale_id', scaleId)
-    .eq('item_id', itemId)
+    .eq('variant_id', itemId)
     .order('valid_from', { ascending: false });
   if (error) return { error: error.message };
 
   return { ok: true, rows: (data ?? []) as RationScaleItemVersionRow[] };
 }
+
+export async function postDailyRationConsumptionAction(input: {
+  unit_id: string;
+  consumption_date: string;
+  items: Array<{
+    variant_id: string;
+    quantity: number;
+  }>;
+}): Promise<{ ok?: boolean; error?: string }> {
+  const parsed = saveDailyConsumptionSchema.safeParse(input);
+  if (!parsed.success) return { error: 'Invalid input' };
+
+  const { unit_id, consumption_date, items } = parsed.data;
+
+  const supabase = await createClient();
+  try {
+    await requireCapability('ration.issue', unit_id);
+  } catch (e) {
+    try {
+      await requireCapability('ration.adjust', unit_id);
+    } catch (err) {
+      return { error: 'Unauthorized' };
+    }
+  }
+
+  const { error } = await supabase
+    .from('ration_consumptions')
+    .upsert(
+      items.map((i) => ({
+        unit_id,
+        consumption_date,
+        variant_id: i.variant_id,
+        quantity: i.quantity,
+      })),
+      { onConflict: 'unit_id,consumption_date,variant_id' }
+    );
+
+  if (error) return { error: error.message };
+
+  revalidatePath('/ration');
+  return { ok: true };
+}
+
+export async function rollbackDailyRationConsumptionAction(input: {
+  unit_id: string;
+  consumption_date: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  if (!input.unit_id || !input.consumption_date) return { error: 'Missing input' };
+
+  const supabase = await createClient();
+  try {
+    await requireCapability('ration.issue', input.unit_id);
+  } catch (e) {
+    try {
+      await requireCapability('ration.adjust', input.unit_id);
+    } catch (err) {
+      return { error: 'Unauthorized' };
+    }
+  }
+
+  const { error } = await supabase
+    .from('ration_consumptions')
+    .delete()
+    .eq('unit_id', input.unit_id)
+    .eq('consumption_date', input.consumption_date);
+
+  if (error) return { error: error.message };
+
+  revalidatePath('/ration');
+  return { ok: true };
+}
+
+export async function createRationStockTransactionAction(input: {
+  unit_id: string;
+  variant_id: string;
+  transaction_date: string;
+  type: 'receipt' | 'adjustment' | 'return_to_source';
+  quantity: number;
+  rate: number;
+  amount: number;
+  source?: string;
+  notes?: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  const parsed = createRationStockTransactionSchema.safeParse(input);
+  if (!parsed.success) return { error: 'Invalid input' };
+
+  // Gate capability: require ration.adjust for unit_id
+  const { unit_id } = parsed.data;
+  await requireCapability('ration.adjust', unit_id);
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from('ration_stock_transactions')
+    .insert({
+      unit_id,
+      variant_id: parsed.data.variant_id,
+      transaction_date: parsed.data.transaction_date,
+      type: parsed.data.type,
+      quantity: parsed.data.quantity,
+      rate: parsed.data.rate,
+      amount: parsed.data.amount,
+      source: parsed.data.source || null,
+      notes: parsed.data.notes || null,
+    });
+
+  if (error) return { error: error.message };
+
+  revalidatePath('/ration');
+  return { ok: true };
+}
+
+import { saveDailyConsumptionSchema, createRationStockTransactionSchema } from '@/lib/schemas/ration';
+
+

@@ -9,7 +9,12 @@ do $$
 declare
   r record;
   v_item_id uuid;
+  v_has_products boolean;
 begin
+  select exists (
+    select 1 from pg_tables where schemaname = 'public' and tablename = 'products'
+  ) into v_has_products;
+
   for r in
     select * from (values
       -- name, uom, indicative_rate
@@ -46,18 +51,46 @@ begin
       ('Tetra Milk',          'l'::public.uom,      75.00)
     ) as t(name, uom, rate)
   loop
-    select id into v_item_id
-      from public.items
-     where unit_id is null
-       and category = 'ration'
-       and lower(name) = lower(r.name);
+    if v_has_products then
+      select id into v_item_id
+        from public.products
+       where unit_id is null
+         and category_id = '00000000-0000-0000-0000-000000000005'::uuid
+         and lower(name) = lower(r.name);
 
-    if v_item_id is null then
-      insert into public.items (unit_id, category, name, uom)
-      values (null, 'ration', r.name, r.uom)
-      returning id into v_item_id;
+      if v_item_id is null then
+        insert into public.products (unit_id, category_id, name)
+        values (null, '00000000-0000-0000-0000-000000000005'::uuid, r.name)
+        returning id into v_item_id;
 
-      perform public.set_item_rate(v_item_id, r.rate, null, 'Seeded from standard ration scale.');
+        insert into public.product_variants (product_id, unit_value, unit_type, package_type)
+        values (
+          v_item_id,
+          1.000,
+          case r.uom
+            when 'kg' then 'KG'::public.unit_type
+            when 'g' then 'GRAM'::public.unit_type
+            when 'l' then 'LITRE'::public.unit_type
+            when 'ml' then 'ML'::public.unit_type
+            else 'PIECE'::public.unit_type
+          end,
+          'LOOSE'::public.package_type
+        );
+      end if;
+    else
+      select id into v_item_id
+        from public.items
+       where unit_id is null
+         and category = 'ration'
+         and lower(name) = lower(r.name);
+
+      if v_item_id is null then
+        insert into public.items (unit_id, category, name, uom)
+        values (null, 'ration', r.name, r.uom)
+        returning id into v_item_id;
+
+        perform public.set_item_rate(v_item_id, r.rate, null, 'Seeded from standard ration scale.');
+      end if;
     end if;
   end loop;
 end$$;
@@ -76,7 +109,12 @@ declare
   v_qty         numeric;
   v_multiplier  numeric;
   v_uom         public.uom;
+  v_has_products boolean;
 begin
+  select exists (
+    select 1 from pg_tables where schemaname = 'public' and tablename = 'products'
+  ) into v_has_products;
+
   for u in select id, name from public.units loop
 
     for scale_def in
@@ -124,11 +162,21 @@ begin
           ('LPG',                  0.060,       0.125,       'kg'::public.uom)
         ) as t(item_name, officer_qty, jco_or_qty, qty_uom)
       loop
-        select id into v_item_id
-          from public.items
-         where unit_id is null
-           and category = 'ration'
-           and lower(name) = lower(ent.item_name);
+        if v_has_products then
+          select pv.id into v_item_id
+            from public.product_variants pv
+            join public.products p on p.id = pv.product_id
+           where p.unit_id is null
+             and p.category_id = '00000000-0000-0000-0000-000000000005'::uuid
+             and lower(p.name) = lower(ent.item_name)
+           limit 1;
+        else
+          select id into v_item_id
+            from public.items
+           where unit_id is null
+             and category = 'ration'
+             and lower(name) = lower(ent.item_name);
+        end if;
 
         if v_item_id is null then
           continue;
@@ -140,14 +188,23 @@ begin
                  end * v_multiplier;
         v_uom := ent.qty_uom;
 
-        -- Skip if already authorised (open row exists) — set_ration_scale_item is
-        -- idempotent on identical rows, but we also dedupe here to avoid noise.
-        if not exists (
-          select 1 from public.ration_scale_item_versions
-           where scale_id = v_scale_id and item_id = v_item_id and valid_to is null
-        ) then
-          perform public.set_ration_scale_item(v_scale_id, v_item_id, v_qty, v_uom,
-                                               'Seeded from standard ration scale.');
+        -- Skip if already authorised (open row exists)
+        if v_has_products then
+          if not exists (
+            select 1 from public.ration_scale_item_versions
+             where scale_id = v_scale_id and variant_id = v_item_id and valid_to is null
+          ) then
+            perform public.set_ration_scale_item(v_scale_id, v_item_id, v_qty, v_uom,
+                                                 'Seeded from standard ration scale.');
+          end if;
+        else
+          if not exists (
+            select 1 from public.ration_scale_item_versions
+             where scale_id = v_scale_id and item_id = v_item_id and valid_to is null
+          ) then
+            perform public.set_ration_scale_item(v_scale_id, v_item_id, v_qty, v_uom,
+                                                 'Seeded from standard ration scale.');
+          end if;
         end if;
       end loop;
     end loop;

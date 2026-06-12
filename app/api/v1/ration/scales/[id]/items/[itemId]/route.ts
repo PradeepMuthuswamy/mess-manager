@@ -25,9 +25,9 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
   const { data, error } = await ctx.supabase
     .from('ration_scale_item_versions')
-    .select('id, scale_id, item_id, auth_qty, uom, notes, valid_from, valid_to, created_at, created_by')
+    .select('id, scale_id, variant_id, auth_qty, uom, notes, valid_from, valid_to, created_at, created_by')
     .eq('scale_id', id)
-    .eq('item_id', itemId)
+    .eq('variant_id', itemId)
     .order('valid_from', { ascending: false });
   if (error) throw Errors.internal(error.message);
   return ok({ data, meta: { next_cursor: null, has_more: false } });
@@ -49,7 +49,7 @@ export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
     .from('ration_scale_item_versions')
     .update({ valid_to: new Date().toISOString() })
     .eq('scale_id', id)
-    .eq('item_id', itemId)
+    .eq('variant_id', itemId)
     .is('valid_to', null);
   if (error) throw Errors.internal(error.message);
   return noContent();

@@ -88,3 +88,31 @@ export type UpdateScaleInput = z.infer<typeof updateScaleSchema>;
 export type UpsertScaleItemInput = z.infer<typeof upsertScaleItemSchema>;
 export type BulkUpdateScaleItemsInput = z.infer<typeof bulkUpdateScaleItemsSchema>;
 export type ListScalesQuery = z.infer<typeof listScalesQuerySchema>;
+
+export const dailyConsumptionInputSchema = z.object({
+  variant_id: z.string().uuid(),
+  quantity: z.coerce.number().nonnegative(),
+});
+
+export const saveDailyConsumptionSchema = z.object({
+  unit_id: z.string().uuid(),
+  consumption_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  items: z.array(dailyConsumptionInputSchema),
+});
+
+export const createRationStockTransactionSchema = z.object({
+  unit_id: z.string().uuid(),
+  variant_id: z.string().uuid(),
+  transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  type: z.enum(['receipt', 'adjustment', 'return_to_source']),
+  quantity: z.coerce.number().positive(),
+  rate: z.coerce.number().nonnegative(),
+  amount: z.coerce.number().nonnegative(),
+  source: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(300).optional(),
+});
+
+export type DailyConsumptionInput = z.infer<typeof dailyConsumptionInputSchema>;
+export type SaveDailyConsumptionInput = z.infer<typeof saveDailyConsumptionSchema>;
+export type CreateRationStockTransactionInput = z.infer<typeof createRationStockTransactionSchema>;
+
