@@ -16,44 +16,40 @@ import { toast } from "sonner"
 import { createBookingAction, updateBookingAction, fetchAvailableRoomsAction } from "@/lib/guest-rooms/actions"
 import type { Booking, Room } from "@/lib/guest-rooms/types"
 import { format, addDays } from "date-fns"
+import { useAppContext } from "@/lib/auth/context"
 import { FormError } from "@/components/shared/form-error"
 
 interface BookingFormProps {
   open: boolean
   onClose: () => void
-  unitId: string
   booking?: Booking | null
 }
 
-export function BookingForm({ open, onClose, unitId, booking }: BookingFormProps) {
-  const isEditing = !!booking
+export function BookingForm({ open, onClose, booking }: BookingFormProps) {
+  const { activeUnitId } = useAppContext()
+  const isEditing = !!booking && !!booking.id
   
-  const [guestName, setGuestName] = useState("")
-  const [guestRank, setGuestRank] = useState("")
-  const [checkIn, setCheckIn] = useState("")
-  const [checkOut, setCheckOut] = useState("")
-  const [roomId, setRoomId] = useState("")
+  const [guestName, setGuestName] = useState(booking?.guest_name ?? "")
+  const [guestRank, setGuestRank] = useState(booking?.guest_rank ?? "")
+  const [guestPhone, setGuestPhone] = useState(booking?.guest_phone ?? "")
+  const [guestEmail, setGuestEmail] = useState(booking?.guest_email ?? "")
+  const [checkIn, setCheckIn] = useState(booking?.check_in_date ?? format(new Date(), 'yyyy-MM-dd'))
+  const [checkOut, setCheckOut] = useState(booking?.check_out_date ?? format(addDays(new Date(), 1), 'yyyy-MM-dd'))
+  const [roomId, setRoomId] = useState(booking?.room_id ?? "")
   const [availableRooms, setAvailableRooms] = useState<Room[]>([])
   const [isFetchingRooms, setIsFetchingRooms] = useState(false)
 
-  // Initialize form state when opening or when booking changes
   useEffect(() => {
-    if (!open) return;
-    
-    if (booking) {
-      setGuestName(booking.guest_name)
-      setGuestRank(booking.guest_rank ?? "")
-      setCheckIn(booking.check_in_date)
-      setCheckOut(booking.check_out_date)
-      setRoomId(booking.room_id)
-    } else {
-      setGuestName("")
-      setGuestRank("")
-      setCheckIn(format(new Date(), 'yyyy-MM-dd'))
-      setCheckOut(format(addDays(new Date(), 1), 'yyyy-MM-dd'))
-      setRoomId("")
+    if (open) {
+      setGuestName(booking?.guest_name ?? "")
+      setGuestRank(booking?.guest_rank ?? "")
+      setGuestPhone(booking?.guest_phone ?? "")
+      setGuestEmail(booking?.guest_email ?? "")
+      setCheckIn(booking?.check_in_date ?? format(new Date(), 'yyyy-MM-dd'))
+      setCheckOut(booking?.check_out_date ?? format(addDays(new Date(), 1), 'yyyy-MM-dd'))
+      setRoomId(booking?.room_id ?? "")
     }
-  }, [booking, open])
+  }, [open, booking])
 
   useEffect(() => {
     if (!open) return
@@ -66,7 +62,7 @@ export function BookingForm({ open, onClose, unitId, booking }: BookingFormProps
       }
 
       setIsFetchingRooms(true)
-      const res = await fetchAvailableRoomsAction(unitId, checkIn, checkOut)
+      const res = await fetchAvailableRoomsAction(activeUnitId!, checkIn, checkOut)
       if (res.data) {
         setAvailableRooms(res.data as Room[])
       }
@@ -74,14 +70,16 @@ export function BookingForm({ open, onClose, unitId, booking }: BookingFormProps
     }
 
     updateAvailableRooms()
-  }, [unitId, checkIn, checkOut, open])
+  }, [activeUnitId, checkIn, checkOut, open])
 
   const [state, formAction, pending] = useActionState(
     async (_prevState: { ok?: boolean; error?: string } | null, formData: FormData) => {
       const data = {
-        unit_id: unitId,
+        unit_id: activeUnitId!,
         guest_name: formData.get("guest_name") as string,
         guest_rank: formData.get("guest_rank") as string,
+        guest_phone: (formData.get("guest_phone") as string) || null,
+        guest_email: (formData.get("guest_email") as string) || null,
         check_in_date: formData.get("check_in_date") as string,
         check_out_date: formData.get("check_out_date") as string,
         room_id: formData.get("room_id") as string,
@@ -147,6 +145,30 @@ export function BookingForm({ open, onClose, unitId, booking }: BookingFormProps
               onChange={(e) => setGuestRank(e.target.value)}
               placeholder="e.g. Major, Director"
             />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="guest_phone" className="text-sm font-medium">Guest Phone (Optional)</Label>
+              <Input
+                id="guest_phone"
+                name="guest_phone"
+                value={guestPhone}
+                onChange={(e) => setGuestPhone(e.target.value)}
+                placeholder="e.g. +91 98765 43210"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="guest_email" className="text-sm font-medium">Guest Email (Optional)</Label>
+              <Input
+                id="guest_email"
+                name="guest_email"
+                type="email"
+                value={guestEmail}
+                onChange={(e) => setGuestEmail(e.target.value)}
+                placeholder="e.g. guest@example.com"
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

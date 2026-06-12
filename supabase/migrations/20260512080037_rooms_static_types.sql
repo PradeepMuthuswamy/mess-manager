@@ -2,9 +2,14 @@
 drop view if exists public.v_rooms_current;
 
 -- Clean up any existing references to rooms category in room_bill_items
-update public.room_bill_items
-   set item_id = null
- where item_id in (select id from public.items where category = 'room');
+do $$
+begin
+  if exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'items') then
+    update public.room_bill_items
+       set item_id = null
+     where item_id in (select id from public.items where category = 'room');
+  end if;
+end $$;
 
 -- Alter table public.rooms
 alter table public.rooms drop constraint if exists rooms_room_type_id_fkey;
@@ -66,10 +71,15 @@ comment on view public.v_rooms_current is
 grant select on public.v_rooms_current to authenticated;
 
 -- Clean up items of category 'room' from items and item_versions
-delete from public.item_versions iv
-using public.items i
-where iv.item_id = i.id
-  and i.category = 'room';
+do $$
+begin
+  if exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'items') then
+    delete from public.item_versions iv
+    using public.items i
+    where iv.item_id = i.id
+      and i.category = 'room';
 
-delete from public.items
-where category = 'room';
+    delete from public.items
+    where category = 'room';
+  end if;
+end $$;

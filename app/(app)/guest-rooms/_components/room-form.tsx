@@ -27,12 +27,12 @@ import type {
   RoomInventoryRow,
 } from "@/lib/guest-rooms/types"
 
+import { useAppContext } from "@/lib/auth/context"
 import { FormError } from "@/components/shared/form-error"
 
 interface RoomFormProps {
   open: boolean
   onClose: () => void
-  unitId: string
   room?: Room | null
   furnitureCatalogue: UnitFurniture[]
 }
@@ -55,15 +55,15 @@ function newRow(furnitureId = ""): InventoryRow {
 export function RoomForm({
   open,
   onClose,
-  unitId,
   room,
   furnitureCatalogue,
 }: RoomFormProps) {
+  const { activeUnitId } = useAppContext()
   const isEditing = !!room
-  const [name, setName] = useState("")
-  const [status, setStatus] = useState<string>("available")
-  const [roomType, setRoomType] = useState<string>("Standard")
-  const [nightlyRate, setNightlyRate] = useState<number>(0)
+  const [name, setName] = useState(room?.name ?? "")
+  const [status, setStatus] = useState<string>(room?.status ?? "available")
+  const [roomType, setRoomType] = useState<string>(room?.room_type ?? "Standard")
+  const [nightlyRate, setNightlyRate] = useState<number>(room ? Number(room.nightly_rate) : 0)
 
   // Items created inline this session, merged over the server-provided
   // catalogue so a freshly-created item is immediately selectable without
@@ -85,42 +85,33 @@ export function RoomForm({
   const [creatingFurniture, startCreateFurniture] = useTransition()
 
   useEffect(() => {
-    if (!open) return
-    setAdded([])
-    setNewFurnName("")
-    setNewFurnKind("furniture")
-    if (room) {
-      setName(room.name)
-      setStatus(room.status)
-      setRoomType(room.room_type)
-      setNightlyRate(Number(room.nightly_rate))
-      // Load existing inventory for the room being edited.
-      fetchRoomInventoryAction(room.id).then((res) => {
-        if ("data" in res && res.data) {
-          setInventory(
-            res.data.map((r) => ({
-              _key: crypto.randomUUID(),
-              furniture_id: r.furniture_id,
-              quantity: r.quantity,
-              condition: r.condition as RoomInventoryRow["condition"],
-              notes: r.notes,
-            })),
-          )
-        } else {
-          setInventory([])
-        }
-      })
-    } else {
-      setName("")
-      setStatus("available")
-      setRoomType("Standard")
-      setNightlyRate(0)
-      setInventory([])
+    if (!room) return
+    let active = true
+    // Load existing inventory for the room being edited.
+    fetchRoomInventoryAction(room.id).then((res) => {
+      if (!active) return
+      if ("data" in res && res.data) {
+        setInventory(
+          res.data.map((r) => ({
+            _key: crypto.randomUUID(),
+            furniture_id: r.furniture_id,
+            quantity: r.quantity,
+            condition: r.condition as RoomInventoryRow["condition"],
+            notes: r.notes,
+          })),
+        )
+      } else {
+        setInventory([])
+      }
+    })
+    return () => {
+      active = false
     }
-  }, [room, open])
+  }, [room])
 
   const [state, formAction, pending] = useActionState(
-    async (_prev: { ok?: boolean; error?: string } | null) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async (_: { ok?: boolean; error?: string } | null) => {
       const cleanInventory = inventory
         .filter((r) => r.furniture_id)
         .map(({ furniture_id, quantity, condition, notes }) => ({
@@ -140,7 +131,7 @@ export function RoomForm({
         })
       }
       return await createRoomAction({
-        unit_id: unitId,
+        unit_id: activeUnitId!,
         name,
         status: status as Room["status"],
         room_type: roomType,
@@ -165,7 +156,7 @@ export function RoomForm({
     if (!trimmed) return
     startCreateFurniture(async () => {
       const res = await createFurnitureItemAction({
-        unit_id: unitId,
+        unit_id: activeUnitId!,
         name: trimmed,
         kind: newFurnKind,
       })

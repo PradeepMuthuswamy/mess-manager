@@ -1,19 +1,12 @@
-import { Suspense } from 'react';
 import { getCurrentUser } from '@/lib/auth/get-current-user';
 import { requireCapability } from '@/lib/auth/require-capability';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { BookingsCalendar } from './_components/bookings-calendar';
-import { BookingsTable } from './_components/bookings-table';
-import { RoomsList } from './_components/rooms-list';
-
-import { Skeleton } from '@/components/ui/skeleton';
+import { GuestRoomsDashboard } from './_components/guest-rooms-dashboard';
 import { EmptyState } from '@/components/shared/empty-state';
 import { DoorClosed } from 'lucide-react';
 
 export default async function GuestRoomsPage() {
   await requireCapability('rooms.read');
   const user = await getCurrentUser();
-  const canManageRoomTypes = user?.role === 'admin' || user?.role === 'unit_admin';
 
   if (!user || !user.activeUnitId) {
     return (
@@ -48,34 +41,7 @@ export default async function GuestRoomsPage() {
         </div>
       </div>
 
-      <Tabs defaultValue="calendar" className="w-full">
-        <TabsList>
-          <TabsTrigger value="calendar">Calendar</TabsTrigger>
-          <TabsTrigger value="bookings">Bookings</TabsTrigger>
-          <TabsTrigger value="rooms">Rooms</TabsTrigger>
-
-        </TabsList>
-
-        <TabsContent value="calendar" className="mt-4">
-          <Suspense fallback={<Skeleton className="h-[600px] w-full rounded-md" />}>
-            <BookingsCalendar unitId={user.activeUnitId} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="bookings" className="mt-4">
-          <Suspense fallback={<Skeleton className="h-96 w-full rounded-md" />}>
-            <BookingsTable unitId={user.activeUnitId} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="rooms" className="mt-4">
-          <Suspense fallback={<Skeleton className="h-96 w-full rounded-md" />}>
-            <RoomsList unitId={user.activeUnitId} />
-          </Suspense>
-        </TabsContent>
-
-
-      </Tabs>
+      <GuestRoomsDashboard unitId={user.activeUnitId} />
     </div>
   );
 }

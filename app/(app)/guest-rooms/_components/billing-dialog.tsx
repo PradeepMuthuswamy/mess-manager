@@ -1,27 +1,18 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { AdaptiveModal } from "@/components/shared/adaptive-modal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import {
   addBillItemAction,
-  createBillOrderAction,
   deleteBillItemAction,
-  deleteBillOrderAction,
   fetchBookingWithBillAction,
+  updateBillItemAction,
 } from "@/lib/guest-rooms/actions"
 import type { BookingWithBill } from "@/lib/guest-rooms/types"
 
@@ -30,9 +21,6 @@ interface BillingDialogProps {
   onClose: () => void
   booking: BookingWithBill | null
 }
-
-const MEALS = ["breakfast", "lunch", "dinner"] as const
-type Meal = (typeof MEALS)[number]
 
 const inr = (n: number) =>
   `₹${n.toLocaleString("en-IN", {
@@ -45,21 +33,44 @@ function lineTotal(i: { amount: number | string; quantity: number | string }) {
 }
 
 export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
+  const [prevBooking, setPrevBooking] = useState<BookingWithBill | null>(null)
   const [current, setCurrent] = useState<BookingWithBill | null>(booking)
   const [pending, startTransition] = useTransition()
 
-  useEffect(() => {
-    if (open) setCurrent(booking)
-  }, [open, booking])
+  // Form states for permanent entries
+  const [roomRentAmount, setRoomRentAmount] = useState("")
+  const [roomRentQty, setRoomRentQty] = useState("")
+  const [foodAmount, setFoodAmount] = useState("")
+  const [foodQty, setFoodQty] = useState("")
+
+  // Form state for dynamic misc entries
+  const [extra_, setExtra] = useState({ description: "", amount: "", quantity: "1" })
+
+  if (open && booking !== prevBooking) {
+    setPrevBooking(booking)
+    setCurrent(booking)
+
+    const rentItem = booking?.bill?.items?.find((i) => i.category === "room_rent")
+    const foodItem = booking?.bill?.items?.find((i) => i.category === "food" && i.meal_type === null)
+
+    setRoomRentAmount(rentItem ? String(rentItem.amount) : "0")
+    setRoomRentQty(rentItem ? String(rentItem.quantity) : "0")
+    setFoodAmount(foodItem ? String(foodItem.amount) : "900")
+    setFoodQty(foodItem ? String(foodItem.quantity) : "0")
+  }
 
   const bill = current?.bill ?? null
   const isDraft = bill?.status === "draft"
   const flat = bill?.items ?? []
   const orders = bill?.orders ?? []
 
-  const roomRent = flat.filter((i) => i.category === "room_rent")
-  const food = flat.filter((i) => i.category === "food")
-  const extra = flat.filter((i) => i.category === "misc")
+  const rentItem = flat.find((i) => i.category === "room_rent")
+  const baseFoodItem = flat.find((i) => i.category === "food" && i.meal_type === null)
+
+  // Miscellaneous extra items: anything that isn't the primary rent item or the primary base food item
+  const miscItems = flat.filter(
+    (i) => i.id !== rentItem?.id && i.id !== baseFoodItem?.id
+  )
 
   const total =
     flat.reduce((s, i) => s + lineTotal(i), 0) +
@@ -78,23 +89,41 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
       toast.success(ok)
       if (current) {
         const refreshed = await fetchBookingWithBillAction(current.id)
-        if (refreshed.data) setCurrent(refreshed.data)
+        if (refreshed.data) {
+          setCurrent(refreshed.data)
+          const rent = refreshed.data.bill?.items?.find((i) => i.category === "room_rent")
+          const food = refreshed.data.bill?.items?.find((i) => i.category === "food" && i.meal_type === null)
+          setRoomRentAmount(rent ? String(rent.amount) : "0")
+          setRoomRentQty(rent ? String(rent.quantity) : "0")
+          setFoodAmount(food ? String(food.amount) : "900")
+          setFoodQty(food ? String(food.quantity) : "0")
+        }
       }
     })
   }
 
-  // --- form state ---
-  const [food_, setFood] = useState({
-    description: "",
-    meal_type: "breakfast" as Meal,
-    amount: "",
-    quantity: "1",
-  })
-  const [extra_, setExtra] = useState({ description: "", amount: "", quantity: "1" })
-  const [order_, setOrder] = useState({ label: "", occurred_at: "" })
-  const [orderItem, setOrderItem] = useState<
-    Record<string, { description: string; amount: string; quantity: string }>
-  >({})
+  const handleUpdatePermanentItems = async () => {
+    if (!bill) return
+    startTransition(async () => {
+      try {
+        if (rentItem) {
+          await updateBillItemAction(rentItem.id, Number(roomRentAmount) || 0, Number(roomRentQty) || 0)
+        }
+        if (baseFoodItem) {
+          await updateBillItemAction(baseFoodItem.id, Number(foodAmount) || 0, Number(foodQty) || 0)
+        }
+        toast.success("Rates and quantities updated successfully")
+        if (current) {
+          const refreshed = await fetchBookingWithBillAction(current.id)
+          if (refreshed.data) {
+            setCurrent(refreshed.data)
+          }
+        }
+      } catch (err) {
+        toast.error("Failed to update rates")
+      }
+    })
+  }
 
   if (!current) return null
 
@@ -104,7 +133,7 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
       onClose={onClose}
       title="Guest Bill"
       description={`${current.guest_name} · Room ${current.room?.name ?? ""}`}
-      contentClassName="sm:max-w-2xl max-h-[90vh]"
+      contentClassName="sm:max-w-4xl max-h-[90vh]"
       footer={<Button variant="outline" onClick={onClose}>Close</Button>}
     >
       <div className="space-y-6 py-4">
@@ -122,429 +151,184 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">
                   Total
                 </p>
-                <p className="font-heading text-xl font-semibold tabular-nums text-foreground">
+                <p className="font-heading text-2xl font-bold tabular-nums text-foreground">
                   {inr(total)}
                 </p>
               </div>
             </div>
 
-            {/* Room rent */}
-            <section className="space-y-2">
-              <h4 className="text-sm font-medium text-foreground">Room rent</h4>
-              {roomRent.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No room rent recorded.</p>
-              ) : (
-                roomRent.map((i) => (
-                  <Row
-                    key={i.id}
-                    label={i.description}
-                    meta={`${i.quantity} × ${inr(Number(i.amount))}`}
-                    value={inr(lineTotal(i))}
-                    onDelete={
-                      isDraft
-                        ? () =>
-                            run(
-                              () => deleteBillItemAction(i.id),
-                              "Item removed",
-                            )
-                        : undefined
-                    }
-                    pending={pending}
-                  />
-                ))
-              )}
-            </section>
-
-            <Separator />
-
-            {/* Food by meal */}
-            <section className="space-y-3">
-              <h4 className="text-sm font-medium text-foreground">Food</h4>
-              {MEALS.map((m) => {
-                const rows = food.filter((i) => i.meal_type === m)
-                if (rows.length === 0) return null
-                return (
-                  <div key={m} className="space-y-1.5">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground capitalize">
-                      {m}
-                    </p>
-                    {rows.map((i) => (
-                      <Row
-                        key={i.id}
-                        label={i.description}
-                        meta={`${i.quantity} × ${inr(Number(i.amount))}`}
-                        value={inr(lineTotal(i))}
-                        onDelete={
-                          isDraft
-                            ? () =>
-                                run(
-                                  () => deleteBillItemAction(i.id),
-                                  "Item removed",
-                                )
-                            : undefined
-                        }
-                        pending={pending}
-                      />
-                    ))}
-                  </div>
-                )
-              })}
-              {food.length === 0 && (
-                <p className="text-xs text-muted-foreground">No food charges.</p>
-              )}
-              {isDraft && (
-                <div className="grid grid-cols-2 gap-2 rounded-md border border-dashed border-border p-3 sm:grid-cols-4">
-                  <Input
-                    className="col-span-2 sm:col-span-1"
-                    placeholder="Item (e.g. Omelette)"
-                    value={food_.description}
-                    onChange={(e) =>
-                      setFood({ ...food_, description: e.target.value })
-                    }
-                  />
-                  <Select
-                    value={food_.meal_type}
-                    onValueChange={(v) =>
-                      setFood({ ...food_, meal_type: v as Meal })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {MEALS.map((m) => (
-                        <SelectItem key={m} value={m} className="capitalize">
-                          {m}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    placeholder="Amount"
-                    value={food_.amount}
-                    onChange={(e) =>
-                      setFood({ ...food_, amount: e.target.value })
-                    }
-                  />
-                  <Input
-                    type="number"
-                    min="1"
-                    placeholder="Qty"
-                    value={food_.quantity}
-                    onChange={(e) =>
-                      setFood({ ...food_, quantity: e.target.value })
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    disabled={pending || !food_.description || !food_.amount}
-                    className="col-span-2 sm:col-span-4"
-                    onClick={() =>
-                      run(async () => {
-                        const r = await addBillItemAction(bill.id, {
-                          category: "food",
-                          meal_type: food_.meal_type,
-                          description: food_.description,
-                          amount: Number(food_.amount),
-                          quantity: Number(food_.quantity) || 1,
-                        })
-                        if (r.ok)
-                          setFood({
-                            description: "",
-                            meal_type: food_.meal_type,
-                            amount: "",
-                            quantity: "1",
-                          })
-                        return r
-                      }, "Food added")
-                    }
-                  >
-                    <Plus className="mr-1.5 h-4 w-4" />
-                    Add food
-                  </Button>
-                </div>
-              )}
-            </section>
-
-            <Separator />
-
-            {/* Adhoc orders */}
-            <section className="space-y-3">
-              <h4 className="text-sm font-medium text-foreground">Adhoc orders</h4>
-              {orders.length === 0 && (
-                <p className="text-xs text-muted-foreground">No adhoc orders.</p>
-              )}
-              {orders.map((o) => {
-                const oi = orderItem[o.id] ?? {
-                  description: "",
-                  amount: "",
-                  quantity: "1",
-                }
-                const oTotal = (o.items ?? []).reduce(
-                  (t, i) => t + lineTotal(i),
-                  0,
-                )
-                return (
-                  <div
-                    key={o.id}
-                    className="space-y-2 rounded-md border border-border p-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-foreground">
-                          {o.label}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {new Date(o.occurred_at).toLocaleString("en-IN", {
-                            dateStyle: "medium",
-                            timeStyle: "short",
-                          })}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono tabular-nums text-sm text-foreground">
-                          {inr(oTotal)}
-                        </span>
-                        {isDraft && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-muted-foreground"
-                            disabled={pending}
-                            onClick={() =>
-                              run(
-                                () => deleteBillOrderAction(o.id),
-                                "Order removed",
-                              )
-                            }
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            <span className="sr-only">Remove order</span>
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                    {(o.items ?? []).map((i) => (
-                      <Row
-                        key={i.id}
-                        label={i.description}
-                        meta={`${i.quantity} × ${inr(Number(i.amount))}`}
-                        value={inr(lineTotal(i))}
-                        onDelete={
-                          isDraft
-                            ? () =>
-                                run(
-                                  () => deleteBillItemAction(i.id),
-                                  "Item removed",
-                                )
-                            : undefined
-                        }
-                        pending={pending}
-                      />
-                    ))}
-                    {isDraft && (
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                        <Input
-                          className="col-span-2"
-                          placeholder="Item (e.g. Maggi)"
-                          value={oi.description}
-                          onChange={(e) =>
-                            setOrderItem({
-                              ...orderItem,
-                              [o.id]: { ...oi, description: e.target.value },
-                            })
-                          }
-                        />
-                        <Input
-                          type="number"
-                          step="0.01"
-                          placeholder="Amount"
-                          value={oi.amount}
-                          onChange={(e) =>
-                            setOrderItem({
-                              ...orderItem,
-                              [o.id]: { ...oi, amount: e.target.value },
-                            })
-                          }
-                        />
-                        <Input
-                          type="number"
-                          min="1"
-                          placeholder="Qty"
-                          value={oi.quantity}
-                          onChange={(e) =>
-                            setOrderItem({
-                              ...orderItem,
-                              [o.id]: { ...oi, quantity: e.target.value },
-                            })
-                          }
-                        />
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          className="col-span-2 sm:col-span-4"
-                          disabled={pending || !oi.description || !oi.amount}
-                          onClick={() =>
-                            run(async () => {
-                              const r = await addBillItemAction(bill.id, {
-                                category: "adhoc",
-                                order_id: o.id,
-                                description: oi.description,
-                                amount: Number(oi.amount),
-                                quantity: Number(oi.quantity) || 1,
-                              })
-                              if (r.ok)
-                                setOrderItem({
-                                  ...orderItem,
-                                  [o.id]: {
-                                    description: "",
-                                    amount: "",
-                                    quantity: "1",
-                                  },
-                                })
-                              return r
-                            }, "Item added")
-                          }
-                        >
-                          <Plus className="mr-1.5 h-4 w-4" />
-                          Add to order
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-              {isDraft && (
-                <div className="grid grid-cols-2 gap-2 rounded-md border border-dashed border-border p-3">
-                  <Input
-                    placeholder="Order label (e.g. Evening snack)"
-                    value={order_.label}
-                    onChange={(e) =>
-                      setOrder({ ...order_, label: e.target.value })
-                    }
-                  />
-                  <Input
-                    type="datetime-local"
-                    value={order_.occurred_at}
-                    onChange={(e) =>
-                      setOrder({ ...order_, occurred_at: e.target.value })
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    className="col-span-2"
-                    disabled={pending || !order_.label}
-                    onClick={() =>
-                      run(async () => {
-                        const r = await createBillOrderAction({
-                          bill_id: bill.id,
-                          label: order_.label,
-                          occurred_at: order_.occurred_at
-                            ? new Date(order_.occurred_at).toISOString()
-                            : undefined,
-                        })
-                        if (r.ok) setOrder({ label: "", occurred_at: "" })
-                        return r
-                      }, "Order created")
-                    }
-                  >
-                    <Plus className="mr-1.5 h-4 w-4" />
-                    New order
-                  </Button>
-                </div>
-              )}
-            </section>
-
-            <Separator />
-
-            {/* Extra charges (key/value) */}
-            <section className="space-y-2">
-              <h4 className="text-sm font-medium text-foreground">
-                Extra charges
+            {/* Permanent entries: Accommodation & Food */}
+            <section className="space-y-4">
+              <h4 className="text-sm font-semibold text-foreground font-heading">
+                Accommodation & Food Rates
               </h4>
-              <p className="text-xs text-muted-foreground">
-                Flexible line items — laundry, damages, discounts (use a
-                negative amount for a discount).
-              </p>
-              {extra.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No extra charges.
-                </p>
-              ) : (
-                extra.map((i) => (
-                  <Row
-                    key={i.id}
-                    label={i.description}
-                    meta={`${i.quantity} × ${inr(Number(i.amount))}`}
-                    value={inr(lineTotal(i))}
-                    onDelete={
-                      isDraft
-                        ? () =>
-                            run(
-                              () => deleteBillItemAction(i.id),
-                              "Item removed",
-                            )
-                        : undefined
-                    }
-                    pending={pending}
-                  />
-                ))
-              )}
+              
+              <div className="rounded-lg border border-border overflow-hidden bg-background">
+                <div className="grid grid-cols-12 gap-3 bg-muted/50 px-4 py-2.5 text-xs font-semibold text-muted-foreground border-b uppercase tracking-wider">
+                  <div className="col-span-5">Item Description</div>
+                  <div className="col-span-2 text-right">Rate (₹)</div>
+                  <div className="col-span-2 text-right">Quantity</div>
+                  <div className="col-span-3 text-right">Total (₹)</div>
+                </div>
+
+                <div className="divide-y divide-border">
+                  {/* Accommodation Row */}
+                  <div className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
+                    <div className="col-span-5 text-sm font-medium text-foreground">
+                      Accommodation (Room Rent)
+                    </div>
+                    <div className="col-span-2">
+                      <Input
+                        type="number"
+                        className="text-right h-8 text-sm"
+                        disabled={!isDraft || pending}
+                        value={roomRentAmount}
+                        onChange={(e) => setRoomRentAmount(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Input
+                        type="number"
+                        className="text-right h-8 text-sm"
+                        disabled={!isDraft || pending}
+                        value={roomRentQty}
+                        onChange={(e) => setRoomRentQty(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-3 text-right font-mono text-sm font-semibold text-foreground">
+                      {inr(Number(roomRentAmount || 0) * Number(roomRentQty || 0))}
+                    </div>
+                  </div>
+
+                  {/* Food Row */}
+                  <div className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
+                    <div className="col-span-5 text-sm font-medium text-foreground">
+                      Food (All Meals Included)
+                    </div>
+                    <div className="col-span-2">
+                      <Input
+                        type="number"
+                        className="text-right h-8 text-sm"
+                        disabled={!isDraft || pending}
+                        value={foodAmount}
+                        onChange={(e) => setFoodAmount(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Input
+                        type="number"
+                        className="text-right h-8 text-sm"
+                        disabled={!isDraft || pending}
+                        value={foodQty}
+                        onChange={(e) => setFoodQty(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-3 text-right font-mono text-sm font-semibold text-foreground">
+                      {inr(Number(foodAmount || 0) * Number(foodQty || 0))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {isDraft && (
-                <div className="grid grid-cols-2 gap-2 rounded-md border border-dashed border-border p-3 sm:grid-cols-4">
-                  <Input
-                    className="col-span-2"
-                    placeholder="Label (e.g. Laundry)"
-                    value={extra_.description}
-                    onChange={(e) =>
-                      setExtra({ ...extra_, description: e.target.value })
-                    }
-                  />
-                  <Input
-                    type="number"
-                    step="0.01"
-                    placeholder="Amount"
-                    value={extra_.amount}
-                    onChange={(e) =>
-                      setExtra({ ...extra_, amount: e.target.value })
-                    }
-                  />
-                  <Input
-                    type="number"
-                    min="1"
-                    placeholder="Qty"
-                    value={extra_.quantity}
-                    onChange={(e) =>
-                      setExtra({ ...extra_, quantity: e.target.value })
-                    }
-                  />
+                <div className="flex justify-end">
                   <Button
                     size="sm"
-                    className="col-span-2 sm:col-span-4"
-                    disabled={pending || !extra_.description || !extra_.amount}
-                    onClick={() =>
-                      run(async () => {
-                        const r = await addBillItemAction(bill.id, {
-                          category: "misc",
-                          description: extra_.description,
-                          amount: Number(extra_.amount),
-                          quantity: Number(extra_.quantity) || 1,
-                        })
-                        if (r.ok)
-                          setExtra({
-                            description: "",
-                            amount: "",
-                            quantity: "1",
-                          })
-                        return r
-                      }, "Charge added")
-                    }
+                    disabled={pending}
+                    onClick={handleUpdatePermanentItems}
                   >
-                    <Plus className="mr-1.5 h-4 w-4" />
-                    Add charge
+                    {pending ? "Updating..." : "Save Rates & Stay"}
                   </Button>
+                </div>
+              )}
+            </section>
+
+            <Separator />
+
+            {/* Extra charges (key/value dynamic form) */}
+            <section className="space-y-4">
+              <h4 className="text-sm font-semibold text-foreground font-heading">
+                Additional Charges
+              </h4>
+              
+              <div className="space-y-2">
+                {miscItems.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic py-2">No additional charges recorded.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {miscItems.map((i) => (
+                      <Row
+                        key={i.id}
+                        label={i.description}
+                        meta={`${i.quantity} × ${inr(Number(i.amount))}`}
+                        value={inr(lineTotal(i))}
+                        onDelete={
+                          isDraft
+                            ? () =>
+                                run(
+                                  () => deleteBillItemAction(i.id),
+                                  "Item removed",
+                                )
+                            : undefined
+                        }
+                        pending={pending}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {isDraft && (
+                <div className="grid grid-cols-12 gap-3 items-center rounded-lg border border-dashed border-border p-4 bg-muted/5">
+                  <div className="col-span-7">
+                    <Input
+                      placeholder="Charge description (e.g. Laundry, Damage, Extra Bed)"
+                      value={extra_.description}
+                      onChange={(e) =>
+                        setExtra({ ...extra_, description: e.target.value })
+                      }
+                      className="h-9 text-sm"
+                    />
+                  </div>
+                  <div className="col-span-3">
+                    <Input
+                      type="number"
+                      placeholder="Amount (₹)"
+                      value={extra_.amount}
+                      onChange={(e) =>
+                        setExtra({ ...extra_, amount: e.target.value })
+                      }
+                      className="h-9 text-sm text-right"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <Button
+                      size="sm"
+                      className="w-full h-9"
+                      disabled={pending || !extra_.description.trim() || !extra_.amount}
+                      onClick={() =>
+                        run(async () => {
+                          const r = await addBillItemAction(bill.id, {
+                            category: "misc",
+                            description: extra_.description,
+                            amount: Number(extra_.amount),
+                            quantity: 1,
+                          })
+                          if (r.ok) {
+                            setExtra({
+                              description: "",
+                              amount: "",
+                              quantity: "1",
+                            })
+                          }
+                          return r
+                        }, "Charge added")
+                      }
+                    >
+                      <Plus className="mr-1.5 h-4 w-4 shrink-0" />
+                      Add
+                    </Button>
+                  </div>
                 </div>
               )}
             </section>
@@ -552,10 +336,10 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
             <Separator />
 
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-muted-foreground">
+              <span className="text-base font-semibold text-muted-foreground">
                 Total due
               </span>
-              <span className="font-heading text-xl font-semibold tabular-nums text-foreground">
+              <span className="font-heading text-2xl font-bold tabular-nums text-foreground">
                 {inr(total)}
               </span>
             </div>
@@ -593,7 +377,7 @@ function Row({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground"
+            className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
             disabled={pending}
             onClick={onDelete}
           >
