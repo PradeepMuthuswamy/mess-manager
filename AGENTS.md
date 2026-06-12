@@ -18,15 +18,18 @@ Before doing anything else in this repo, load context from these two places:
 
 If you finish or change scope, update the memory **and** the task list before ending the session so the next pick-up is clean.
 
-# Officers Mess — project scope
+# Officers Mess — project scope (Client App)
 
-A multi-unit Officers Mess platform: ration scales, bar consumption, guest rooms, parties, billing. SSR web app + versioned REST API (`/api/v1/*`) so a future mobile client shares the backend.
+This is the client application (`officers-mess-user`) focused on per-unit, officer-facing operations (Messing, Attendance, Ration issuing, Bar consumption, Guest rooms, Parties, Billing, local Inventory lots, and Settings).
+
+Administrative controls (multi-unit management, capability templates, global audits, global catalog setup) reside in the companion `officer-mess-admin` project. Both applications share the same remote Supabase database (`lscphcinsukrdaoytbsx`). Database migrations, TypeScript database types (`database.types.ts`), Zod schemas, and core masters actions/queries must be kept synchronized across both codebases.
 
 **Stack:** Next.js 16.2 (App Router, React 19) · Supabase (Postgres + Auth + RLS) · shadcn/ui · Tailwind v4 · TypeScript · zod · Upstash rate limit.
 
 ## What is built (foundation)
 
 - **Auth:** Supabase SSR with cookie sessions refreshed in `proxy.ts`. Custom Access Token Hook function (`app.custom_access_token_hook`) mirrors `role` + `unit_id` into JWT `app_metadata` for fast RLS claims. **The hook is not yet enabled in the Supabase Dashboard**; migration `0014_role_lookup_fallback` lets `app.current_role()` / `app.current_unit_id()` fall back to a `profiles` lookup so the app works without it (one extra DB read per RLS evaluation).
+- **Auth emails:** all auth emails (recovery, invite, magic link) are sent by the app via Resend (`lib/email/resend.ts`) with first-party links `${NEXT_PUBLIC_SITE_URL}/auth/confirm?token_hash=…&type=…&next=…` built by `buildAuthConfirmLink()` (`lib/auth/email-links.ts`) from `generateLink().properties.hashed_token`; `app/auth/confirm/route.ts` verifies via `verifyOtp` and sets SSR cookies. **Never email `action_link` or use `resetPasswordForEmail`/`inviteUserByEmail`** — those produce fragment-based (`#access_token`) links the server can't read. The same pattern + an identical `resend.ts` live in `officer-mess-admin`; keep them in sync.
 - **RBAC:** roles (`user` / `manager` / `unit_admin` / `admin`) + capabilities bundled into `capability_templates`. Seeded templates: **Bar NCO**, **Mess Havildar** (full operational access in unit), **Mess Secretary** and **PMC** (admin-grade — recommended to also set role to `unit_admin`), Quartermaster, Guest Room Clerk, Party Coordinator. Helper functions (`app.is_admin()`, `app.has_capability()`, `app.current_role()`, etc.) are all `SECURITY DEFINER set search_path = ''`.
 - **Units:** multi-tenant. Admins switch active unit via navbar (`setActiveUnitAction`, admin-only); non-admins pinned to home unit. First admin user: `pradeep@commandhq.in` (created via bootstrap SQL, not the `bootstrap-admin` script — that script trips the `profiles_unit_required` check; see "Known footguns" below).
 - **Masters:** versioned (SCD-2) via `item_versions` and `set_item_rate()`. Categories: ration, soft-drinks, alcohol, cigar, grocery, room (room category exists in the enum but no admin UI; managed per-unit inside the guest-rooms feature). Each masters page has a **Bulk import** button — paste CSV, preview rows, batch-import via `set_item_rate`.

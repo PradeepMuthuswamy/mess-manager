@@ -1,9 +1,11 @@
 import { NextRequest } from 'next/server';
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { withRoute, ok } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
 import { forgotPasswordSchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
+import { createServiceClient } from '@/lib/supabase/service';
+import { sendPasswordResetEmail } from '@/lib/email/resend';
+import { buildAuthConfirmLink } from '@/lib/auth/email-links';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,13 +16,38 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = forgotPasswordSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const sb = createSupabaseClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { persistSession: false } }
-  );
-  await sb.auth.resetPasswordForEmail(parsed.data.email, {
-    redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/auth/callback?next=/reset-password`,
-  });
+  // Service role is needed for generateLink; this endpoint never reveals
+  // whether the account exists, and only ever emails the account owner.
+  const admin = createServiceClient();
+  const { data: profile } = await admin
+    .from('profiles')
+    .select('id, full_name')
+    .eq('email', parsed.data.email)
+    .maybeSingle();
+
+  if (profile) {
+    const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
+      type: 'recovery',
+      email: parsed.data.email,
+    });
+
+    if (!recoveryErr && recovery?.properties?.hashed_token) {
+      try {
+        await sendPasswordResetEmail({
+          email: parsed.data.email,
+          fullName: profile.full_name ?? undefined,
+          resetLink: buildAuthConfirmLink({
+            type: 'recovery',
+            hashedToken: recovery.properties.hashed_token,
+            next: '/reset-password',
+          }),
+        });
+      } catch (err) {
+        console.error('Failed to send reset email via Resend (API):', err);
+      }
+    }
+  }
+
+  // Always succeed to prevent account enumeration.
   return ok({ ok: true });
 });

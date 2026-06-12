@@ -3,8 +3,8 @@ import { updateSession } from '@/lib/supabase/middleware';
 
 export const config = {
   matcher: [
-    // Skip Next internals + static assets + the auth callback endpoint
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|auth/callback).*)',
+    // Skip Next internals + static assets + the auth callback/confirm endpoints
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|auth/callback|auth/confirm).*)',
   ],
 };
 

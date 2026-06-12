@@ -6,6 +6,8 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { inviteUserSchema } from '@/lib/schemas';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { AuthUser, Capability, Role } from '@/lib/auth/types';
+import { sendInvitationEmail } from '@/lib/email/resend';
+import { buildAuthConfirmLink } from '@/lib/auth/email-links';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,21 +47,49 @@ export const POST = withRoute(async (req: NextRequest) => {
   const targetUnit = parsed.data.unit_id ?? (user.role === 'unit_admin' ? user.homeUnitId : null);
 
   const admin = createServiceClient();
-  const { data: invited, error: invErr } = await admin.auth.admin.inviteUserByEmail(parsed.data.email, {
-    data: {
-      ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-      role: parsed.data.role,
-      unit_id: targetUnit,
+  const { data: invited, error: invErr } = await admin.auth.admin.generateLink({
+    type: 'invite',
+    email: parsed.data.email,
+    options: {
+      data: {
+        ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
+        role: parsed.data.role,
+        unit_id: targetUnit,
+      },
     },
-    redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/auth/callback?next=/accept-invite`,
   });
-  if (invErr || !invited.user) throw Errors.conflict(invErr?.message ?? 'Could not invite');
+  if (invErr || !invited?.user || !invited?.properties?.hashed_token) {
+    throw Errors.conflict(invErr?.message ?? 'Could not invite');
+  }
 
   await admin.from('profiles').update({
     role: parsed.data.role,
     unit_id: targetUnit,
     ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
   }).eq('id', invited.user.id);
+
+  // Get unit name for custom invite email
+  let unitName = 'Officers\' Mess';
+  if (targetUnit) {
+    const { data: unitData } = await admin.from('units').select('name').eq('id', targetUnit).maybeSingle();
+    if (unitData?.name) unitName = unitData.name;
+  }
+
+  try {
+    await sendInvitationEmail({
+      email: parsed.data.email,
+      fullName: parsed.data.full_name || undefined,
+      inviteLink: buildAuthConfirmLink({
+        type: 'invite',
+        hashedToken: invited.properties.hashed_token,
+        next: '/accept-invite',
+      }),
+      unitName,
+      role: parsed.data.role,
+    });
+  } catch (err) {
+    console.error('Failed to send invitation email via Resend in Admin API:', err);
+  }
 
   if (parsed.data.capability_template_id) {
     const { data: tpl } = await admin.from('capability_templates').select('capabilities').eq('id', parsed.data.capability_template_id).single();

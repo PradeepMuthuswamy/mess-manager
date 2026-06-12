@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <meta name="supported-color-schemes" content="light" />
+  <title>Confirm your email</title>
+  <style>
+    @media only screen and (max-width: 620px) {
+      .om-container { width: 100% !important; }
+      .om-card-pad { padding: 28px 22px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#eef0f3;-webkit-font-smoothing:antialiased;word-spacing:normal;">
+  <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">Confirm your email address to activate your Officers' Mess account.&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#eef0f3">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="om-container" style="width:600px;max-width:600px;">
+          <tr>
+            <td align="center" style="padding-bottom:24px;">
+              <span style="font-family:Georgia,'Times New Roman',serif;font-size:17px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#10182b;">Officers&rsquo;&nbsp;Mess</span>
+              <br />
+              <span style="font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:10px;letter-spacing:0.28em;text-transform:uppercase;color:#98a1af;">Unit Operations Platform</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#ffffff;border:1px solid #e3e6ea;border-radius:12px;overflow:hidden;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td height="4" bgcolor="#a8843c" style="height:4px;line-height:4px;font-size:0;">&nbsp;</td>
+                </tr>
+                <tr>
+                  <td class="om-card-pad" style="padding:40px 44px;">
+                    <p style="margin:0 0 6px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:#a8843c;">Email verification</p>
+                    <h1 style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:23px;font-weight:700;letter-spacing:-0.01em;line-height:1.3;color:#10182b;">Confirm your email</h1>
+                    <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#3d4757;">Welcome to the <strong>Officers&rsquo; Mess</strong> platform. To activate your account, please confirm that <strong>{{ .Email }}</strong> is your email address:</p>
+
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:32px auto;">
+      <tr>
+        <td align="center" bgcolor="#10182b" style="border-radius:8px;">
+          <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup&next=/dashboard" target="_blank" style="display:inline-block;padding:14px 40px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;letter-spacing:0.01em;">Confirm email</a>
+        </td>
+      </tr>
+    </table>
+
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:8px;">
+      <tr>
+        <td style="background-color:#f6f7f9;border-left:3px solid #a8843c;border-radius:0 8px 8px 0;padding:14px 18px;">
+          <p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6b7585;"><strong>Security notice:</strong> If you did not create this account, ignore this email and no account will be activated.</p>
+        </td>
+      </tr>
+    </table>
+
+    <p style="margin:24px 0 0;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#98a1af;">If the button doesn&rsquo;t work, copy and paste this link into your browser:<br /><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup&next=/dashboard" target="_blank" style="color:#a8843c;text-decoration:underline;word-break:break-all;">{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup&next=/dashboard</a></p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:28px 24px 0;">
+              <p style="margin:0 0 6px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#98a1af;">This is an automated transmission from the Officers&rsquo; Mess platform.<br />All access and actions are logged and audited for compliance.</p>
+              <p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:#98a1af;">&copy; Officers&rsquo; Mess &middot; Authorised personnel only</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

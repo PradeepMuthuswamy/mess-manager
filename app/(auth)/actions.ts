@@ -10,6 +10,9 @@ import {
   acceptInviteSchema,
 } from '@/lib/schemas/auth';
 
+import { sendPasswordResetEmail, sendMagicLinkEmail } from '@/lib/email/resend';
+import { buildAuthConfirmLink } from '@/lib/auth/email-links';
+
 export type ActionState = {
   error?: string;
   ok?: boolean;
@@ -65,12 +68,45 @@ export async function forgotPasswordAction(
     return { ok: true };
   }
 
-  const supabase = await createClient();
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
-  await supabase.auth.resetPasswordForEmail(parsed.data.email, {
-    redirectTo: `${siteUrl}/auth/callback?next=/reset-password`,
-  });
-  // Always succeed regardless of outcome
+  const admin = createServiceClient();
+
+  const { data: profile } = await admin
+    .from('profiles')
+    .select('id, full_name')
+    .eq('email', parsed.data.email)
+    .maybeSingle();
+
+  if (profile) {
+    const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
+      type: 'recovery',
+      email: parsed.data.email,
+    });
+
+    if (recoveryErr) {
+      console.error('Error generating reset link:', recoveryErr);
+      return { ok: true };
+    }
+
+    // Use hashed_token + our /auth/confirm route instead of action_link:
+    // action_link returns the session in a URL fragment the server
+    // can never read, stranding the user on the landing page.
+    if (recovery?.properties?.hashed_token) {
+      try {
+        await sendPasswordResetEmail({
+          email: parsed.data.email,
+          fullName: profile.full_name ?? undefined,
+          resetLink: buildAuthConfirmLink({
+            type: 'recovery',
+            hashedToken: recovery.properties.hashed_token,
+            next: '/reset-password',
+          }),
+        });
+      } catch (err) {
+        console.error('Failed to send reset email via Resend:', err);
+      }
+    }
+  }
+
   return { ok: true };
 }
 
@@ -138,4 +174,53 @@ export async function acceptInviteAction(
   }
 
   redirect('/dashboard');
+}
+
+export async function sendMagicLinkAction(
+  _prev: ActionState,
+  formData: FormData
+): Promise<ActionState> {
+  const email = formData.get('email');
+  if (typeof email !== 'string' || !email.includes('@')) {
+    return { error: 'Please enter a valid email address.' };
+  }
+
+  const admin = createServiceClient();
+
+  const { data: profile } = await admin
+    .from('profiles')
+    .select('id, full_name')
+    .eq('email', email)
+    .maybeSingle();
+
+  if (!profile) {
+    // Return ok: true to prevent account enumeration
+    return { ok: true };
+  }
+
+  const { data: linkData, error } = await admin.auth.admin.generateLink({
+    type: 'magiclink',
+    email,
+  });
+
+  if (error || !linkData?.properties?.hashed_token) {
+    return { error: error?.message ?? 'Could not generate magic link.' };
+  }
+
+  try {
+    await sendMagicLinkEmail({
+      email,
+      fullName: profile.full_name ?? undefined,
+      magicLink: buildAuthConfirmLink({
+        type: 'magiclink',
+        hashedToken: linkData.properties.hashed_token,
+        next: '/dashboard',
+      }),
+    });
+  } catch (err) {
+    console.error('Failed to send magic link email:', err);
+    return { error: 'Could not send magic link email. Please try again later.' };
+  }
+
+  return { ok: true };
 }
