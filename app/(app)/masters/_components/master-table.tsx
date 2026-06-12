@@ -165,9 +165,14 @@ export function MasterTable({
   const [importing, setImporting] = useState(false);
   const [multiEditing, setMultiEditing] = useState(false);
 
-  // Debounced search logic
+  // Debounced search logic. The no-op guard is load-bearing: every
+  // router.push yields a NEW searchParams reference, which re-runs this
+  // effect — without the guard it pushes the same URL in an infinite
+  // RSC-refetch loop.
   useEffect(() => {
     const delayDebounceFn = setTimeout(() => {
+      const currentQ = searchParams.get('q') || '';
+      if (filter === currentQ) return;
       const params = new URLSearchParams(searchParams.toString());
       if (filter) {
         params.set('q', filter);
