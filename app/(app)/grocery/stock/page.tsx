@@ -9,6 +9,7 @@ import {
   slugFromCategory,
   type InventoryCategory,
 } from '@/lib/masters/categories';
+import type { MasterItemPick } from '@/lib/stock/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,18 @@ const INVENTORY_READ = 'inventory.read';
 const INVENTORY_WRITE = 'inventory.write';
 const MASTERS_WRITE = 'masters.write';
 
-export default async function GroceryStockPage() {
+export default async function GroceryStockPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    q?: string;
+    page?: string;
+    sortBy?: string;
+    sortOrder?: string;
+  }>;
+}) {
+  const { q, page, sortBy, sortOrder } = await searchParams;
+
   // Single Supabase SSR round trip: fetch the user once, then gate against the
   // active unit with the pure helper instead of calling requireCapability
   // (which would re-run requireUser internally). Keeps the unit-scoped check.
@@ -49,8 +61,19 @@ export default async function GroceryStockPage() {
   }
 
   const unitId = user.activeUnitId;
-  const rows = await listInventory(unitId, { category: GROCERY_CATEGORY });
-  const masterItems: any[] = [];
+  const currentPage = Number(page) || 1;
+  const pageSize = 15;
+
+  const { rows, totalCount } = await listInventory(unitId, {
+    category: GROCERY_CATEGORY,
+    q: q || undefined,
+    page: currentPage,
+    pageSize,
+    sortBy: sortBy || undefined,
+    sortOrder: (sortOrder as 'asc' | 'desc') || undefined,
+  });
+
+  const masterItems: MasterItemPick[] = [];
 
   const canWrite = userHasCapability(user, INVENTORY_WRITE, unitId);
   // Inline master-item creation posts unit_id, so createMasterItemAction
@@ -71,7 +94,7 @@ export default async function GroceryStockPage() {
       </header>
 
       <StockTable
-        category={GROCERY_CATEGORY}
+        category="grocery"
         categoryLabel={
           CATEGORY_META[slugFromCategory(GROCERY_CATEGORY)]?.title ?? 'Grocery'
         }
@@ -79,6 +102,12 @@ export default async function GroceryStockPage() {
         masterItems={masterItems}
         canWrite={canWrite}
         canManageMasters={canManageMasters}
+        currentPage={currentPage}
+        pageSize={pageSize}
+        totalCount={totalCount}
+        q={q || ''}
+        sortBy={sortBy || 'item_name'}
+        sortOrder={(sortOrder as 'asc' | 'desc') || 'asc'}
       />
     </section>
   );

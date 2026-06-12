@@ -1,13 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
-import {
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  useReactTable,
-  type ColumnDef,
-} from '@tanstack/react-table';
+import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -25,11 +18,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { MoreHorizontal, Plus } from 'lucide-react';
+import {
+  MoreHorizontal,
+  Plus,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { EmptyState } from '@/components/shared/empty-state';
 import { toast } from 'sonner';
-import { deactivateLotAction, deactivateLotsAction } from '@/lib/stock/actions';
+import { deactivateLotAction } from '@/lib/stock/actions';
 import {
   servingsOnHand,
   lotValue,
@@ -42,10 +43,26 @@ import type {
   InventoryLotRow,
   MasterItemPick,
 } from '@/lib/stock/types';
-import type { InventoryCategory } from '@/lib/masters/categories';
+import {
+  categoryFromSlug,
+  type CategorySlug,
+  type InventoryCategory,
+} from '@/lib/masters/categories';
 import { AddStockDialog } from './add-stock-dialog';
 import { EditStockDialog } from './edit-stock-dialog';
 import { AddMasterItemDialog } from './add-master-item-dialog';
+
+// Redux Integration
+import { useAppDispatch, useAppSelector } from '@/lib/redux/hooks';
+import {
+  selectStockUi,
+  openAddDialog,
+  closeAddDialog,
+  openEditDialog,
+  closeEditDialog,
+  openAddMasterDialog,
+  closeAddMasterDialog,
+} from '@/lib/redux/stock/slice';
 
 function formatNum(n: number): string {
   if (!Number.isFinite(n)) return '—';
@@ -67,6 +84,34 @@ function formatDate(dateStr: string | null | undefined): string {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * Format the pack size/label to remove trailing zeroes and make it prettier.
+ * E.g., "150.000 GRAM PACKET" -> "150 g packet"
+ * E.g., "750.000 ML BOTTLE" -> "750 ml bottle"
+ * E.g., "1.000 PIECE BOTTLE" -> "1 pc bottle"
+ */
+function formatPackSize(label: string | null | undefined): string {
+  if (!label) return '—';
+  
+  // 1. Remove trailing decimals (e.g. 150.000 -> 150)
+  let clean = label.replace(/\b(\d+)\.0+\b/g, '$1');
+  
+  // 2. Format common units to lowercase standard abbreviations
+  clean = clean.replace(/\bML\b/g, 'ml');
+  clean = clean.replace(/\bLITRE\b/g, 'l');
+  clean = clean.replace(/\bGRAM\b/g, 'g');
+  clean = clean.replace(/\bKG\b/g, 'kg');
+  clean = clean.replace(/\bPIECE\b/g, 'pc');
+  
+  // 3. Lowercase common packaging types
+  clean = clean.replace(/\bBOTTLE\b/g, 'bottle');
+  clean = clean.replace(/\bPACKET\b/g, 'packet');
+  clean = clean.replace(/\bTIN\b/g, 'tin');
+  clean = clean.replace(/\bCAN\b/g, 'can');
+  
+  return clean;
+}
+
 export function StockTable({
   category,
   categoryLabel,
@@ -74,346 +119,360 @@ export function StockTable({
   masterItems,
   canWrite,
   canManageMasters,
+  currentPage = 1,
+  pageSize = 15,
+  totalCount = 0,
+  q = '',
+  sortBy = 'item_name',
+  sortOrder = 'asc',
 }: {
-  category: InventoryCategory;
+  category: CategorySlug;
   categoryLabel: string;
   rows: InventoryLotRow[];
   masterItems: MasterItemPick[];
   canWrite: boolean;
   canManageMasters: boolean;
+  currentPage?: number;
+  pageSize?: number;
+  totalCount?: number;
+  q?: string;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
 }) {
   const router = useRouter();
-  const [filter, setFilter] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState<InventoryLotRow | null>(null);
-  const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
+  const dispatch = useAppDispatch();
 
-  const [showNewMasterItem, setShowNewMasterItem] = useState(false);
+  // Read dialog visibility from Redux
+  const {
+    isAddOpen,
+    isEditOpen,
+    isAddMasterOpen,
+    selectedItemId,
+    selectedLot,
+  } = useAppSelector(selectStockUi);
+
   const [extraItems, setExtraItems] = useState<MasterItemPick[]>([]);
-  const [selectedItemId, setSelectedItemId] = useState('');
+  const [localSearch, setLocalSearch] = useState(q);
+  const [prevQ, setPrevQ] = useState(q);
+
+  if (q !== prevQ) {
+    setLocalSearch(q);
+    setPrevQ(q);
+  }
 
   const refresh = useCallback(() => router.refresh(), [router]);
-  const closeAdd = useCallback(() => {
-    setCreating(false);
-    setSelectedItemId('');
-  }, []);
-  const closeEdit = useCallback(() => setEditing(null), []);
+  const basePath = category === 'grocery' ? '/grocery/stock' : '/stock';
 
-  const selectedIds = useMemo(() => {
-    return Object.keys(rowSelection).filter((id) => rowSelection[id]);
-  }, [rowSelection]);
+  // Debounced search logic (backend integrated)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (localSearch === q) return;
+      
+      const searchParams = new URLSearchParams(window.location.search);
+      if (localSearch) {
+        searchParams.set('q', localSearch);
+      } else {
+        searchParams.delete('q');
+      }
+      searchParams.set('page', '1'); // reset to page 1
+      router.push(`${basePath}?${searchParams.toString()}`);
+    }, 300);
+    
+    return () => clearTimeout(timer);
+  }, [localSearch, q, router, basePath]);
 
-  const columns = useMemo<ColumnDef<InventoryLotRow>[]>(() => {
-    const cols: ColumnDef<InventoryLotRow>[] = [
-      {
-        id: 'select',
-        header: ({ table }) => (
-          <input
-            type="checkbox"
-            className="rounded border-border text-primary focus:ring-ring cursor-pointer size-4"
-            checked={table.getIsAllPageRowsSelected()}
-            onChange={(e) => table.toggleAllPageRowsSelected(!!e.target.checked)}
-            aria-label="Select all"
-          />
-        ),
-        cell: ({ row }) => (
-          <input
-            type="checkbox"
-            className="rounded border-border text-primary focus:ring-ring cursor-pointer size-4"
-            checked={row.getIsSelected()}
-            onChange={(e) => row.toggleSelected(!!e.target.checked)}
-            aria-label="Select row"
-          />
-        ),
-      },
-      {
-        accessorKey: 'item_name',
-        header: 'Item',
-        cell: ({ row }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{row.original.item_name}</span>
-            {!row.original.is_active && (
-              <Badge variant="destructive">Inactive</Badge>
-            )}
-          </div>
-        ),
-      },
-      {
-        accessorKey: 'pack_label',
-        header: 'Size',
-        cell: ({ getValue }) => (
-          <span className="text-sm">{getValue<string>() ?? '—'}</span>
-        ),
-      },
-      {
-        id: 'qty',
-        header: 'On hand',
-        cell: ({ row }) => {
-          const qty = Number(row.original.qty_packs ?? 0);
-          const upp = derivedUnitsPerPack(row.original.category ?? '', {
-            kind: row.original.kind,
-            volume_ml: row.original.volume_ml,
-            unit_count: row.original.unit_count,
-          });
-          const servings = servingsOnHand(qty, upp);
-          const label = servingLabel(row.original.category ?? '');
-          const c = containerLabel(row.original.category ?? '', {
-            kind: row.original.kind,
-            label: row.original.pack_label,
-          });
-          return (
-            <div className="flex flex-col">
-              <span className="font-mono text-sm tabular-nums">
-                {formatNum(qty)} {pluralize(qty, c)}
-              </span>
-              {upp != null && upp > 1 ? (
-                <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                  {formatNum(servings)} {pluralize(servings, label)}
-                </span>
-              ) : null}
-            </div>
-          );
-        },
-      },
-      {
-        accessorKey: 'rate',
-        header: 'Rate',
-        cell: ({ getValue }) => (
-          <span className="font-mono text-sm tabular-nums">
-            {formatMoney(Number(getValue<number>() ?? 0))}
-          </span>
-        ),
-      },
-      {
-        id: 'value',
-        header: 'Value',
-        cell: ({ row }) => (
-          <span className="font-mono text-sm tabular-nums">
-            {formatMoney(
-              lotValue(
-                Number(row.original.qty_packs ?? 0),
-                Number(row.original.rate ?? 0),
-              ),
-            )}
-          </span>
-        ),
-      },
-      {
-        id: 'acquired',
-        header: 'Acquired / Source',
-        cell: ({ row }) => {
-          const on = row.original.acquired_on;
-          const src = row.original.source;
-          if (!on && !src) {
-            return <span className="text-xs text-muted-foreground">—</span>;
-          }
-          return (
-            <div className="flex flex-col">
-              {on ? (
-                <span className="font-mono text-xs tabular-nums">
-                  {formatDate(on)}
-                </span>
-              ) : null}
-              {src ? (
-                <span className="text-xs text-muted-foreground">{src}</span>
-              ) : null}
-            </div>
-          );
-        },
-      },
-      {
-        id: 'status',
-        header: 'Status',
-        cell: ({ row }) =>
-          row.original.is_active ? (
-            <Badge variant="success">Active</Badge>
-          ) : (
-            <Badge variant="destructive">Inactive</Badge>
-          ),
-      },
-    ];
+  // Sort handler (backend integrated)
+  const handleSort = (field: string) => {
+    const nextOrder = sortBy === field && sortOrder === 'asc' ? 'desc' : 'asc';
+    const searchParams = new URLSearchParams(window.location.search);
+    searchParams.set('sortBy', field);
+    searchParams.set('sortOrder', nextOrder);
+    searchParams.set('page', '1'); // reset to page 1
+    router.push(`${basePath}?${searchParams.toString()}`);
+  };
 
-    if (canWrite) {
-      cols.push({
-        id: 'actions',
-        header: () => <span className="sr-only">Actions</span>,
-        cell: ({ row }) => (
-          <div className="text-right">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon">
-                  <MoreHorizontal className="size-4" />
-                  <span className="sr-only">Open menu</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setEditing(row.original)}>
-                  Edit details
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setEditing(row.original)}>
-                  Adjust quantity
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={async () => {
-                    const fd = new FormData();
-                    fd.append('id', row.original.id ?? '');
-                    const res = await deactivateLotAction(null, fd);
-                    if (res?.ok) {
-                      toast.success('Lot deactivated');
-                      refresh();
-                    } else {
-                      toast.error(res?.error ?? 'Could not deactivate');
-                    }
-                  }}
-                  className="text-destructive"
-                >
-                  Deactivate
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ),
-      });
+  // Pagination handler (backend integrated)
+  const handlePageChange = (newPage: number) => {
+    const searchParams = new URLSearchParams(window.location.search);
+    searchParams.set('page', newPage.toString());
+    router.push(`${basePath}?${searchParams.toString()}`);
+  };
+
+  const renderSortIcon = (field: string) => {
+    if (sortBy !== field) {
+      return <ArrowUpDown className="size-3.5 ml-1 inline text-muted-foreground/50" />;
     }
-
-    return cols;
-  }, [canWrite, refresh]);
-
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: {
-      columnFilters: filter ? [{ id: 'item_name', value: filter }] : [],
-      rowSelection,
-    },
-    onRowSelectionChange: setRowSelection,
-    enableRowSelection: true,
-    getRowId: (row) => row.id ?? '',
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-  });
+    return sortOrder === 'asc' ? (
+      <ArrowUp className="size-3.5 ml-1 inline text-foreground font-bold" />
+    ) : (
+      <ArrowDown className="size-3.5 ml-1 inline text-foreground font-bold" />
+    );
+  };
 
   return (
     <div className="space-y-4">
+      {/* Search and Action Header */}
       <div className="flex flex-wrap items-center gap-2">
         <Input
           placeholder="Search by item..."
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          value={localSearch}
+          onChange={(e) => setLocalSearch(e.target.value)}
           className="max-w-xs"
         />
-        {selectedIds.length > 0 && (
-          <Button
-            variant="destructive"
-            onClick={async () => {
-              const res = await deactivateLotsAction(selectedIds);
-              if (res?.ok) {
-                toast.success(`${selectedIds.length} stock lot(s) deactivated`);
-                setRowSelection({});
-                refresh();
-              } else {
-                toast.error(res?.error ?? 'Could not deactivate selected lots');
-              }
-            }}
-            className="transition-ds press"
-          >
-            Deactivate Selected ({selectedIds.length})
-          </Button>
-        )}
         <div className="flex-1" />
         {canWrite && category !== 'grocery' ? (
           <Button
-            onClick={() => setCreating(true)}
-            className="transition-ds press"
+            onClick={() => dispatch(openAddDialog())}
+            className="transition-ds press cursor-pointer"
           >
             <Plus className="size-4 mr-1" /> Add to stock
           </Button>
         ) : null}
       </div>
 
-      <div className="overflow-hidden rounded-md border border-border shadow-xs">
+      {/* Flat Stock Lots Table */}
+      <div className="overflow-hidden rounded-md border border-border shadow-xs bg-background">
         <Table>
           <TableHeader>
-            {table.getHeaderGroups().map((hg) => (
-              <TableRow
-                key={hg.id}
-                className="border-b border-border bg-muted/50 hover:bg-muted/50"
+            <TableRow className="border-b border-border bg-muted/50 hover:bg-muted/50">
+              <TableHead
+                className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground cursor-pointer select-none transition-ds hover:text-foreground"
+                onClick={() => handleSort('item_name')}
               >
-                {hg.headers.map((h) => (
-                  <TableHead
-                    key={h.id}
-                    className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                  >
-                    {h.isPlaceholder
-                      ? null
-                      : flexRender(h.column.columnDef.header, h.getContext())}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
+                Item {renderSortIcon('item_name')}
+              </TableHead>
+              <TableHead className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Size
+              </TableHead>
+              <TableHead
+                className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground cursor-pointer select-none transition-ds hover:text-foreground"
+                onClick={() => handleSort('qty')}
+              >
+                On Hand {renderSortIcon('qty')}
+              </TableHead>
+              <TableHead
+                className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground cursor-pointer select-none transition-ds hover:text-foreground"
+                onClick={() => handleSort('rate')}
+              >
+                Rate {renderSortIcon('rate')}
+              </TableHead>
+              <TableHead
+                className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground cursor-pointer select-none transition-ds hover:text-foreground"
+                onClick={() => handleSort('value')}
+              >
+                Value {renderSortIcon('value')}
+              </TableHead>
+              <TableHead
+                className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground cursor-pointer select-none transition-ds hover:text-foreground"
+                onClick={() => handleSort('acquired')}
+              >
+                Acquired / Source {renderSortIcon('acquired')}
+              </TableHead>
+              <TableHead className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground text-right w-16">
+                Actions
+              </TableHead>
+            </TableRow>
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows.length === 0 ? (
+            {rows.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={columns.length} className="p-0">
+                <TableCell colSpan={7} className="p-0">
                   <EmptyState
-                    title={`No ${categoryLabel.toLowerCase()} stock yet`}
+                    title={`No ${categoryLabel.toLowerCase()} stock found`}
                     description={
-                      category === 'grocery'
-                        ? 'No grocery stock is currently tracked for this unit.'
-                        : `Add a ${categoryLabel.toLowerCase()} purchase lot to start tracking stock for this unit.`
+                      localSearch
+                        ? `No items matching "${localSearch}" are currently in stock.`
+                        : `No ${categoryLabel.toLowerCase()} items are currently in stock.`
                     }
-                    className="rounded-none border-0"
+                    className="rounded-none border-0 py-12"
                   />
                 </TableCell>
               </TableRow>
             ) : (
-              table.getRowModel().rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  className="border-b border-border transition-ds last:border-0 hover:bg-muted/40"
-                >
-                  {row.getVisibleCells().map((c) => (
-                    <TableCell key={c.id} className="px-3 py-2 text-sm">
-                      {flexRender(c.column.columnDef.cell, c.getContext())}
+              rows.map((row) => {
+                const qty = Number(row.qty_packs ?? 0);
+                const upp = derivedUnitsPerPack(row.category ?? '', {
+                  kind: row.kind,
+                  volume_ml: row.volume_ml,
+                  unit_count: row.unit_count,
+                });
+                const servings = servingsOnHand(qty, upp);
+                const label = servingLabel(row.category ?? '');
+                const c = containerLabel(row.category ?? '', {
+                  kind: row.kind,
+                  label: row.pack_label,
+                });
+
+                return (
+                  <TableRow
+                    key={row.id}
+                    className="border-b border-border transition-ds last:border-0 hover:bg-muted/40"
+                  >
+                    <TableCell className="px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-foreground text-sm">
+                          {row.item_name}
+                        </span>
+                        {!row.is_active && (
+                          <Badge variant="destructive">Inactive</Badge>
+                        )}
+                      </div>
                     </TableCell>
-                  ))}
-                </TableRow>
-              ))
+                    <TableCell className="px-3 py-2.5 text-muted-foreground text-sm">
+                      {formatPackSize(row.pack_label || row.uom)}
+                    </TableCell>
+                    <TableCell className="px-3 py-2.5">
+                      <div className="flex flex-col">
+                        <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
+                          {formatNum(qty)} {pluralize(qty, c)}
+                        </span>
+                        {upp != null && upp > 1 ? (
+                          <span className="font-mono text-2xs tabular-nums text-muted-foreground">
+                            {formatNum(servings)} {pluralize(servings, label)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-3 py-2.5 font-mono text-sm tabular-nums text-foreground">
+                      {formatMoney(Number(row.rate ?? 0))}
+                    </TableCell>
+                    <TableCell className="px-3 py-2.5 font-mono text-sm font-semibold tabular-nums text-foreground">
+                      {formatMoney(lotValue(qty, Number(row.rate ?? 0)))}
+                    </TableCell>
+                    <TableCell className="px-3 py-2.5">
+                      <div className="flex flex-col">
+                        {row.acquired_on ? (
+                          <span className="font-mono text-xs tabular-nums text-foreground">
+                            {formatDate(row.acquired_on)}
+                          </span>
+                        ) : null}
+                        {row.source ? (
+                          <span className="text-xs text-muted-foreground">{row.source}</span>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-3 py-2.5 text-right">
+                      {canWrite ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="size-8 p-0 cursor-pointer hover:bg-muted transition-ds">
+                              <MoreHorizontal className="size-4" />
+                              <span className="sr-only">Actions</span>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => dispatch(openEditDialog(row))}>
+                              Edit details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => dispatch(openEditDialog(row))}>
+                              Adjust quantity
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={async () => {
+                                const fd = new FormData();
+                                fd.append('id', row.id ?? '');
+                                const res = await deactivateLotAction(null, fd);
+                                if (res?.ok) {
+                                  toast.success('Lot deactivated');
+                                  refresh();
+                                } else {
+                                  toast.error(res?.error ?? 'Could not deactivate');
+                                }
+                              }}
+                              className="text-destructive"
+                            >
+                              Deactivate
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : (
+                        <span className="text-2xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>
       </div>
 
-      {creating && category !== 'grocery' ? (
+      {/* Pagination Footer */}
+      {totalCount > pageSize && (
+        <div className="flex items-center justify-between py-2 px-1">
+          <span className="text-xs text-muted-foreground">
+            Showing{' '}
+            <span className="font-semibold text-foreground">
+              {(currentPage - 1) * pageSize + 1}
+            </span>{' '}
+            to{' '}
+            <span className="font-semibold text-foreground">
+              {Math.min(currentPage * pageSize, totalCount)}
+            </span>{' '}
+            of{' '}
+            <span className="font-semibold text-foreground">{totalCount}</span>{' '}
+            results
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={currentPage <= 1}
+              onClick={() => handlePageChange(currentPage - 1)}
+              className="h-8 w-8 p-0 cursor-pointer"
+            >
+              <ChevronLeft className="size-4" />
+              <span className="sr-only">Previous Page</span>
+            </Button>
+            <span className="text-xs px-2 font-medium">
+              Page {currentPage} of {Math.ceil(totalCount / pageSize)}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={currentPage * pageSize >= totalCount}
+              onClick={() => handlePageChange(currentPage + 1)}
+              className="h-8 w-8 p-0 cursor-pointer"
+            >
+              <ChevronRight className="size-4" />
+              <span className="sr-only">Next Page</span>
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Dialogs */}
+      {isAddOpen && category !== 'grocery' ? (
         <AddStockDialog
           open
-          category={category}
+          category={categoryFromSlug(category) as InventoryCategory}
           masterItems={masterItems}
           extraItems={extraItems}
-          itemId={selectedItemId}
-          setItemId={setSelectedItemId}
+          itemId={selectedItemId ?? ''}
+          setItemId={(id) => dispatch(openAddDialog({ itemId: id }))}
           canManageMasters={canManageMasters}
-          onClose={closeAdd}
+          onClose={() => dispatch(closeAddDialog())}
           onChanged={refresh}
-          onCreateMasterItem={() => setShowNewMasterItem(true)}
+          onCreateMasterItem={() => dispatch(openAddMasterDialog())}
         />
       ) : null}
-      {editing ? (
+
+      {isEditOpen && selectedLot ? (
         <EditStockDialog
           open
-          lot={editing}
-          onClose={closeEdit}
+          lot={selectedLot}
+          onClose={() => dispatch(closeEditDialog())}
           onChanged={refresh}
         />
       ) : null}
-      {canManageMasters && showNewMasterItem ? (
+
+      {canManageMasters && isAddMasterOpen ? (
         <AddMasterItemDialog
           open
-          category={category}
-          onClose={() => setShowNewMasterItem(false)}
+          category={categoryFromSlug(category) as InventoryCategory}
+          onClose={() => dispatch(closeAddMasterDialog())}
           onCreated={(item) => {
-            setShowNewMasterItem(false);
+            dispatch(closeAddMasterDialog());
             const fullItem: MasterItemPick = {
               ...item,
               pack_label: '',
@@ -422,7 +481,7 @@ export function StockTable({
               unit_count: null,
             };
             setExtraItems((prev) => [fullItem, ...prev]);
-            setSelectedItemId(item.id);
+            dispatch(openAddDialog({ itemId: item.id }));
             refresh();
           }}
         />
@@ -430,4 +489,3 @@ export function StockTable({
     </div>
   );
 }
-

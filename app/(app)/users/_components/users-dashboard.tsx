@@ -34,7 +34,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/shared/empty-state';
 import { userHasCapability } from '@/lib/auth/capabilities';
@@ -354,25 +353,15 @@ export function UsersDashboard({
                               {d}
                             </Badge>
                           ))}
-                          {uniqueDomains.length > 3 && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Badge variant="outline" className="text-[10px] py-0 cursor-default">
-                                  +{uniqueDomains.length - 3} more
-                                </Badge>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-[200px]">
-                                <p className="text-xs font-semibold mb-1">Assigned Areas:</p>
-                                <div className="flex flex-wrap gap-1">
-                                  {uniqueDomains.map((d: any) => (
-                                    <Badge key={d} variant="secondary" className="text-[10px]">
-                                      {d}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
+                           {uniqueDomains.length > 3 && (
+                             <Badge
+                               variant="outline"
+                               className="text-[10px] py-0 cursor-default"
+                               title={`Assigned Areas:\n${uniqueDomains.map(d => `• ${d}`).join('\n')}`}
+                             >
+                               +{uniqueDomains.length - 3} more
+                             </Badge>
+                           )}
                         </div>
                       )}
                     </TableCell>

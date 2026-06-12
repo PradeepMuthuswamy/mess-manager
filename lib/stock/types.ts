@@ -20,6 +20,10 @@ export type ListInventoryOpts = {
   // Restrict to one inventory category (alcohol | soft_drink | cigar |
   // grocery). Ration is ALWAYS excluded regardless of this value.
   category?: InventoryCategory;
+  page?: number;
+  pageSize?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
 };
 
 // Minimal master-item shape for the add-lot picker. Lots can be opened off ANY

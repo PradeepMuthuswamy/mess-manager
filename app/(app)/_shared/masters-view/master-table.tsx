@@ -25,11 +25,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 import { MoreHorizontal, Pencil, Plus, Upload } from 'lucide-react';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { MasterFormDialog } from './master-form-dialog';
@@ -79,37 +74,28 @@ function AuthorisationChips({ chips }: { chips: AuthorisationChip[] }) {
   return (
     <div className="flex flex-wrap items-center gap-1">
       {visible.map((c) => (
-        <Tooltip key={c.scale_id}>
-          <TooltipTrigger asChild>
-            <Badge variant="secondary" className="font-mono text-[10px] tabular-nums">
-              <span className="font-sans font-medium">
-                {RANK_SHORT[c.rank_class] ?? c.rank_class}·{TERRAIN_SHORT[c.terrain] ?? c.terrain}
-              </span>
-              <span className="ml-1 text-muted-foreground">
-                {formatQty(c.auth_qty)} {c.uom}
-              </span>
-            </Badge>
-          </TooltipTrigger>
-          <TooltipContent>
-            {RATION_CLASS_LABEL[c.rank_class]} — {RATION_TERRAIN_LABEL[c.terrain]} · {formatQty(c.auth_qty)} {c.uom}
-          </TooltipContent>
-        </Tooltip>
+        <Badge
+          key={c.scale_id}
+          variant="secondary"
+          className="font-mono text-[10px] tabular-nums cursor-default"
+          title={`${RATION_CLASS_LABEL[c.rank_class]} — ${RATION_TERRAIN_LABEL[c.terrain]} · ${formatQty(c.auth_qty)} ${c.uom}`}
+        >
+          <span className="font-sans font-medium">
+            {RANK_SHORT[c.rank_class] ?? c.rank_class}·{TERRAIN_SHORT[c.terrain] ?? c.terrain}
+          </span>
+          <span className="ml-1 text-muted-foreground">
+            {formatQty(c.auth_qty)} {c.uom}
+          </span>
+        </Badge>
       ))}
       {overflow > 0 ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Badge variant="outline" className="text-[10px]">+{overflow}</Badge>
-          </TooltipTrigger>
-          <TooltipContent>
-            <div className="space-y-0.5 text-xs">
-              {chips.slice(4).map((c) => (
-                <div key={c.scale_id}>
-                  {RATION_CLASS_LABEL[c.rank_class]} — {RATION_TERRAIN_LABEL[c.terrain]} · {formatQty(c.auth_qty)} {c.uom}
-                </div>
-              ))}
-            </div>
-          </TooltipContent>
-        </Tooltip>
+        <Badge
+          variant="outline"
+          className="text-[10px] cursor-default"
+          title={chips.slice(4).map((c) => `${RATION_CLASS_LABEL[c.rank_class]} — ${RATION_TERRAIN_LABEL[c.terrain]} · ${formatQty(c.auth_qty)} ${c.uom}`).join('\n')}
+        >
+          +{overflow}
+        </Badge>
       ) : null}
     </div>
   );

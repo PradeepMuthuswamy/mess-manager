@@ -11,59 +11,44 @@ import {
 import { EmptyState } from '@/components/shared/empty-state';
 import { StockTabs, type StockCategoryData } from './_components/stock-tabs';
 import {
-  STOCK_PAGE_CATEGORIES,
-  isInventoryCategory,
   categoryFromSlug,
   CATEGORY_SLUGS,
-  type InventoryCategory,
   type CategorySlug,
+  type InventoryCategory,
 } from '@/lib/masters/categories';
 
 export const dynamic = 'force-dynamic';
 
-const DEFAULT_CATEGORY: InventoryCategory = 'alcohol';
+const DEFAULT_CATEGORY: CategorySlug = 'alcohol';
 
 const INVENTORY_READ = 'inventory.read';
 const INVENTORY_WRITE = 'inventory.write';
 const MASTERS_WRITE = 'masters.write';
 
+
 export default async function InventoryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ cat?: string }>;
+  searchParams: Promise<{
+    cat?: string;
+    q?: string;
+    page?: string;
+    sortBy?: string;
+    sortOrder?: string;
+  }>;
 }) {
-  // Normalize the active tab from `?cat=`. Handles both slugs (e.g. cold-drinks)
-  // and database category names (e.g. soft_drink). Anything not one of the four
-  // stockable categories falls back to the default.
-  const { cat } = await searchParams;
-  let category: InventoryCategory = DEFAULT_CATEGORY;
+  const { cat, q, page, sortBy, sortOrder } = await searchParams;
+  let categorySlug: CategorySlug = DEFAULT_CATEGORY;
 
   if (cat) {
-    if (isInventoryCategory(cat)) {
-      category = cat;
-    } else {
-      const isSlug = (v: string | undefined): v is CategorySlug =>
-        !!v && (CATEGORY_SLUGS as readonly string[]).includes(v);
-      // 'snacks' is a UI-only alias of the 'grocery' db category, but it never
-      // had its own tab on this strip — resolving it here would silently forward
-      // such links into the Grocery module. Exclude it so only true grocery
-      // links redirect; an unknown `cat` falls through to the default tab.
-      if (isSlug(cat) && cat !== 'snacks') {
-        const dbCat = categoryFromSlug(cat);
-        if (isInventoryCategory(dbCat)) {
-          category = dbCat;
-        }
-      }
+    if ((CATEGORY_SLUGS as readonly string[]).includes(cat)) {
+      categorySlug = cat as CategorySlug;
     }
   }
 
-  // Grocery stock now lives in its own Grocery module. The grocery tab was
-  // removed from this strip, but keep old URLs and deep links working by
-  // redirecting before the capability gate and any data fetch, so a
-  // Grocery-module-only user following an old /stock?cat=grocery link is
-  // transparently forwarded rather than bounced to /dashboard. Covers
-  // ?cat=grocery and the db name.
-  if (category === 'grocery') {
+  // Redirect 'grocery' category slug to the new grocery stock page.
+  // Snacks tab uses 'grocery' internally but stays in the stock page.
+  if (categorySlug === 'grocery') {
     redirect('/grocery/stock');
   }
 
@@ -91,26 +76,29 @@ export default async function InventoryPage({
 
   const unitId = user.activeUnitId;
 
-  // Preload every stockable category up front so the client tab strip can switch
-  // instantly with no per-tab server round-trip (the old `?cat=` link nav made
-  // each switch a full dynamic refetch that felt stuck). The dataset per unit is
-  // small; the queries run in parallel.
-  const entries = await Promise.all(
-    STOCK_PAGE_CATEGORIES.map(async (cat) => {
-      const [rows, masterItems] = await Promise.all([
-        listInventory(unitId, { category: cat }),
-        listMasterItemsForPicker(unitId, undefined, cat),
-      ]);
-      return [cat, { rows, masterItems }] as const;
+  // Pagination parameters
+  const currentPage = Number(page) || 1;
+  const pageSize = 15;
+
+  // Query only the active tab's data from the backend
+  const dbCat = categoryFromSlug(categorySlug) as InventoryCategory;
+  const [{ rows, totalCount }, masterItems] = await Promise.all([
+    listInventory(unitId, {
+      category: dbCat,
+      q: q || undefined,
+      page: currentPage,
+      pageSize,
+      sortBy: sortBy || undefined,
+      sortOrder: (sortOrder as 'asc' | 'desc') || undefined,
     }),
-  );
-  const categoryData: Partial<Record<InventoryCategory, StockCategoryData>> =
-    Object.fromEntries(entries);
+    listMasterItemsForPicker(unitId, undefined, dbCat),
+  ]);
+
+  const categoryData = {
+    [categorySlug]: { rows, masterItems, totalCount },
+  } as Record<CategorySlug, StockCategoryData>;
 
   const canWrite = userHasCapability(user, INVENTORY_WRITE, unitId);
-  // Inline master-item creation posts unit_id, so createMasterItemAction
-  // requires the unit-scoped masters.write (admins/unit_admin bypass inside
-  // userHasCapability). UI affordance only — the action is the real gate.
   const canManageMasters = userHasCapability(user, MASTERS_WRITE, unitId);
 
   return (
@@ -126,10 +114,15 @@ export default async function InventoryPage({
       </header>
 
       <StockTabs
-        initialCategory={category}
+        initialCategory={categorySlug}
         categoryData={categoryData}
         canWrite={canWrite}
         canManageMasters={canManageMasters}
+        currentPage={currentPage}
+        pageSize={pageSize}
+        q={q || ''}
+        sortBy={sortBy || 'item_name'}
+        sortOrder={(sortOrder as 'asc' | 'desc') || 'asc'}
       />
     </section>
   );
