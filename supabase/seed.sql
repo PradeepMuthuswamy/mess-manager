@@ -10,28 +10,27 @@ on conflict (code) do nothing;
 
 -- Sample global ration items (admin-owned, no unit).
 with rice as (
-  insert into public.items (unit_id, category, name, uom)
-  values (null, 'ration', 'Rice', 'kg')
-  on conflict (unit_id, category, name) do nothing
+  insert into public.products (unit_id, category_id, name)
+  values (null, '00000000-0000-0000-0000-000000000005'::uuid, 'Rice')
+  on conflict (unit_id, category_id, name) do nothing
   returning id
 ),
 dal as (
-  insert into public.items (unit_id, category, name, uom)
-  values (null, 'ration', 'Dal (Toor)', 'kg')
-  on conflict (unit_id, category, name) do nothing
+  insert into public.products (unit_id, category_id, name)
+  values (null, '00000000-0000-0000-0000-000000000005'::uuid, 'Dal (Toor)')
+  on conflict (unit_id, category_id, name) do nothing
   returning id
 ),
 sugar as (
-  insert into public.items (unit_id, category, name, uom)
-  values (null, 'ration', 'Sugar', 'kg')
-  on conflict (unit_id, category, name) do nothing
+  insert into public.products (unit_id, category_id, name)
+  values (null, '00000000-0000-0000-0000-000000000005'::uuid, 'Sugar')
+  on conflict (unit_id, category_id, name) do nothing
   returning id
 )
-insert into public.item_versions (item_id, rate, ration_scale, notes, valid_from)
-select id, 42.00, 0.150, 'Initial seed', now() from rice
+insert into public.product_variants (product_id, unit_value, unit_type, package_type)
+select id, 1.000, 'KG'::public.unit_type, 'LOOSE'::public.package_type from rice
 union all
-select id, 110.00, 0.090, 'Initial seed', now() from dal
+select id, 1.000, 'KG'::public.unit_type, 'LOOSE'::public.package_type from dal
 union all
-select id, 48.00, 0.025, 'Initial seed', now() from sugar;
-
--- Capability templates are seeded inside migration 0005, no need to repeat here.
+select id, 1.000, 'KG'::public.unit_type, 'LOOSE'::public.package_type from sugar
+on conflict (product_id, unit_value, unit_type, package_type) do nothing;

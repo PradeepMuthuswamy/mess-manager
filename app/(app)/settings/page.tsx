@@ -1,8 +1,6 @@
 import { requireUser } from '@/lib/auth/require-role';
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
-import { readUiPreferences } from '@/lib/preferences/cookie';
-import { UiPreferencesCard } from './_components/ui-preferences-card';
 import { UnitSettingsCard } from './_components/unit-settings-card';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -36,8 +34,6 @@ export default async function SettingsPage() {
     .select('full_name, service_no, rank, email')
     .eq('id', user.id)
     .single();
-  const uiPrefs = await readUiPreferences();
-
   const canManageUnit = user.role === 'admin' || user.role === 'unit_admin';
   const unitId = user.activeUnitId ?? user.homeUnitId;
   type UnitCfg = {
@@ -71,8 +67,6 @@ export default async function SettingsPage() {
           terrain={unit.terrain}
         />
       )}
-
-      <UiPreferencesCard prefs={uiPrefs} />
 
       <Card>
         <CardHeader className="border-b">

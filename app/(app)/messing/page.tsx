@@ -73,7 +73,7 @@ export default async function MessingPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="font-heading text-lg font-semibold">Today's Dining Register</CardTitle>
+                  <CardTitle className="font-heading text-lg font-semibold">Today&apos;s Dining Register</CardTitle>
                   <CardDescription>May 30, 2026 — Officers Dining Hall</CardDescription>
                 </div>
                 <Badge variant="outline" className="border-primary/20 text-primary bg-primary/5">

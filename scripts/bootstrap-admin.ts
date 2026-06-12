@@ -46,7 +46,10 @@ async function main() {
       email,
       password,
       email_confirm: true,
-      user_metadata: fullName ? { full_name: fullName } : undefined,
+      user_metadata: {
+        role: 'admin',
+        ...(fullName ? { full_name: fullName } : {}),
+      },
     });
     if (cErr || !created.user) {
       console.error('Could not create user:', cErr?.message);

@@ -4,6 +4,8 @@ import { usePathname } from 'next/navigation';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { UserMenu } from './user-menu';
 import { ThemeToggle } from './theme-toggle';
+import { useAppContext } from '@/lib/auth/context';
+import { UnitSwitcher } from './unit-switcher';
 import type { AuthUser } from '@/lib/auth/types';
 
 function titleCase(s: string) {
@@ -11,10 +13,11 @@ function titleCase(s: string) {
 }
 
 export function AppNavbar({
-  user,
+  units,
 }: {
-  user: AuthUser;
+  units: { id: string; name: string; code: string }[];
 }) {
+  const { user } = useAppContext();
   const pathname = usePathname();
   const segs = pathname.split('/').filter(Boolean);
   return (
@@ -43,6 +46,7 @@ export function AppNavbar({
         })}
       </nav>
       <div className="ml-auto flex items-center gap-1.5">
+        {user.role === 'admin' && <UnitSwitcher current={user.activeUnitId} units={units} />}
         <ThemeToggle />
         <UserMenu user={user} />
       </div>

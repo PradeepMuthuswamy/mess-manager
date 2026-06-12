@@ -19,7 +19,7 @@ export const CAPABILITY_DOMAIN_LABELS: Record<string, string> = {
   masters:    'Master lists',
   attendance: 'Attendance',
   ration:     'Ration issuing',
-  inventory:  'Inventory',
+  inventory:  'Stock',
   bar:        'Bar',
   rooms:      'Guest rooms',
   parties:    'Parties',
@@ -43,8 +43,8 @@ export const CAPABILITY_ACTION_LABELS: Record<Capability, string> = {
   'ration.issue':           'Issue rations',
   'ration.adjust':          'Adjust ration entries',
 
-  'inventory.read':         'View inventory',
-  'inventory.write':        'Manage inventory',
+  'inventory.read':         'View stock lots',
+  'inventory.write':        'Manage stock lots',
 
   'bar.read':               'View bar consumption',
   'bar.write':              'Log bar consumption',

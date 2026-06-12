@@ -121,13 +121,18 @@ model Unit {
   updated_by        String?            @db.Uuid
   
   profiles          Profile[]
-  items             Item[]
+  products          Product[]
   user_capabilities UserCapability[]
   dependants        Dependant[]
   rooms             Room[]
   bookings          Booking[]
   room_bills        RoomBill[]
   unit_furniture    UnitFurniture[]
+  unit_inventories  UnitInventory[]
+  ration_scales     RationScale[]
+  bar_chits         BarChit[]
+  ration_stock_transactions RationStockTransaction[]
+  ration_consumptions       RationConsumption[]
 
   @@map("units")
 }
@@ -149,45 +154,146 @@ model Profile {
   unit              Unit?              @relation(fields: [unit_id], references: [id], onDelete: Restrict)
   user_capabilities UserCapability[]
   dependants        Dependant[]
+  bar_chits         BarChit[]
 
   @@map("profiles")
 }
 
-model Item {
-  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  unit_id       String?        @db.Uuid
-  category      ItemCategory
-  name          String
-  sku           String?
-  uom           Uom
-  is_active     Boolean        @default(true)
-  created_at    DateTime       @default(now()) @db.Timestamptz
-  updated_at    DateTime       @default(now()) @db.Timestamptz
-  created_by    String?        @db.Uuid
-  updated_by    String?        @db.Uuid
+model Category {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name       String
+  parent_id  String?    @db.Uuid
+  created_at DateTime   @default(now()) @db.Timestamptz
+  updated_at DateTime   @default(now()) @db.Timestamptz
 
-  unit          Unit?          @relation(fields: [unit_id], references: [id], onDelete: Restrict)
-  versions      ItemVersion[]
-  bill_items    RoomBillItem[]
+  parent     Category?  @relation("CategoryToCategory", fields: [parent_id], references: [id], onDelete: Cascade)
+  children   Category[] @relation("CategoryToCategory")
+  products   Product[]
 
-  @@unique([unit_id, category, name], name: "items_name_unique_per_unit")
-  @@map("items")
+  @@map("categories")
 }
 
-model ItemVersion {
-  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  item_id      String    @db.Uuid
-  rate         Decimal   @db.Decimal(12, 2)
-  ration_scale Decimal?  @db.Decimal(14, 3)
-  notes        String?
-  valid_from   DateTime  @default(now()) @db.Timestamptz
-  valid_to     DateTime? @db.Timestamptz
-  created_at   DateTime  @default(now()) @db.Timestamptz
-  created_by   String?   @db.Uuid
+model Product {
+  id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id     String?          @db.Uuid
+  category_id String           @db.Uuid
+  name        String
+  description String?
+  is_active   Boolean          @default(true)
+  created_at  DateTime         @default(now()) @db.Timestamptz
+  updated_at  DateTime         @default(now()) @db.Timestamptz
+  created_by  String?          @db.Uuid
+  updated_by  String?          @db.Uuid
 
-  item         Item      @relation(fields: [item_id], references: [id], onDelete: Cascade)
+  unit        Unit?            @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  category    Category         @relation(fields: [category_id], references: [id], onDelete: Restrict)
+  variants    ProductVariant[]
 
-  @@map("item_versions")
+  @@unique([unit_id, category_id, name], name: "products_name_unique_per_unit")
+  @@map("products")
+}
+
+enum UnitType {
+  ML
+  LITRE
+  GRAM
+  KG
+  PIECE
+
+  @@map("unit_type")
+}
+
+enum PackageType {
+  BOTTLE
+  CAN
+  PACKET
+  BOX
+  LOOSE
+
+  @@map("package_type")
+}
+
+model ProductVariant {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  product_id             String                   @db.Uuid
+  unit_value             Decimal                  @db.Decimal(12, 3)
+  unit_type              UnitType
+  package_type           PackageType
+  sku                    String?
+  is_active              Boolean                  @default(true)
+  created_at             DateTime                 @default(now()) @db.Timestamptz
+  updated_at             DateTime                 @default(now()) @db.Timestamptz
+  created_by             String?                  @db.Uuid
+  updated_by             String?                  @db.Uuid
+
+  product                Product                  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  room_bill_items        RoomBillItem[]
+  unit_inventories       UnitInventory[]
+  ration_scale_item_vers RationScaleItemVersion[]
+  bar_chit_items         BarChitItem[]
+  ration_stock_transactions RationStockTransaction[]
+  ration_consumptions       RationConsumption[]
+
+  @@unique([product_id, unit_value, unit_type, package_type], name: "variants_unique_identity")
+  @@map("product_variants")
+}
+
+model UnitInventory {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id     String         @db.Uuid
+  variant_id  String         @db.Uuid
+  qty_packs   Decimal        @db.Decimal(14, 3) @default(0)
+  rate        Decimal        @db.Decimal(12, 2)
+  acquired_on DateTime?      @db.Date
+  source      String?
+  is_active   Boolean        @default(true)
+  created_at  DateTime       @default(now()) @db.Timestamptz
+  updated_at  DateTime       @default(now()) @db.Timestamptz
+  created_by  String?        @db.Uuid
+  updated_by  String?        @db.Uuid
+
+  unit        Unit           @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  variant     ProductVariant @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+
+  @@map("unit_inventory")
+}
+
+model RationScale {
+  id          String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id     String                   @db.Uuid
+  name        String
+  description String?
+  is_active   Boolean                  @default(true)
+  created_at  DateTime                 @default(now()) @db.Timestamptz
+  updated_at  DateTime                 @default(now()) @db.Timestamptz
+  created_by  String?                  @db.Uuid
+  updated_by  String?                  @db.Uuid
+  rank_class  RationClass
+  terrain     RationTerrain
+
+  unit        Unit                     @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  item_versions RationScaleItemVersion[]
+
+  @@unique([unit_id, rank_class, terrain], name: "ration_scales_unique_per_unit")
+  @@map("ration_scales")
+}
+
+model RationScaleItemVersion {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scale_id    String         @db.Uuid
+  variant_id  String         @db.Uuid
+  auth_qty    Decimal        @db.Decimal(14, 4)
+  uom         Uom
+  notes       String?
+  valid_from  DateTime       @default(now()) @db.Timestamptz
+  valid_to    DateTime?      @db.Timestamptz
+  created_at  DateTime       @default(now()) @db.Timestamptz
+  created_by  String?        @db.Uuid
+
+  scale       RationScale    @relation(fields: [scale_id], references: [id], onDelete: Cascade)
+  variant     ProductVariant @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+
+  @@map("ration_scale_item_versions")
 }
 
 model UserCapability {
@@ -284,6 +390,7 @@ model Booking {
   unit             Unit         @relation(fields: [unit_id], references: [id], onDelete: Restrict)
   room             Room         @relation(fields: [room_id], references: [id], onDelete: Restrict)
   bills            RoomBill[]
+  bar_chits        BarChit[]
 
   @@map("bookings")
 }
@@ -312,13 +419,13 @@ model RoomBillItem {
   description String
   amount      Decimal        @db.Decimal(12, 2)
   quantity    Decimal        @db.Decimal(12, 2) @default(1)
-  item_id     String?        @db.Uuid
+  variant_id  String?        @db.Uuid
   meal_type   String?
   order_id    String?        @db.Uuid
   created_at  DateTime       @default(now()) @db.Timestamptz
 
   bill        RoomBill       @relation(fields: [bill_id], references: [id], onDelete: Cascade)
-  item        Item?          @relation(fields: [item_id], references: [id], onDelete: SetNull)
+  variant     ProductVariant? @relation(fields: [variant_id], references: [id], onDelete: SetNull)
   order       RoomBillOrder? @relation(fields: [order_id], references: [id], onDelete: Cascade)
 
   @@map("room_bill_items")
@@ -369,4 +476,79 @@ model RoomFurniture {
 
   @@unique([room_id, furniture_id], name: "room_furniture_unique_per_room")
   @@map("room_furniture")
+}
+
+model BarChit {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id      String        @db.Uuid
+  date         DateTime      @db.Date @default(now())
+  profile_id   String?       @db.Uuid
+  guest_name   String?
+  booking_id   String?       @db.Uuid
+  total_amount Decimal       @db.Decimal(12, 2) @default(0)
+  status       String        @default("pending")
+  created_at   DateTime      @default(now()) @db.Timestamptz
+  updated_at   DateTime      @default(now()) @db.Timestamptz
+  created_by   String?       @db.Uuid
+
+  unit         Unit          @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  profile      Profile?      @relation(fields: [profile_id], references: [id], onDelete: SetNull)
+  booking      Booking?      @relation(fields: [booking_id], references: [id], onDelete: SetNull)
+  items        BarChitItem[]
+
+  @@map("bar_chits")
+}
+
+model BarChitItem {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chit_id      String         @db.Uuid
+  variant_id   String         @db.Uuid
+  quantity     Decimal        @db.Decimal(12, 2) @default(1)
+  rate         Decimal        @db.Decimal(12, 2)
+  amount       Decimal        @db.Decimal(12, 2)
+
+  chit         BarChit        @relation(fields: [chit_id], references: [id], onDelete: Cascade)
+  variant      ProductVariant @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+
+  @@map("bar_chit_items")
+}
+
+model RationStockTransaction {
+  id               String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id          String                 @db.Uuid
+  variant_id       String                 @db.Uuid
+  transaction_date DateTime               @db.Date
+  type             String
+  quantity         Decimal                @db.Decimal(14, 4)
+  rate             Decimal                @db.Decimal(12, 2)
+  amount           Decimal                @db.Decimal(12, 2)
+  source           String?
+  notes            String?
+  created_at       DateTime               @default(now()) @db.Timestamptz
+  updated_at       DateTime               @default(now()) @db.Timestamptz
+  created_by       String?                @db.Uuid
+  updated_by       String?                @db.Uuid
+
+  unit             Unit                   @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  variant          ProductVariant         @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+
+  @@map("ration_stock_transactions")
+}
+
+model RationConsumption {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id          String         @db.Uuid
+  consumption_date DateTime       @db.Date
+  variant_id       String         @db.Uuid
+  quantity         Decimal        @db.Decimal(14, 4)
+  created_at       DateTime       @default(now()) @db.Timestamptz
+  updated_at       DateTime       @default(now()) @db.Timestamptz
+  created_by       String?        @db.Uuid
+  updated_by       String?        @db.Uuid
+
+  unit             Unit           @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  variant          ProductVariant @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+
+  @@unique([unit_id, consumption_date, variant_id])
+  @@map("ration_consumptions")
 }

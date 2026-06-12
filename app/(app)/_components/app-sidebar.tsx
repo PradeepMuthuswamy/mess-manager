@@ -20,6 +20,7 @@ import {
 import { navForPath, type NavItem } from './nav-config';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { AuthUser } from '@/lib/auth/types';
+import { useAppContext } from '@/lib/auth/context';
 
 function iconOf(name: string) {
   const I = (Lucide as unknown as Record<string, unknown>)[name] as
@@ -37,7 +38,8 @@ function canSee(user: AuthUser, item: NavItem): boolean {
   return true;
 }
 
-export function AppSidebar({ user }: { user: AuthUser }) {
+export function AppSidebar() {
+  const { user } = useAppContext();
   const pathname = usePathname();
   const { diner, ops } = navForPath(pathname);
   const visibleOps = ops.filter((item) => canSee(user, item));

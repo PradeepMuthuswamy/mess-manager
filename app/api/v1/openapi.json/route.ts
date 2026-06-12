@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+
 import {
   OpenAPIRegistry, OpenApiGeneratorV31,
 } from '@asteasolutions/zod-to-openapi';
@@ -7,8 +7,9 @@ import {
   signInSchema, forgotPasswordSchema, resetPasswordSchema,
   createUnitSchema, updateUnitSchema,
   inviteUserSchema, updateUserSchema,
-  createItemSchema, updateItemSchema, newItemVersionSchema,
+  createItemApiSchema, updateProductSchema, updateVariantSchema,
   setUserCapabilitiesSchema, createTemplateSchema, updateTemplateSchema,
+  createBarChitSchema,
 } from '@/lib/schemas';
 
 export const dynamic = 'force-dynamic';
@@ -25,12 +26,13 @@ function build() {
   r.register('UpdateUnitInput', updateUnitSchema);
   r.register('InviteUserInput', inviteUserSchema);
   r.register('UpdateUserInput', updateUserSchema);
-  r.register('CreateItemInput', createItemSchema);
-  r.register('UpdateItemInput', updateItemSchema);
-  r.register('NewItemVersionInput', newItemVersionSchema);
+  r.register('CreateItemInput', createItemApiSchema);
+  r.register('UpdateProductInput', updateProductSchema);
+  r.register('UpdateVariantInput', updateVariantSchema);
   r.register('SetUserCapabilitiesInput', setUserCapabilitiesSchema);
   r.register('CreateCapabilityTemplateInput', createTemplateSchema);
   r.register('UpdateCapabilityTemplateInput', updateTemplateSchema);
+  r.register('CreateBarChitInput', createBarChitSchema);
 
   r.registerComponent('securitySchemes', 'bearerAuth', {
     type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
@@ -55,7 +57,7 @@ function build() {
   r.registerPath({
     method: 'post', path: '/api/v1/items', summary: 'Create item', tags: ['Items'],
     security: [{ bearerAuth: [] }],
-    request: { body: { content: { 'application/json': { schema: createItemSchema } } } },
+    request: { body: { content: { 'application/json': { schema: createItemApiSchema } } } },
     responses: { 201: { description: 'Created' }, 422: { description: 'Invalid input' } },
   });
   r.registerPath({
@@ -69,6 +71,17 @@ function build() {
     request: { body: { content: { 'application/json': { schema: inviteUserSchema } } } },
     responses: { 201: { description: 'Invited' }, 403: { description: 'Forbidden' } },
   });
+  r.registerPath({
+    method: 'get', path: '/api/v1/bar/chits', summary: 'List bar chits', tags: ['Bar'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' } },
+  });
+  r.registerPath({
+    method: 'post', path: '/api/v1/bar/chits', summary: 'Create bar chit', tags: ['Bar'],
+    security: [{ bearerAuth: [] }],
+    request: { body: { content: { 'application/json': { schema: createBarChitSchema } } } },
+    responses: { 201: { description: 'Created' }, 422: { description: 'Invalid input' } },
+  });
 
   return new OpenApiGeneratorV31(r.definitions).generateDocument({
     openapi: '3.1.0',
@@ -77,7 +90,7 @@ function build() {
   });
 }
 
-export const GET = withRoute(async (_req: NextRequest) => {
+export const GET = withRoute(async () => {
   if (!cached) cached = build();
   return ok(cached);
 });

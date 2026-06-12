@@ -187,6 +187,133 @@ export type Database = {
         }
         Relationships: []
       }
+      bar_chit_items: {
+        Row: {
+          amount: number
+          chit_id: string
+          id: string
+          quantity: number
+          rate: number
+          variant_id: string
+        }
+        Insert: {
+          amount: number
+          chit_id: string
+          id?: string
+          quantity?: number
+          rate: number
+          variant_id: string
+        }
+        Update: {
+          amount?: number
+          chit_id?: string
+          id?: string
+          quantity?: number
+          rate?: number
+          variant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bar_chit_items_chit_id_fkey"
+            columns: ["chit_id"]
+            isOneToOne: false
+            referencedRelation: "bar_chits"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bar_chit_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bar_chit_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bar_chit_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "bar_chit_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
+          },
+        ]
+      }
+      bar_chits: {
+        Row: {
+          booking_id: string | null
+          created_at: string
+          created_by: string | null
+          date: string
+          guest_name: string | null
+          id: string
+          profile_id: string | null
+          status: string
+          total_amount: number
+          unit_id: string
+          updated_at: string
+        }
+        Insert: {
+          booking_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          date?: string
+          guest_name?: string | null
+          id?: string
+          profile_id?: string | null
+          status?: string
+          total_amount?: number
+          unit_id: string
+          updated_at?: string
+        }
+        Update: {
+          booking_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          date?: string
+          guest_name?: string | null
+          id?: string
+          profile_id?: string | null
+          status?: string
+          total_amount?: number
+          unit_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bar_chits_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "bookings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bar_chits_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bar_chits_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       bookings: {
         Row: {
           actual_check_in: string | null
@@ -293,6 +420,45 @@ export type Database = {
         }
         Relationships: []
       }
+      categories: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          parent_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          parent_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          parent_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "categories_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "categories_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["category_id"]
+          },
+        ]
+      }
       dependants: {
         Row: {
           auth_user_id: string | null
@@ -389,148 +555,126 @@ export type Database = {
         }
         Relationships: []
       }
-      item_versions: {
+      product_variants: {
         Row: {
-          created_at: string
-          created_by: string | null
-          id: string
-          item_id: string
-          notes: string | null
-          rate: number
-          ration_scale: number | null
-          valid_from: string
-          valid_to: string | null
-        }
-        Insert: {
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          item_id: string
-          notes?: string | null
-          rate: number
-          ration_scale?: number | null
-          valid_from?: string
-          valid_to?: string | null
-        }
-        Update: {
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          item_id?: string
-          notes?: string | null
-          rate?: number
-          ration_scale?: number | null
-          valid_from?: string
-          valid_to?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "item_versions_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "items"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "item_versions_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "v_items_current"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      items: {
-        Row: {
-          category: Database["public"]["Enums"]["item_category"]
           created_at: string
           created_by: string | null
           id: string
           is_active: boolean
-          name: string
+          package_type: Database["public"]["Enums"]["package_type"]
+          product_id: string
           sku: string | null
-          unit_id: string | null
-          uom: Database["public"]["Enums"]["uom"]
+          unit_type: Database["public"]["Enums"]["unit_type"]
+          unit_value: number
           updated_at: string
           updated_by: string | null
         }
         Insert: {
-          category: Database["public"]["Enums"]["item_category"]
           created_at?: string
           created_by?: string | null
           id?: string
           is_active?: boolean
-          name: string
+          package_type: Database["public"]["Enums"]["package_type"]
+          product_id: string
           sku?: string | null
-          unit_id?: string | null
-          uom: Database["public"]["Enums"]["uom"]
+          unit_type: Database["public"]["Enums"]["unit_type"]
+          unit_value: number
           updated_at?: string
           updated_by?: string | null
         }
         Update: {
-          category?: Database["public"]["Enums"]["item_category"]
           created_at?: string
           created_by?: string | null
           id?: string
           is_active?: boolean
-          name?: string
+          package_type?: Database["public"]["Enums"]["package_type"]
+          product_id?: string
           sku?: string | null
-          unit_id?: string | null
-          uom?: Database["public"]["Enums"]["uom"]
+          unit_type?: Database["public"]["Enums"]["unit_type"]
+          unit_value?: number
           updated_at?: string
           updated_by?: string | null
         }
         Relationships: [
           {
-            foreignKeyName: "items_unit_id_fkey"
+            foreignKeyName: "product_variants_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_variants_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["product_id"]
+          },
+        ]
+      }
+      products: {
+        Row: {
+          category_id: string
+          created_at: string
+          created_by: string | null
+          description: string | null
+          fts: unknown
+          id: string
+          is_active: boolean
+          name: string
+          unit_id: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          category_id: string
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          fts?: unknown
+          id?: string
+          is_active?: boolean
+          name: string
+          unit_id?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          category_id?: string
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          fts?: unknown
+          id?: string
+          is_active?: boolean
+          name?: string
+          unit_id?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "products_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["category_id"]
+          },
+          {
+            foreignKeyName: "products_unit_id_fkey"
             columns: ["unit_id"]
             isOneToOne: false
             referencedRelation: "units"
             referencedColumns: ["id"]
           },
         ]
-      }
-      pack_sizes: {
-        Row: {
-          created_at: string
-          created_by: string | null
-          id: string
-          is_active: boolean
-          kind: string
-          label: string
-          sort_order: number
-          unit_count: number | null
-          updated_at: string
-          updated_by: string | null
-          volume_ml: number | null
-        }
-        Insert: {
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          is_active?: boolean
-          kind?: string
-          label: string
-          sort_order?: number
-          unit_count?: number | null
-          updated_at?: string
-          updated_by?: string | null
-          volume_ml?: number | null
-        }
-        Update: {
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          is_active?: boolean
-          kind?: string
-          label?: string
-          sort_order?: number
-          unit_count?: number | null
-          updated_at?: string
-          updated_by?: string | null
-          volume_ml?: number | null
-        }
-        Relationships: []
       }
       profiles: {
         Row: {
@@ -591,64 +735,150 @@ export type Database = {
           },
         ]
       }
+      ration_consumptions: {
+        Row: {
+          consumption_date: string
+          created_at: string
+          created_by: string | null
+          id: string
+          quantity: number
+          unit_id: string
+          updated_at: string
+          updated_by: string | null
+          variant_id: string
+        }
+        Insert: {
+          consumption_date: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          quantity: number
+          unit_id: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id: string
+        }
+        Update: {
+          consumption_date?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          quantity?: number
+          unit_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ration_consumptions_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_consumptions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_consumptions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_consumptions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "ration_consumptions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
+          },
+        ]
+      }
       ration_scale_item_versions: {
         Row: {
           auth_qty: number
           created_at: string
           created_by: string | null
           id: string
-          item_id: string
           notes: string | null
           scale_id: string
           uom: Database["public"]["Enums"]["uom"]
           valid_from: string
           valid_to: string | null
+          variant_id: string
         }
         Insert: {
           auth_qty: number
           created_at?: string
           created_by?: string | null
           id?: string
-          item_id: string
           notes?: string | null
           scale_id: string
           uom: Database["public"]["Enums"]["uom"]
           valid_from?: string
           valid_to?: string | null
+          variant_id: string
         }
         Update: {
           auth_qty?: number
           created_at?: string
           created_by?: string | null
           id?: string
-          item_id?: string
           notes?: string | null
           scale_id?: string
           uom?: Database["public"]["Enums"]["uom"]
           valid_from?: string
           valid_to?: string | null
+          variant_id?: string
         }
         Relationships: [
-          {
-            foreignKeyName: "ration_scale_item_versions_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "items"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "ration_scale_item_versions_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "v_items_current"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "ration_scale_item_versions_scale_id_fkey"
             columns: ["scale_id"]
             isOneToOne: false
             referencedRelation: "ration_scales"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
           },
         ]
       }
@@ -662,7 +892,7 @@ export type Database = {
           name: string
           rank_class: Database["public"]["Enums"]["ration_class"]
           terrain: Database["public"]["Enums"]["ration_terrain"]
-          unit_id: string
+          unit_id: string | null
           updated_at: string
           updated_by: string | null
         }
@@ -675,7 +905,7 @@ export type Database = {
           name: string
           rank_class: Database["public"]["Enums"]["ration_class"]
           terrain: Database["public"]["Enums"]["ration_terrain"]
-          unit_id: string
+          unit_id?: string | null
           updated_at?: string
           updated_by?: string | null
         }
@@ -688,7 +918,7 @@ export type Database = {
           name?: string
           rank_class?: Database["public"]["Enums"]["ration_class"]
           terrain?: Database["public"]["Enums"]["ration_terrain"]
-          unit_id?: string
+          unit_id?: string | null
           updated_at?: string
           updated_by?: string | null
         }
@@ -702,6 +932,93 @@ export type Database = {
           },
         ]
       }
+      ration_stock_transactions: {
+        Row: {
+          amount: number
+          created_at: string
+          created_by: string | null
+          id: string
+          notes: string | null
+          quantity: number
+          rate: number
+          source: string | null
+          transaction_date: string
+          type: string
+          unit_id: string
+          updated_at: string
+          updated_by: string | null
+          variant_id: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          notes?: string | null
+          quantity: number
+          rate: number
+          source?: string | null
+          transaction_date: string
+          type: string
+          unit_id: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          notes?: string | null
+          quantity?: number
+          rate?: number
+          source?: string | null
+          transaction_date?: string
+          type?: string
+          unit_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ration_stock_transactions_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_stock_transactions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_stock_transactions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_stock_transactions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "ration_stock_transactions_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
+          },
+        ]
+      }
       room_bill_items: {
         Row: {
           amount: number
@@ -710,10 +1027,10 @@ export type Database = {
           created_at: string
           description: string
           id: string
-          item_id: string | null
           meal_type: string | null
           order_id: string | null
           quantity: number
+          variant_id: string | null
         }
         Insert: {
           amount: number
@@ -722,10 +1039,10 @@ export type Database = {
           created_at?: string
           description: string
           id?: string
-          item_id?: string | null
           meal_type?: string | null
           order_id?: string | null
           quantity?: number
+          variant_id?: string | null
         }
         Update: {
           amount?: number
@@ -734,10 +1051,10 @@ export type Database = {
           created_at?: string
           description?: string
           id?: string
-          item_id?: string | null
           meal_type?: string | null
           order_id?: string | null
           quantity?: number
+          variant_id?: string | null
         }
         Relationships: [
           {
@@ -748,25 +1065,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "room_bill_items_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "items"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "room_bill_items_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "v_items_current"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "room_bill_items_order_id_fkey"
             columns: ["order_id"]
             isOneToOne: false
             referencedRelation: "room_bill_orders"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "room_bill_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "room_bill_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "room_bill_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "room_bill_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
           },
         ]
       }
@@ -913,8 +1244,8 @@ export type Database = {
           created_at: string
           id: string
           name: string
-          room_type: string
           nightly_rate: number
+          room_type: string
           status: string
           unit_id: string
           updated_at: string
@@ -923,8 +1254,8 @@ export type Database = {
           created_at?: string
           id?: string
           name: string
-          room_type?: string
           nightly_rate?: number
+          room_type?: string
           status?: string
           unit_id: string
           updated_at?: string
@@ -933,8 +1264,8 @@ export type Database = {
           created_at?: string
           id?: string
           name?: string
-          room_type?: string
           nightly_rate?: number
+          room_type?: string
           status?: string
           unit_id?: string
           updated_at?: string
@@ -991,14 +1322,13 @@ export type Database = {
           created_by: string | null
           id: string
           is_active: boolean
-          item_id: string
-          pack_size_id: string
           qty_packs: number
           rate: number
           source: string | null
           unit_id: string
           updated_at: string
           updated_by: string | null
+          variant_id: string
         }
         Insert: {
           acquired_on?: string | null
@@ -1006,14 +1336,13 @@ export type Database = {
           created_by?: string | null
           id?: string
           is_active?: boolean
-          item_id: string
-          pack_size_id: string
           qty_packs?: number
           rate: number
           source?: string | null
           unit_id: string
           updated_at?: string
           updated_by?: string | null
+          variant_id: string
         }
         Update: {
           acquired_on?: string | null
@@ -1021,43 +1350,49 @@ export type Database = {
           created_by?: string | null
           id?: string
           is_active?: boolean
-          item_id?: string
-          pack_size_id?: string
           qty_packs?: number
           rate?: number
           source?: string | null
           unit_id?: string
           updated_at?: string
           updated_by?: string | null
+          variant_id?: string
         }
         Relationships: [
-          {
-            foreignKeyName: "unit_inventory_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "items"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "unit_inventory_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "v_items_current"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "unit_inventory_pack_size_id_fkey"
-            columns: ["pack_size_id"]
-            isOneToOne: false
-            referencedRelation: "pack_sizes"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "unit_inventory_unit_id_fkey"
             columns: ["unit_id"]
             isOneToOne: false
             referencedRelation: "units"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
           },
         ]
       }
@@ -1154,19 +1489,67 @@ export type Database = {
           id: string | null
           is_active: boolean | null
           name: string | null
+          pack_kind: string | null
+          pack_label: string | null
+          pack_size_id: string | null
           rate_valid_from: string | null
           sku: string | null
+          unit_count: number | null
           unit_id: string | null
           uom: Database["public"]["Enums"]["uom"] | null
           updated_at: string | null
           updated_by: string | null
           version_id: string | null
           version_notes: string | null
+          volume_ml: number | null
         }
         Relationships: [
           {
-            foreignKeyName: "items_unit_id_fkey"
+            foreignKeyName: "products_unit_id_fkey"
             columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      v_masters_search: {
+        Row: {
+          category_id: string | null
+          category_name: string | null
+          category_parent_id: string | null
+          created_at: string | null
+          is_active: boolean | null
+          package_type: Database["public"]["Enums"]["package_type"] | null
+          product_description: string | null
+          product_fts: unknown
+          product_id: string | null
+          product_name: string | null
+          product_unit_id: string | null
+          sku: string | null
+          unit_type: Database["public"]["Enums"]["unit_type"] | null
+          unit_value: number | null
+          updated_at: string | null
+          variant_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "categories_parent_id_fkey"
+            columns: ["category_parent_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "categories_parent_id_fkey"
+            columns: ["category_parent_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["category_id"]
+          },
+          {
+            foreignKeyName: "products_unit_id_fkey"
+            columns: ["product_unit_id"]
             isOneToOne: false
             referencedRelation: "units"
             referencedColumns: ["id"]
@@ -1194,25 +1577,39 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "ration_scale_item_versions_item_id_fkey"
-            columns: ["item_id"]
+            foreignKeyName: "ration_scale_item_versions_scale_id_fkey"
+            columns: ["scale_id"]
             isOneToOne: false
-            referencedRelation: "items"
+            referencedRelation: "ration_scales"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "ration_scale_item_versions_item_id_fkey"
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
             columns: ["item_id"]
             isOneToOne: false
             referencedRelation: "v_items_current"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "ration_scale_item_versions_scale_id_fkey"
-            columns: ["scale_id"]
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["item_id"]
             isOneToOne: false
-            referencedRelation: "ration_scales"
-            referencedColumns: ["id"]
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "ration_scale_item_versions_variant_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
           },
           {
             foreignKeyName: "ration_scales_unit_id_fkey"
@@ -1230,8 +1627,8 @@ export type Database = {
           current_status: string | null
           id: string | null
           name: string | null
-          room_type: string | null
           nightly_rate: number | null
+          room_type: string | null
           status: string | null
           unit_id: string | null
           updated_at: string | null
@@ -1242,8 +1639,8 @@ export type Database = {
           current_status?: never
           id?: string | null
           name?: string | null
-          room_type?: string | null
           nightly_rate?: number | null
+          room_type?: string | null
           status?: string | null
           unit_id?: string | null
           updated_at?: string | null
@@ -1254,8 +1651,8 @@ export type Database = {
           current_status?: never
           id?: string | null
           name?: string | null
-          room_type?: string | null
           nightly_rate?: number | null
+          room_type?: string | null
           status?: string | null
           unit_id?: string | null
           updated_at?: string | null
@@ -1295,55 +1692,52 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "unit_inventory_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "items"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "unit_inventory_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "v_items_current"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "unit_inventory_pack_size_id_fkey"
-            columns: ["pack_size_id"]
-            isOneToOne: false
-            referencedRelation: "pack_sizes"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "unit_inventory_unit_id_fkey"
             columns: ["unit_id"]
             isOneToOne: false
             referencedRelation: "units"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "unit_inventory_variant_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
+          },
         ]
       }
     }
     Functions: {
-      set_item_rate: {
-        Args: {
-          p_effective_at?: string
-          p_item_id: string
-          p_notes?: string
-          p_rate: number
-          p_ration_scale?: number
-        }
-        Returns: string
-      }
       set_ration_scale_item: {
         Args: {
           p_auth_qty: number
           p_effective_at?: string
-          p_item_id: string
           p_notes?: string
           p_scale_id: string
           p_uom: Database["public"]["Enums"]["uom"]
+          p_variant_id: string
         }
         Returns: string
       }
@@ -1387,9 +1781,11 @@ export type Database = {
         | "grocery"
         | "room"
       mess_type: "officer" | "jco" | "or" | "combined"
+      package_type: "BOTTLE" | "CAN" | "PACKET" | "BOX" | "LOOSE"
       ration_class: "officer" | "jco" | "or" | "civilian"
       ration_terrain: "plains" | "desert" | "high_altitude" | "field" | "sea"
       relation_type: "spouse" | "child" | "parent"
+      unit_type: "ML" | "LITRE" | "GRAM" | "KG" | "PIECE"
       uom: "kg" | "g" | "l" | "ml" | "piece" | "pack" | "bottle"
       user_role: "user" | "manager" | "unit_admin" | "admin"
     }
@@ -1562,9 +1958,11 @@ export const Constants = {
         "room",
       ],
       mess_type: ["officer", "jco", "or", "combined"],
+      package_type: ["BOTTLE", "CAN", "PACKET", "BOX", "LOOSE"],
       ration_class: ["officer", "jco", "or", "civilian"],
       ration_terrain: ["plains", "desert", "high_altitude", "field", "sea"],
       relation_type: ["spouse", "child", "parent"],
+      unit_type: ["ML", "LITRE", "GRAM", "KG", "PIECE"],
       uom: ["kg", "g", "l", "ml", "piece", "pack", "bottle"],
       user_role: ["user", "manager", "unit_admin", "admin"],
     },
