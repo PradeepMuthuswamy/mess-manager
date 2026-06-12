@@ -2,6 +2,7 @@ import { configureStore, type Action, type ThunkAction } from '@reduxjs/toolkit'
 import authReducer from './auth-slice';
 import { guestRoomsReducer } from './guest-rooms';
 import stockReducer from './stock/slice';
+import usersReducer from './users/slice';
 
 export const makeStore = () => {
   return configureStore({
@@ -9,6 +10,7 @@ export const makeStore = () => {
       auth: authReducer,
       guestRooms: guestRoomsReducer,
       stock: stockReducer,
+      users: usersReducer,
     },
   });
 };

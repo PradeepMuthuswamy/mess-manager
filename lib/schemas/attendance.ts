@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 import { rationTerrainSchema } from './ration';
+import { messingBillingModeSchema } from './messing';
 
 extendZodWithOpenApi(z);
 
@@ -53,8 +54,10 @@ export const setUnitConfigSchema = z
     unit_id: z.string().uuid(),
     mess_type: messTypeSchema.nullable().optional(),
     terrain: rationTerrainSchema.nullable().optional(),
+    messing_billing_mode: messingBillingModeSchema.nullable().optional(),
   })
   .openapi('SetUnitConfigInput');
+
 
 export const setDiningInSchema = z
   .object({

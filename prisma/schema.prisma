@@ -107,6 +107,26 @@ enum RelationType {
   @@map("relation_type")
 }
 
+enum MessingBillingMode {
+  FLAT_RATE
+  P_REGISTER_SPLIT
+
+  @@map("messing_billing_mode")
+}
+
+enum MessingMealType {
+  breakfast
+  morning_tea
+  lunch
+  evening_tea
+  dinner
+  packed_breakfast
+  packed_lunch
+  packed_dinner
+
+  @@map("messing_meal_type")
+}
+
 model Unit {
   id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name              String             @unique
@@ -133,6 +153,8 @@ model Unit {
   bar_chits         BarChit[]
   ration_stock_transactions RationStockTransaction[]
   ration_consumptions       RationConsumption[]
+  messing_billing_mode      MessingBillingMode       @default(P_REGISTER_SPLIT)
+  messing_flat_rates        MessingFlatRate[]
 
   @@map("units")
 }
@@ -551,4 +573,23 @@ model RationConsumption {
 
   @@unique([unit_id, consumption_date, variant_id])
   @@map("ration_consumptions")
+}
+
+model MessingFlatRate {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unit_id      String          @db.Uuid
+  meal_type    MessingMealType
+  rate         Decimal         @db.Decimal(12, 2)
+  valid_from   DateTime        @db.Date
+  valid_to     DateTime?       @db.Date
+  created_at   DateTime        @default(now()) @db.Timestamptz
+  created_by   String?         @db.Uuid
+  updated_at   DateTime        @default(now()) @db.Timestamptz
+  updated_by   String?         @db.Uuid
+
+  unit         Unit            @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+
+  @@unique([unit_id, meal_type, valid_from], name: "unit_meal_rate_history_unique")
+  @@index([unit_id, meal_type, valid_from, valid_to])
+  @@map("messing_flat_rates")
 }

@@ -566,6 +566,53 @@ export type Database = {
         }
         Relationships: []
       }
+      messing_flat_rates: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          meal_type: Database["public"]["Enums"]["messing_meal_type"]
+          rate: number
+          unit_id: string
+          updated_at: string
+          updated_by: string | null
+          valid_from: string
+          valid_to: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          meal_type: Database["public"]["Enums"]["messing_meal_type"]
+          rate: number
+          unit_id: string
+          updated_at?: string
+          updated_by?: string | null
+          valid_from: string
+          valid_to?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          meal_type?: Database["public"]["Enums"]["messing_meal_type"]
+          rate?: number
+          unit_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          valid_from?: string
+          valid_to?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messing_flat_rates_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       product_variants: {
         Row: {
           created_at: string
@@ -1416,6 +1463,7 @@ export type Database = {
           id: string
           is_active: boolean
           mess_type: Database["public"]["Enums"]["mess_type"] | null
+          messing_billing_mode: Database["public"]["Enums"]["messing_billing_mode"]
           name: string
           terrain: Database["public"]["Enums"]["ration_terrain"] | null
           updated_at: string
@@ -1429,6 +1477,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           mess_type?: Database["public"]["Enums"]["mess_type"] | null
+          messing_billing_mode?: Database["public"]["Enums"]["messing_billing_mode"]
           name: string
           terrain?: Database["public"]["Enums"]["ration_terrain"] | null
           updated_at?: string
@@ -1442,6 +1491,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           mess_type?: Database["public"]["Enums"]["mess_type"] | null
+          messing_billing_mode?: Database["public"]["Enums"]["messing_billing_mode"]
           name?: string
           terrain?: Database["public"]["Enums"]["ration_terrain"] | null
           updated_at?: string
@@ -1800,6 +1850,16 @@ export type Database = {
         | "grocery"
         | "room"
       mess_type: "officer" | "jco" | "or" | "combined"
+      messing_billing_mode: "FLAT_RATE" | "P_REGISTER_SPLIT"
+      messing_meal_type:
+        | "breakfast"
+        | "morning_tea"
+        | "lunch"
+        | "evening_tea"
+        | "dinner"
+        | "packed_breakfast"
+        | "packed_lunch"
+        | "packed_dinner"
       package_type: "BOTTLE" | "CAN" | "PACKET" | "BOX" | "LOOSE"
       ration_class: "officer" | "jco" | "or" | "civilian"
       ration_terrain: "plains" | "desert" | "high_altitude" | "field" | "sea"
@@ -1985,6 +2045,17 @@ export const Constants = {
         "room",
       ],
       mess_type: ["officer", "jco", "or", "combined"],
+      messing_billing_mode: ["FLAT_RATE", "P_REGISTER_SPLIT"],
+      messing_meal_type: [
+        "breakfast",
+        "morning_tea",
+        "lunch",
+        "evening_tea",
+        "dinner",
+        "packed_breakfast",
+        "packed_lunch",
+        "packed_dinner",
+      ],
       package_type: ["BOTTLE", "CAN", "PACKET", "BOX", "LOOSE"],
       ration_class: ["officer", "jco", "or", "civilian"],
       ration_terrain: ["plains", "desert", "high_altitude", "field", "sea"],

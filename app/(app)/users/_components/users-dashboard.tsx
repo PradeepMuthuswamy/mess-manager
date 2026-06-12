@@ -45,6 +45,13 @@ import {
 } from '@/lib/users/actions';
 import { UserFormDialog } from './user-form-dialog';
 import { capabilityDomainLabel } from '@/lib/auth/types';
+import { useAppDispatch, useAppSelector } from '@/lib/redux/hooks';
+import {
+  selectUsersUi,
+  openInvite,
+  openEdit,
+  closeForm,
+} from '@/lib/redux/users/slice';
 
 interface UsersDashboardProps {
   initialUsers: any[];
@@ -59,16 +66,14 @@ export function UsersDashboard({
 }: UsersDashboardProps) {
   const router = useRouter();
   const { user: currentUser, activeUnitId } = useAppContext();
+  const dispatch = useAppDispatch();
+  const { isFormOpen, editingUser } = useAppSelector(selectUsersUi);
 
   // State
   const [users, setUsers] = useState<any[]>(initialUsers);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-
-  // Modals state
-  const [editingUser, setEditingUser] = useState<any | null>(null);
-  const [isFormOpen, setIsFormOpen] = useState(false);
 
   const [isPending, startTransition] = useTransition();
 
@@ -119,13 +124,11 @@ export function UsersDashboard({
   };
 
   const handleOpenEdit = (user: any) => {
-    setEditingUser(user);
-    setIsFormOpen(true);
+    dispatch(openEdit({ user }));
   };
 
   const handleOpenInvite = () => {
-    setEditingUser(null);
-    setIsFormOpen(true);
+    dispatch(openInvite({ activeUnitId }));
   };
 
   // Filtered Users List
@@ -443,8 +446,7 @@ export function UsersDashboard({
         <UserFormDialog
           open={isFormOpen}
           onClose={() => {
-            setIsFormOpen(false);
-            setEditingUser(null);
+            dispatch(closeForm());
             handleRefresh();
           }}
           user={editingUser}

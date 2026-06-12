@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { MessType } from '@/lib/schemas/attendance';
 import type { RationTerrain } from '@/lib/schemas/ration';
+import { getFlatRatesHistory, getActiveFlatRates } from '@/lib/messing/queries';
+import type { MessingBillingMode } from '@/lib/schemas/messing';
 
 async function updateProfileAction(formData: FormData) {
   'use server';
@@ -41,15 +43,23 @@ export default async function SettingsPage() {
     name: string;
     mess_type: MessType | null;
     terrain: RationTerrain | null;
+    messing_billing_mode: MessingBillingMode;
   };
   let unit: UnitCfg | null = null;
+  let activeFlatRates: Record<string, number> = {};
+  let flatRatesHistory: any[] = [];
   if (canManageUnit && unitId) {
     const { data } = await supabase
       .from('units')
-      .select('id, name, mess_type, terrain')
+      .select('id, name, mess_type, terrain, messing_billing_mode')
       .eq('id', unitId)
       .single();
-    if (data) unit = data as UnitCfg;
+    if (data) {
+      unit = data as UnitCfg;
+      const today = new Date().toISOString().slice(0, 10);
+      activeFlatRates = await getActiveFlatRates(unitId, today);
+      flatRatesHistory = await getFlatRatesHistory(unitId);
+    }
   }
 
   return (
@@ -65,6 +75,9 @@ export default async function SettingsPage() {
           unitName={unit.name}
           messType={unit.mess_type}
           terrain={unit.terrain}
+          messingBillingMode={unit.messing_billing_mode}
+          activeFlatRates={activeFlatRates}
+          flatRatesHistory={flatRatesHistory}
         />
       )}
 

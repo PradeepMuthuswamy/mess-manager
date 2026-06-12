@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/service';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireRole } from '@/lib/auth/require-role';
 import {
@@ -121,18 +122,25 @@ export async function setUnitConfigAction(input: unknown): Promise<ActionResult>
   if (!parsed.success)
     return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const { unit_id, mess_type, terrain } = parsed.data;
+  const { unit_id, mess_type, terrain, messing_billing_mode } = parsed.data;
   const user = await requireRole(['super_admin', 'unit_admin']);
   if (user.role !== 'super_admin' && user.homeUnitId !== unit_id) {
     return { error: 'You can only configure your own unit.' };
   }
 
-  const patch: { mess_type?: typeof mess_type; terrain?: typeof terrain } = {};
+  const patch: {
+    mess_type?: typeof mess_type;
+    terrain?: typeof terrain;
+    messing_billing_mode?: Exclude<typeof messing_billing_mode, null>;
+  } = {};
   if (mess_type !== undefined) patch.mess_type = mess_type;
   if (terrain !== undefined) patch.terrain = terrain;
+  if (messing_billing_mode !== undefined && messing_billing_mode !== null) {
+    patch.messing_billing_mode = messing_billing_mode;
+  }
   if (Object.keys(patch).length === 0) return { ok: true };
 
-  const supabase = await createClient();
+  const supabase = createServiceClient();
   const { error } = await supabase
     .from('units')
     .update(patch)
