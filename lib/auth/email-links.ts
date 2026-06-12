@@ -29,8 +29,12 @@ export function buildAuthConfirmLink(opts: {
   type: AuthEmailLinkType;
   hashedToken: string;
   next: string;
+  /** Override the app origin — e.g. the admin console sending an invite
+   * for an ops-role account links to the user app instead of itself. */
+  baseUrl?: string;
 }): string {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
+  const siteUrl =
+    opts.baseUrl ?? process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
   const params = new URLSearchParams({
     token_hash: opts.hashedToken,
     type: opts.type,

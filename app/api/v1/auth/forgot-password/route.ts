@@ -21,11 +21,13 @@ export const POST = withRoute(async (req: NextRequest) => {
   const admin = createServiceClient();
   const { data: profile } = await admin
     .from('profiles')
-    .select('id, full_name')
+    .select('id, full_name, role')
     .eq('email', parsed.data.email)
     .maybeSingle();
 
-  if (profile) {
+  // Admin accounts reset their password via the Admin Console; respond
+  // identically either way to avoid account enumeration.
+  if (profile && profile.role !== 'admin') {
     const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
       type: 'recovery',
       email: parsed.data.email,

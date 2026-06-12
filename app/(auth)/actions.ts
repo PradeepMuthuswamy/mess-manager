@@ -1,7 +1,9 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
+import { AUTH_FLOW_GATE_COOKIE } from '@/lib/auth/flow-gate';
 import { createServiceClient } from '@/lib/supabase/service';
 import {
   signInSchema,
@@ -38,12 +40,26 @@ export async function signInAction(
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({
+  const { data: signedIn, error } = await supabase.auth.signInWithPassword({
     email: parsed.data.email,
     password: parsed.data.password,
   });
   if (error) {
     return { error: error.message };
+  }
+
+  // App segregation: admin accounts manage the platform from the Admin
+  // Console and may not hold a session in the ops app.
+  if (signedIn.user) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', signedIn.user.id)
+      .maybeSingle();
+    if (profile?.role === 'admin') {
+      await supabase.auth.signOut();
+      return { error: 'Admin accounts must sign in via the Admin Console.' };
+    }
   }
 
   const next = safeNextPath(formData.get('next'));
@@ -53,6 +69,7 @@ export async function signInAction(
 export async function signOutAction(): Promise<void> {
   const supabase = await createClient();
   await supabase.auth.signOut();
+  (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
   redirect('/sign-in');
 }
 
@@ -72,11 +89,13 @@ export async function forgotPasswordAction(
 
   const { data: profile } = await admin
     .from('profiles')
-    .select('id, full_name')
+    .select('id, full_name, role')
     .eq('email', parsed.data.email)
     .maybeSingle();
 
-  if (profile) {
+  // Admin accounts reset their password via the Admin Console; respond
+  // identically either way to avoid account enumeration.
+  if (profile && profile.role !== 'admin') {
     const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
       type: 'recovery',
       email: parsed.data.email,
@@ -126,10 +145,18 @@ export async function resetPasswordAction(
     password: parsed.data.password,
   });
   if (error) {
-    return { error: error.message };
+    // A recovery session that failed to set a password must not survive —
+    // otherwise the reset link doubles as a sign-in link.
+    await supabase.auth.signOut();
+    (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+    redirect('/sign-in?error=reset_failed');
   }
 
-  redirect('/dashboard');
+  // Success: end the recovery session and require a fresh sign-in with
+  // the new password.
+  await supabase.auth.signOut();
+  (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+  redirect('/sign-in?message=password_updated');
 }
 
 export async function acceptInviteAction(
@@ -173,6 +200,8 @@ export async function acceptInviteAction(
       .eq('id', user.id);
   }
 
+  // Flow complete — lift the invite-session confinement.
+  (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
   redirect('/dashboard');
 }
 
@@ -189,12 +218,13 @@ export async function sendMagicLinkAction(
 
   const { data: profile } = await admin
     .from('profiles')
-    .select('id, full_name')
+    .select('id, full_name, role')
     .eq('email', email)
     .maybeSingle();
 
-  if (!profile) {
-    // Return ok: true to prevent account enumeration
+  if (!profile || profile.role === 'admin') {
+    // No account, or an admin account (Admin Console only) — return
+    // ok: true either way to prevent account enumeration.
     return { ok: true };
   }
 
