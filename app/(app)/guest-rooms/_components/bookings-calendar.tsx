@@ -13,12 +13,10 @@ import {
   addMonths,
   subMonths,
   parseISO,
-  addDays,
 } from 'date-fns';
 import {
   ChevronLeft,
   ChevronRight,
-  Home,
   Plus,
   Search,
 } from 'lucide-react';
@@ -44,6 +42,8 @@ export function BookingsCalendar({
   cursor,
   setCursor,
   loading,
+  searchQuery,
+  onSearchQueryChange,
   onViewBooking,
   onNewBooking,
 }: {
@@ -51,11 +51,12 @@ export function BookingsCalendar({
   cursor: Date;
   setCursor: (d: Date) => void;
   loading: boolean;
+  searchQuery: string;
+  onSearchQueryChange: (value: string) => void;
   onViewBooking: (b: Booking) => void;
   onNewBooking: (date: Date) => void;
 }) {
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
 
   const today = useMemo(() => new Date(), []);
 
@@ -123,7 +124,7 @@ export function BookingsCalendar({
               type="search"
               placeholder="Search guest, room..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => onSearchQueryChange(e.target.value)}
               className="pl-8 h-8 text-xs bg-background"
             />
           </div>
@@ -215,12 +216,17 @@ export function BookingsCalendar({
                       }}
                       title={`${b.guest_name} — ${b.room.name} — ${b.status.replace('_', ' ')}`}
                       className={cn(
-                        'w-full text-left truncate rounded px-1.5 py-0.5 text-[11px] leading-tight transition-ds hover:opacity-85 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer',
+                        'w-full rounded px-1.5 py-1 text-left text-[11px] leading-tight transition-ds hover:opacity-85 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer',
                         STATUS_STYLES[b.status] ??
                           'bg-muted text-muted-foreground',
                       )}
                     >
-                      {b.guest_name}
+                      <span className="block truncate font-medium">
+                        {b.guest_name}
+                      </span>
+                      <span className="block truncate text-[10px] opacity-80">
+                        {b.room?.name ?? 'Room'} · {b.status.replace('_', ' ')}
+                      </span>
                     </button>
                   ))}
                   {hidden > 0 ? (

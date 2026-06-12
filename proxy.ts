@@ -10,6 +10,7 @@ export const config = {
 };
 
 const PUBLIC_PATHS = [
+  '/scratchloop',
   '/',
   '/sign-in',
   '/forgot-password',

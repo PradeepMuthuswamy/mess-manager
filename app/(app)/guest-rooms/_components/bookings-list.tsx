@@ -1,6 +1,6 @@
-"use client"
+'use client';
 
-import { useState } from "react"
+import { useState } from 'react';
 import {
   Table,
   TableBody,
@@ -8,9 +8,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+} from '@/components/ui/table';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,14 +32,17 @@ import {
   ChevronDown,
   Pencil,
   Trash2,
-} from "lucide-react"
-import type { Booking } from "@/lib/guest-rooms/types"
-import { Input } from "@/components/ui/input"
-import { EmptyState } from "@/components/shared/empty-state"
+} from 'lucide-react';
+import type { Booking } from '@/lib/guest-rooms/types';
+import { Input } from '@/components/ui/input';
+import { EmptyState } from '@/components/shared/empty-state';
+import { cn } from '@/lib/utils';
 
 interface BookingsListProps {
-  bookings: Booking[]
-  onRefresh?: () => void
+  bookings: Booking[];
+  searchQuery: string;
+  onSearchQueryChange: (value: string) => void;
+  pendingActions: Record<string, true | undefined>;
   onViewBooking?: (booking: Booking) => void;
   onEditBooking?: (booking: Booking) => void;
   onDeleteBooking?: (bookingId: string) => void;
@@ -52,7 +55,7 @@ interface BookingsListProps {
   onViewBill?: (booking: Booking) => void;
 }
 
-type BadgeVariant = "default" | "secondary" | "outline" | "destructive"
+type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive';
 
 const STATUS_BADGE: Record<Booking["status"], { label: string; variant: BadgeVariant }> = {
   confirmed:   { label: "Confirmed",   variant: "secondary"   },
@@ -74,7 +77,9 @@ function nightsBetween(checkIn: string, checkOut: string) {
 
 export function BookingsList({
   bookings,
-  onRefresh,
+  searchQuery,
+  onSearchQueryChange,
+  pendingActions,
   onViewBooking,
   onEditBooking,
   onDeleteBooking,
@@ -86,11 +91,13 @@ export function BookingsList({
   onUndoCheckOut,
   onViewBill,
 }: BookingsListProps) {
-  const [searchQuery, setSearchQuery] = useState("")
   const [sortField, setSortField] = useState<keyof Booking | 'room_name' | 'nights' | null>(null)
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 10
+
+  const isBookingPending = (bookingId: string) =>
+    Object.keys(pendingActions).some((key) => key.endsWith(`:${bookingId}`));
 
   // 1. Filter bookings
   const filteredBookings = bookings.filter((b) => {
@@ -111,8 +118,8 @@ export function BookingsList({
   const sortedBookings = [...filteredBookings].sort((a, b) => {
     if (!sortField) return 0
 
-    let aVal: any
-    let bVal: any
+    let aVal: unknown
+    let bVal: unknown
 
     if (sortField === 'room_name') {
       aVal = a.room?.name ?? ""
@@ -174,7 +181,7 @@ export function BookingsList({
             placeholder="Search bookings by guest, room..."
             value={searchQuery}
             onChange={(e) => {
-              setSearchQuery(e.target.value)
+              onSearchQueryChange(e.target.value)
               setCurrentPage(1)
             }}
             className="pl-8 bg-background"
@@ -277,11 +284,19 @@ export function BookingsList({
               {paginatedBookings.map((booking) => {
                 const statusMeta = STATUS_BADGE[booking.status] ?? { label: booking.status, variant: "outline" as BadgeVariant }
                 const nights = nightsBetween(booking.check_in_date, booking.check_out_date)
+                const isPending = isBookingPending(booking.id)
                 return (
-                  <TableRow key={booking.id} className="border-t border-border">
+                  <TableRow
+                    key={booking.id}
+                    className={cn(
+                      'border-t border-border transition-opacity',
+                      isPending && 'opacity-70',
+                    )}
+                  >
                     <TableCell className="py-2 px-3">
                       <button
                         onClick={() => onViewBooking?.(booking)}
+                        disabled={isPending}
                         className="font-medium text-sm text-foreground hover:underline text-left cursor-pointer focus:outline-none"
                       >
                         {booking.guest_name}
@@ -310,9 +325,16 @@ export function BookingsList({
                     <TableCell className="py-2 px-3 text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-7 w-7">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            disabled={isPending}
+                          >
                             <MoreHorizontal className="h-3.5 w-3.5" />
-                            <span className="sr-only">Open menu for {booking.guest_name}</span>
+                            <span className="sr-only">
+                              {isPending ? 'Updating' : `Open menu for ${booking.guest_name}`}
+                            </span>
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">

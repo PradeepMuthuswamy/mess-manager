@@ -1,6 +1,6 @@
-"use client"
+'use client';
 
-import { useState, useTransition } from "react"
+import { useState, useTransition } from 'react';
 import { AdaptiveModal } from "@/components/shared/adaptive-modal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,15 +11,17 @@ import { toast } from "sonner"
 import {
   addBillItemAction,
   deleteBillItemAction,
-  fetchBookingWithBillAction,
   updateBillItemAction,
 } from "@/lib/guest-rooms/actions"
 import type { BookingWithBill } from "@/lib/guest-rooms/types"
+import { useAppDispatch } from '@/lib/redux/hooks';
+import { fetchBookingDetail } from '@/lib/redux/guest-rooms';
 
 interface BillingDialogProps {
   open: boolean
   onClose: () => void
   booking: BookingWithBill | null
+  bookingId: string | null
 }
 
 const inr = (n: number) =>
@@ -32,40 +34,89 @@ function lineTotal(i: { amount: number | string; quantity: number | string }) {
   return Number(i.amount) * Number(i.quantity)
 }
 
-export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
-  const [prevBooking, setPrevBooking] = useState<BookingWithBill | null>(null)
-  const [current, setCurrent] = useState<BookingWithBill | null>(booking)
-  const [pending, startTransition] = useTransition()
+export function BillingDialog({
+  open,
+  onClose,
+  booking,
+  bookingId,
+}: BillingDialogProps) {
+  if (!booking) {
+    if (!open) return null
 
-  // Form states for permanent entries
-  const [roomRentAmount, setRoomRentAmount] = useState("")
-  const [roomRentQty, setRoomRentQty] = useState("")
-  const [foodAmount, setFoodAmount] = useState("")
-  const [foodQty, setFoodQty] = useState("")
-
-  // Form state for dynamic misc entries
-  const [extra_, setExtra] = useState({ description: "", amount: "", quantity: "1" })
-
-  if (open && booking !== prevBooking) {
-    setPrevBooking(booking)
-    setCurrent(booking)
-
-    const rentItem = booking?.bill?.items?.find((i) => i.category === "room_rent")
-    const foodItem = booking?.bill?.items?.find((i) => i.category === "food" && i.meal_type === null)
-
-    setRoomRentAmount(rentItem ? String(rentItem.amount) : "0")
-    setRoomRentQty(rentItem ? String(rentItem.quantity) : "0")
-    setFoodAmount(foodItem ? String(foodItem.amount) : "900")
-    setFoodQty(foodItem ? String(foodItem.quantity) : "0")
+    return (
+      <AdaptiveModal
+        open={open}
+        onClose={onClose}
+        title="Guest Bill"
+        description={bookingId ? "Loading booking bill..." : "No booking selected"}
+        contentClassName="sm:max-w-4xl max-h-[90vh]"
+        footer={<Button variant="outline" onClick={onClose}>Close</Button>}
+      >
+        <p className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+          Loading bill details...
+        </p>
+      </AdaptiveModal>
+    )
   }
 
-  const bill = current?.bill ?? null
+  return (
+    <BillingDialogContent
+      key={billVersionKey(booking)}
+      open={open}
+      onClose={onClose}
+      booking={booking}
+    />
+  )
+}
+
+function billVersionKey(booking: BookingWithBill) {
+  const bill = booking.bill
+  if (!bill) return `${booking.id}:no-bill`
+  const itemVersion = (bill.items ?? [])
+    .map((item) => `${item.id}:${item.amount}:${item.quantity}:${item.description}`)
+    .join('|')
+  const orderVersion = (bill.orders ?? [])
+    .map((order) => `${order.id}:${order.items?.length ?? 0}`)
+    .join('|')
+  return `${booking.id}:${bill.status}:${itemVersion}:${orderVersion}`
+}
+
+function BillingDialogContent({
+  open,
+  onClose,
+  booking,
+}: {
+  open: boolean
+  onClose: () => void
+  booking: BookingWithBill
+}) {
+  const dispatch = useAppDispatch()
+  const [pending, startTransition] = useTransition()
+
+  const bill = booking.bill ?? null
   const isDraft = bill?.status === "draft"
   const flat = bill?.items ?? []
   const orders = bill?.orders ?? []
 
   const rentItem = flat.find((i) => i.category === "room_rent")
   const baseFoodItem = flat.find((i) => i.category === "food" && i.meal_type === null)
+
+  // Form states for permanent entries
+  const [roomRentAmount, setRoomRentAmount] = useState(
+    rentItem ? String(rentItem.amount) : "0",
+  )
+  const [roomRentQty, setRoomRentQty] = useState(
+    rentItem ? String(rentItem.quantity) : "0",
+  )
+  const [foodAmount, setFoodAmount] = useState(
+    baseFoodItem ? String(baseFoodItem.amount) : "900",
+  )
+  const [foodQty, setFoodQty] = useState(
+    baseFoodItem ? String(baseFoodItem.quantity) : "0",
+  )
+
+  // Form state for dynamic misc entries
+  const [extra_, setExtra] = useState({ description: "", amount: "", quantity: "1" })
 
   // Miscellaneous extra items: anything that isn't the primary rent item or the primary base food item
   const miscItems = flat.filter(
@@ -79,6 +130,10 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
       0,
     )
 
+  async function refreshCurrent() {
+    await dispatch(fetchBookingDetail(booking.id))
+  }
+
   function run(fn: () => Promise<{ ok?: boolean; error?: string }>, ok: string) {
     startTransition(async () => {
       const res = await fn()
@@ -87,17 +142,10 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
         return
       }
       toast.success(ok)
-      if (current) {
-        const refreshed = await fetchBookingWithBillAction(current.id)
-        if (refreshed.data) {
-          setCurrent(refreshed.data)
-          const rent = refreshed.data.bill?.items?.find((i) => i.category === "room_rent")
-          const food = refreshed.data.bill?.items?.find((i) => i.category === "food" && i.meal_type === null)
-          setRoomRentAmount(rent ? String(rent.amount) : "0")
-          setRoomRentQty(rent ? String(rent.quantity) : "0")
-          setFoodAmount(food ? String(food.amount) : "900")
-          setFoodQty(food ? String(food.quantity) : "0")
-        }
+      try {
+        await refreshCurrent()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to refresh bill")
       }
     })
   }
@@ -113,26 +161,19 @@ export function BillingDialog({ open, onClose, booking }: BillingDialogProps) {
           await updateBillItemAction(baseFoodItem.id, Number(foodAmount) || 0, Number(foodQty) || 0)
         }
         toast.success("Rates and quantities updated successfully")
-        if (current) {
-          const refreshed = await fetchBookingWithBillAction(current.id)
-          if (refreshed.data) {
-            setCurrent(refreshed.data)
-          }
-        }
-      } catch (err) {
+        await refreshCurrent()
+      } catch {
         toast.error("Failed to update rates")
       }
     })
   }
-
-  if (!current) return null
 
   return (
     <AdaptiveModal
       open={open}
       onClose={onClose}
       title="Guest Bill"
-      description={`${current.guest_name} · Room ${current.room?.name ?? ""}`}
+      description={`${booking.guest_name} · Room ${booking.room?.name ?? ""}`}
       contentClassName="sm:max-w-4xl max-h-[90vh]"
       footer={<Button variant="outline" onClick={onClose}>Close</Button>}
     >

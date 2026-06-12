@@ -3,6 +3,12 @@ import { requireCapability } from '@/lib/auth/require-capability';
 import { GuestRoomsDashboard } from './_components/guest-rooms-dashboard';
 import { EmptyState } from '@/components/shared/empty-state';
 import { DoorClosed } from 'lucide-react';
+import { endOfMonth, endOfWeek, format, startOfMonth, startOfWeek } from 'date-fns';
+import {
+  getBookings,
+  getRooms,
+  getUnitFurniture,
+} from '@/lib/guest-rooms/queries';
 
 export default async function GuestRoomsPage() {
   await requireCapability('rooms.read');
@@ -28,6 +34,17 @@ export default async function GuestRoomsPage() {
     );
   }
 
+  const today = new Date();
+  const gridStart = startOfWeek(startOfMonth(today), { weekStartsOn: 0 });
+  const gridEnd = endOfWeek(endOfMonth(today), { weekStartsOn: 0 });
+  const from = format(gridStart, 'yyyy-MM-dd');
+  const to = format(gridEnd, 'yyyy-MM-dd');
+  const [rooms, bookings, furniture] = await Promise.all([
+    getRooms(user.activeUnitId),
+    getBookings(user.activeUnitId, from, to),
+    getUnitFurniture(user.activeUnitId),
+  ]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -41,7 +58,17 @@ export default async function GuestRoomsPage() {
         </div>
       </div>
 
-      <GuestRoomsDashboard unitId={user.activeUnitId} />
+      <GuestRoomsDashboard
+        unitId={user.activeUnitId}
+        initialSnapshot={{
+          unitId: user.activeUnitId,
+          range: { from, to },
+          rooms,
+          bookings,
+          furniture,
+          fetchedAt: new Date().toISOString(),
+        }}
+      />
     </div>
   );
 }

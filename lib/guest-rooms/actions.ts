@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { requireCapability } from '@/lib/auth/require-capability';
-import { 
+import {
   createRoomSchema,
   updateRoomSchema,
   createBookingSchema,
@@ -17,12 +17,44 @@ import {
 } from '@/lib/schemas/guest-rooms';
 import { Database } from '@/lib/supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Booking, Room } from './types';
 
 type Sb = SupabaseClient<Database>;
 
 const GUEST_ROOMS_PATH = '/guest-rooms';
 
 const UNIQUE_VIOLATION = '23505';
+
+async function changedBooking(
+  bookingId: string,
+  affectedRoomIds: string[],
+): Promise<{ ok: true; data: Booking; affectedRoomIds: string[] } | { error: string }> {
+  const { getBookingSummaryById } = await import('./queries');
+  try {
+    const data = await getBookingSummaryById(bookingId);
+    return { ok: true, data, affectedRoomIds: [...new Set(affectedRoomIds)] };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Failed to load booking',
+    };
+  }
+}
+
+async function changedRoom(
+  unitId: string,
+  roomId: string,
+): Promise<{ ok: true; data: Room } | { error: string }> {
+  const { getRoomsByIds } = await import('./queries');
+  try {
+    const [data] = await getRoomsByIds(unitId, [roomId]);
+    if (!data) return { error: 'Room not found' };
+    return { ok: true, data };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Failed to load room',
+    };
+  }
+}
 
 // --- Furniture Catalogue Actions ---
 
@@ -36,7 +68,7 @@ export async function createFurnitureItemAction(input: unknown) {
   const { data, error } = await supabase
     .from('unit_furniture')
     .insert(parsed.data)
-    .select('id, name, kind')
+    .select('*')
     .single();
 
   if (error) {
@@ -83,7 +115,7 @@ export async function createRoomAction(input: unknown) {
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedRoom(parsed.data.unit_id, newRoom.id);
 }
 
 export async function updateRoomAction(id: string, input: unknown) {
@@ -143,7 +175,7 @@ export async function updateRoomAction(id: string, input: unknown) {
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedRoom(existing.unit_id, id);
 }
 
 // --- Booking Actions ---
@@ -177,17 +209,19 @@ export async function createBookingAction(input: CreateBookingInput) {
   const available = await isRoomAvailable(supabase, parsed.data.room_id, parsed.data.check_in_date, parsed.data.check_out_date);
   if (!available) return { error: 'Room is not available for the selected dates' };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('bookings')
     .insert({
       ...parsed.data,
       created_by: (await supabase.auth.getUser()).data.user?.id
-    });
+    })
+    .select('id, room_id')
+    .single();
 
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(data.id, [data.room_id]);
 }
 
 type BookingWithRoom = Database['public']['Tables']['bookings']['Row'] & {
@@ -260,7 +294,7 @@ export async function checkInAction(bookingId: string) {
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function addBillItemAction(billId: string, input: CreateBillItemInput) {
@@ -268,7 +302,11 @@ export async function addBillItemAction(billId: string, input: CreateBillItemInp
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
   const supabase = await createClient();
-  const { data: bill } = await supabase.from('room_bills').select('unit_id, status').eq('id', billId).single();
+  const { data: bill } = await supabase
+    .from('room_bills')
+    .select('unit_id, status, booking_id')
+    .eq('id', billId)
+    .single();
   if (!bill) return { error: 'Bill not found' };
   if (bill.status !== 'draft') return { error: 'Cannot add items to a finalized bill' };
 
@@ -282,7 +320,7 @@ export async function addBillItemAction(billId: string, input: CreateBillItemInp
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return { ok: true, bookingId: bill.booking_id };
 }
 
 export async function createBillOrderAction(input: unknown) {
@@ -294,7 +332,7 @@ export async function createBillOrderAction(input: unknown) {
   const supabase = await createClient();
   const { data: bill } = await supabase
     .from('room_bills')
-    .select('unit_id, status')
+    .select('unit_id, status, booking_id')
     .eq('id', parsed.data.bill_id)
     .maybeSingle();
   if (!bill) return { error: 'Bill not found' };
@@ -316,19 +354,19 @@ export async function createBillOrderAction(input: unknown) {
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, data: data.id };
+  return { ok: true, data: data.id, bookingId: bill.booking_id };
 }
 
 type BillItemWithBill = {
   id: string;
-  bill: { unit_id: string; status: string } | null;
+  bill: { unit_id: string; status: string; booking_id: string } | null;
 };
 
 export async function deleteBillItemAction(itemId: string) {
   const supabase = await createClient();
   const { data: peek } = await supabase
     .from('room_bill_items')
-    .select('id, bill:room_bills(unit_id, status)')
+    .select('id, bill:room_bills(unit_id, status, booking_id)')
     .eq('id', itemId)
     .maybeSingle();
   if (!peek) return { error: 'Item not found' };
@@ -344,19 +382,19 @@ export async function deleteBillItemAction(itemId: string) {
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return { ok: true, bookingId: row.bill.booking_id };
 }
 
 type BillOrderWithBill = {
   id: string;
-  bill: { unit_id: string; status: string } | null;
+  bill: { unit_id: string; status: string; booking_id: string } | null;
 };
 
 export async function deleteBillOrderAction(orderId: string) {
   const supabase = await createClient();
   const { data: peek } = await supabase
     .from('room_bill_orders')
-    .select('id, bill:room_bills(unit_id, status)')
+    .select('id, bill:room_bills(unit_id, status, booking_id)')
     .eq('id', orderId)
     .maybeSingle();
   if (!peek) return { error: 'Order not found' };
@@ -374,7 +412,7 @@ export async function deleteBillOrderAction(orderId: string) {
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return { ok: true, bookingId: row.bill.booking_id };
 }
 
 type BookingWithBillItems = Database['public']['Tables']['bookings']['Row'] & {
@@ -416,12 +454,16 @@ export async function checkOutAction(bookingId: string) {
   }).eq('id', bill.id);
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function cancelBookingAction(bookingId: string) {
   const supabase = await createClient();
-  const { data: booking } = await supabase.from('bookings').select('unit_id, status').eq('id', bookingId).single();
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('unit_id, room_id, status')
+    .eq('id', bookingId)
+    .single();
   if (!booking) return { error: 'Booking not found' };
   await requireCapability('rooms.booking.write', booking.unit_id);
 
@@ -435,14 +477,14 @@ export async function cancelBookingAction(bookingId: string) {
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function undoCheckInAction(bookingId: string) {
   const supabase = await createClient();
   const { data: booking } = await supabase
     .from('bookings')
-    .select('unit_id, status')
+    .select('unit_id, room_id, status')
     .eq('id', bookingId)
     .single();
 
@@ -469,14 +511,14 @@ export async function undoCheckInAction(bookingId: string) {
   if (billErr) return { error: billErr.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function undoCheckOutAction(bookingId: string) {
   const supabase = await createClient();
   const { data: booking } = await supabase
     .from('bookings')
-    .select('unit_id, status')
+    .select('unit_id, room_id, status')
     .eq('id', bookingId)
     .single();
 
@@ -507,7 +549,7 @@ export async function undoCheckOutAction(bookingId: string) {
   if (billErr) return { error: billErr.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function updateStayAndRatesAction(
@@ -603,7 +645,7 @@ export async function updateStayAndRatesAction(
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return { ok: true, bookingId: booking.id };
 }
 
 export async function fetchAvailableRoomsAction(unitId: string, checkIn: string, checkOut: string) {
@@ -622,7 +664,11 @@ export async function updateBookingAction(id: string, input: UpdateBookingInput)
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
   const supabase = await createClient();
-  const { data: existing } = await supabase.from('bookings').select('unit_id, room_id, check_in_date, check_out_date').eq('id', id).single();
+  const { data: existing } = await supabase
+    .from('bookings')
+    .select('unit_id, room_id, check_in_date, check_out_date')
+    .eq('id', id)
+    .single();
   if (!existing) return { error: 'Booking not found' };
 
   await requireCapability('rooms.booking.write', existing.unit_id);
@@ -648,12 +694,16 @@ export async function updateBookingAction(id: string, input: UpdateBookingInput)
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return changedBooking(id, [existing.room_id, roomId]);
 }
 
 export async function deleteBookingAction(bookingId: string) {
   const supabase = await createClient();
-  const { data: booking } = await supabase.from('bookings').select('unit_id').eq('id', bookingId).single();
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('unit_id, room_id')
+    .eq('id', bookingId)
+    .single();
   if (!booking) return { error: 'Booking not found' };
   await requireCapability('rooms.booking.write', booking.unit_id);
 
@@ -675,7 +725,11 @@ export async function deleteBookingAction(bookingId: string) {
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return {
+    ok: true,
+    deletedBookingId: bookingId,
+    affectedRoomIds: [booking.room_id],
+  };
 }
 
 export async function fetchBookingWithBillAction(id: string) {
@@ -765,6 +819,17 @@ export async function fetchRoomsAction(unitId: string) {
   }
 }
 
+export async function fetchRoomsByIdsAction(unitId: string, roomIds: string[]) {
+  await requireCapability('rooms.read', unitId);
+  const { getRoomsByIds } = await import('./queries');
+  try {
+    const rooms = await getRoomsByIds(unitId, roomIds);
+    return { data: rooms };
+  } catch (error: unknown) {
+    return { error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
 export async function fetchUnitFurnitureAction(unitId: string) {
   await requireCapability('rooms.read', unitId);
   const { getUnitFurniture } = await import('./queries');
@@ -784,7 +849,7 @@ export async function updateBillItemAction(
   const supabase = await createClient();
   const { data: peek } = await supabase
     .from('room_bill_items')
-    .select('id, bill:room_bills(unit_id, status)')
+    .select('id, bill:room_bills(unit_id, status, booking_id)')
     .eq('id', itemId)
     .maybeSingle();
 
@@ -807,5 +872,5 @@ export async function updateBillItemAction(
   if (error) return { error: error.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true };
+  return { ok: true, bookingId: row.bill.booking_id };
 }

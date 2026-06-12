@@ -1,6 +1,6 @@
-"use client"
+'use client';
 
-import { useState } from "react"
+import { useState } from 'react';
 import {
   Table,
   TableBody,
@@ -8,15 +8,13 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Edit2, Plus, BedDouble, Search, ArrowUpDown, ChevronUp, ChevronDown } from "lucide-react"
-import type { Room, RoomCurrentStatus, UnitFurniture } from "@/lib/guest-rooms/types"
-import { Input } from "@/components/ui/input"
-
-import { RoomForm } from "./room-form"
-import { EmptyState } from "@/components/shared/empty-state"
+} from '@/components/ui/table';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Edit2, Plus, BedDouble, Search, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import type { Room, RoomCurrentStatus } from '@/lib/guest-rooms/types';
+import { Input } from '@/components/ui/input';
+import { EmptyState } from '@/components/shared/empty-state';
 
 // Derived occupancy status: Badge variant + label. Tokens only.
 const STATUS_META: Record<
@@ -38,30 +36,24 @@ const OPS_LABEL: Record<string, string> = {
 };
 
 interface RoomsTableProps {
-  rooms: Room[]
-  furnitureCatalogue: UnitFurniture[]
-  onRefresh?: () => void
+  rooms: Room[];
+  searchQuery: string;
+  onSearchQueryChange: (value: string) => void;
+  onNewRoom: () => void;
+  onEditRoom: (room: Room) => void;
 }
 
-export function RoomsTable({ rooms, furnitureCatalogue, onRefresh }: RoomsTableProps) {
-  const [isFormOpen, setIsFormOpen] = useState(false)
-  const [selectedRoom, setSelectedRoom] = useState<Room | null>(null)
-
-  const [searchQuery, setSearchQuery] = useState("")
+export function RoomsTable({
+  rooms,
+  searchQuery,
+  onSearchQueryChange,
+  onNewRoom,
+  onEditRoom,
+}: RoomsTableProps) {
   const [sortField, setSortField] = useState<keyof Room | null>(null)
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 10
-
-  const handleEdit = (room: Room) => {
-    setSelectedRoom(room)
-    setIsFormOpen(true)
-  }
-
-  const handleAdd = () => {
-    setSelectedRoom(null)
-    setIsFormOpen(true)
-  }
 
   // 1. Filter rooms based on query
   const filteredRooms = rooms.filter((room) => {
@@ -131,7 +123,7 @@ export function RoomsTable({ rooms, furnitureCatalogue, onRefresh }: RoomsTableP
             placeholder="Search rooms by name or type..."
             value={searchQuery}
             onChange={(e) => {
-              setSearchQuery(e.target.value)
+              onSearchQueryChange(e.target.value)
               setCurrentPage(1)
             }}
             className="pl-8 bg-background"
@@ -143,7 +135,7 @@ export function RoomsTable({ rooms, furnitureCatalogue, onRefresh }: RoomsTableP
               ? `${filteredRooms.length} of ${rooms.length} rooms matched`
               : `${rooms.length} ${rooms.length === 1 ? "room" : "rooms"}`}
           </p>
-          <Button onClick={handleAdd} size="sm">
+          <Button onClick={onNewRoom} size="sm">
             <Plus className="mr-1.5 h-4 w-4" />
             Add Room
           </Button>
@@ -156,7 +148,7 @@ export function RoomsTable({ rooms, furnitureCatalogue, onRefresh }: RoomsTableP
           title="No rooms configured"
           description="Add your first guest room to start managing bookings."
           action={
-            <Button size="sm" onClick={handleAdd}>
+            <Button size="sm" onClick={onNewRoom}>
               <Plus className="mr-1.5 h-4 w-4" />
               Add Room
             </Button>
@@ -249,7 +241,7 @@ export function RoomsTable({ rooms, furnitureCatalogue, onRefresh }: RoomsTableP
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => handleEdit(room)}
+                        onClick={() => onEditRoom(room)}
                         className="h-7 w-7"
                       >
                         <Edit2 className="h-3.5 w-3.5" />
@@ -294,17 +286,6 @@ export function RoomsTable({ rooms, furnitureCatalogue, onRefresh }: RoomsTableP
           </div>
         </div>
       )}
-
-      <RoomForm
-        key={isFormOpen ? (selectedRoom ? `edit-${selectedRoom.id}` : "new") : "closed"}
-        open={isFormOpen}
-        onClose={() => {
-          setIsFormOpen(false)
-          onRefresh?.()
-        }}
-        room={selectedRoom}
-        furnitureCatalogue={furnitureCatalogue}
-      />
     </div>
   )
 }

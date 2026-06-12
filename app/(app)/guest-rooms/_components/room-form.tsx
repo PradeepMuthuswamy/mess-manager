@@ -1,214 +1,245 @@
-"use client"
+'use client';
 
-import { useActionState, useEffect, useMemo, useState, useTransition } from "react"
-import { AdaptiveModal } from "@/components/shared/adaptive-modal"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { useEffect, useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
+import { toast } from 'sonner';
+import { Plus, Trash2 } from 'lucide-react';
+import { AdaptiveModal } from '@/components/shared/adaptive-modal';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
-import { Separator } from "@/components/ui/separator"
-import { Plus, Trash2 } from "lucide-react"
-import { toast } from "sonner"
-import {
-  createRoomAction,
-  updateRoomAction,
-  createFurnitureItemAction,
-  fetchRoomInventoryAction,
-} from "@/lib/guest-rooms/actions"
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { FormError } from '@/components/shared/form-error';
 import type {
   Room,
   UnitFurniture,
   RoomInventoryRow,
-} from "@/lib/guest-rooms/types"
-
-import { useAppContext } from "@/lib/auth/context"
-import { FormError } from "@/components/shared/form-error"
+} from '@/lib/guest-rooms/types';
+import type {
+  CreateRoomInput,
+  UpdateRoomInput,
+} from '@/lib/schemas/guest-rooms';
+import { useAppDispatch, useAppSelector } from '@/lib/redux/hooks';
+import {
+  createFurnitureItem,
+  createRoom,
+  fetchRoomInventory,
+  roomInventoryKey,
+  selectGuestRoomsRequest,
+  updateRoom,
+} from '@/lib/redux/guest-rooms';
 
 interface RoomFormProps {
-  open: boolean
-  onClose: () => void
-  room?: Room | null
-  furnitureCatalogue: UnitFurniture[]
+  open: boolean;
+  onClose: () => void;
+  unitId: string;
+  room?: Room | null;
+  furnitureCatalogue: UnitFurniture[];
 }
 
-type InventoryRow = RoomInventoryRow & { _key: string }
+type InventoryRow = RoomInventoryRow & { _key: string };
 
-const FURNITURE_KINDS = ["furniture", "fixture", "equipment", "other"] as const
-const CONDITIONS: RoomInventoryRow["condition"][] = ["good", "fair", "poor"]
+const FURNITURE_KINDS = ['furniture', 'fixture', 'equipment', 'other'] as const;
+const CONDITIONS: RoomInventoryRow['condition'][] = ['good', 'fair', 'poor'];
 
-function newRow(furnitureId = ""): InventoryRow {
+function newRow(furnitureId = ''): InventoryRow {
   return {
     _key: crypto.randomUUID(),
     furniture_id: furnitureId,
     quantity: 1,
-    condition: "good",
+    condition: 'good',
     notes: null,
-  }
+  };
 }
 
 export function RoomForm({
   open,
   onClose,
+  unitId,
   room,
   furnitureCatalogue,
 }: RoomFormProps) {
-  const { activeUnitId } = useAppContext()
-  const isEditing = !!room
-  const [name, setName] = useState(room?.name ?? "")
-  const [status, setStatus] = useState<string>(room?.status ?? "available")
-  const [roomType, setRoomType] = useState<string>(room?.room_type ?? "Standard")
-  const [nightlyRate, setNightlyRate] = useState<number>(room ? Number(room.nightly_rate) : 0)
-
-  // Items created inline this session, merged over the server-provided
-  // catalogue so a freshly-created item is immediately selectable without
-  // a prop->state sync effect.
-  const [added, setAdded] = useState<UnitFurniture[]>([])
-  const catalogue = useMemo(
-    () =>
-      [...furnitureCatalogue, ...added].sort((a, b) =>
-        a.name.localeCompare(b.name),
-      ),
-    [furnitureCatalogue, added],
-  )
-  const [inventory, setInventory] = useState<InventoryRow[]>([])
-
-  // "Add new furniture" inline editor.
-  const [newFurnName, setNewFurnName] = useState("")
+  const dispatch = useAppDispatch();
+  const isEditing = !!room;
+  const [name, setName] = useState(room?.name ?? '');
+  const [status, setStatus] = useState<CreateRoomInput['status']>(
+    (room?.status ?? 'available') as CreateRoomInput['status'],
+  );
+  const [roomType, setRoomType] = useState<string>(room?.room_type ?? 'Standard');
+  const [nightlyRate, setNightlyRate] = useState<number>(
+    room ? Number(room.nightly_rate) : 0,
+  );
+  const [inventory, setInventory] = useState<InventoryRow[]>([]);
+  const [newFurnName, setNewFurnName] = useState('');
   const [newFurnKind, setNewFurnKind] =
-    useState<(typeof FURNITURE_KINDS)[number]>("furniture")
-  const [creatingFurniture, startCreateFurniture] = useTransition()
+    useState<(typeof FURNITURE_KINDS)[number]>('furniture');
+  const [pending, setPending] = useState(false);
+  const [creatingFurniture, setCreatingFurniture] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const inventoryRequest = useAppSelector((state) =>
+    room?.id
+      ? selectGuestRoomsRequest(state, roomInventoryKey(room.id))
+      : { status: 'idle', error: null, fetchedAt: null },
+  );
+  const inventoryLoading = inventoryRequest.status === 'loading';
+
+  const catalogue = useMemo(
+    () => [...furnitureCatalogue].sort((a, b) => a.name.localeCompare(b.name)),
+    [furnitureCatalogue],
+  );
 
   useEffect(() => {
-    if (!room) return
-    let active = true
-    // Load existing inventory for the room being edited.
-    fetchRoomInventoryAction(room.id).then((res) => {
-      if (!active) return
-      if ("data" in res && res.data) {
+    if (!open || !room?.id) return undefined;
+
+    let active = true;
+    dispatch(fetchRoomInventory(room.id))
+      .then((rows) => {
+        if (!active) return;
         setInventory(
-          res.data.map((r) => ({
+          rows.map((row) => ({
             _key: crypto.randomUUID(),
-            furniture_id: r.furniture_id,
-            quantity: r.quantity,
-            condition: r.condition as RoomInventoryRow["condition"],
-            notes: r.notes,
+            furniture_id: row.furniture_id,
+            quantity: row.quantity,
+            condition: row.condition as RoomInventoryRow['condition'],
+            notes: row.notes,
           })),
-        )
-      } else {
-        setInventory([])
-      }
-    })
+        );
+      })
+      .catch((error) => {
+        toast.error(
+          error instanceof Error ? error.message : 'Failed to load inventory',
+        );
+      });
+
     return () => {
-      active = false
+      active = false;
+    };
+  }, [dispatch, open, room?.id]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitError(null);
+
+    if (!name.trim()) {
+      setSubmitError('Room name is required.');
+      return;
     }
-  }, [room])
 
-  const [state, formAction, pending] = useActionState(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async (_: { ok?: boolean; error?: string } | null) => {
-      const cleanInventory = inventory
-        .filter((r) => r.furniture_id)
-        .map(({ furniture_id, quantity, condition, notes }) => ({
-          furniture_id,
-          quantity: Number(quantity) || 1,
-          condition,
-          notes: notes?.trim() ? notes.trim() : null,
-        }))
+    const cleanInventory = inventory
+      .filter((row) => row.furniture_id)
+      .map(({ furniture_id, quantity, condition, notes }) => ({
+        furniture_id,
+        quantity: Number(quantity) || 1,
+        condition,
+        notes: notes?.trim() ? notes.trim() : null,
+      }));
 
+    const roomInput = {
+      name: name.trim(),
+      status,
+      room_type: roomType as CreateRoomInput['room_type'],
+      nightly_rate: Number(nightlyRate) || 0,
+      inventory: cleanInventory,
+    } satisfies Omit<CreateRoomInput, 'unit_id'>;
+
+    setPending(true);
+    try {
       if (isEditing && room) {
-        return await updateRoomAction(room.id, {
-          name,
-          status: status as Room["status"],
-          room_type: roomType,
-          nightly_rate: Number(nightlyRate) || 0,
-          inventory: cleanInventory,
-        })
+        await dispatch(
+          updateRoom({
+            id: room.id,
+            input: roomInput satisfies UpdateRoomInput,
+          }),
+        );
+        toast.success('Room updated');
+      } else {
+        await dispatch(
+          createRoom({
+            unit_id: unitId,
+            ...roomInput,
+          }),
+        );
+        toast.success('Room created');
       }
-      return await createRoomAction({
-        unit_id: activeUnitId!,
-        name,
-        status: status as Room["status"],
-        room_type: roomType,
-        nightly_rate: Number(nightlyRate) || 0,
-        inventory: cleanInventory,
-      })
-    },
-    null,
-  )
-
-  useEffect(() => {
-    if (state?.ok) {
-      toast.success(isEditing ? "Room updated" : "Room created")
-      onClose()
-    } else if (state?.error) {
-      toast.error(state.error)
+      onClose();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to save room';
+      setSubmitError(message);
+      toast.error(message);
+    } finally {
+      setPending(false);
     }
-  }, [state, onClose, isEditing])
+  }
 
-  function handleAddFurniture() {
-    const trimmed = newFurnName.trim()
-    if (!trimmed) return
-    startCreateFurniture(async () => {
-      const res = await createFurnitureItemAction({
-        unit_id: activeUnitId!,
-        name: trimmed,
-        kind: newFurnKind,
-      })
-      if ("error" in res && res.error) {
-        toast.error(res.error)
-        return
-      }
-      if ("data" in res && res.data) {
-        const created = res.data as UnitFurniture
-        setAdded((a) => [...a, created])
-        setInventory((rows) => [...rows, newRow(created.id)])
-        setNewFurnName("")
-        setNewFurnKind("furniture")
-        toast.success("Furniture item added")
-      }
-    })
+  async function handleAddFurniture() {
+    const trimmed = newFurnName.trim();
+    if (!trimmed) return;
+
+    setCreatingFurniture(true);
+    try {
+      const created = await dispatch(
+        createFurnitureItem({
+          unit_id: unitId,
+          name: trimmed,
+          kind: newFurnKind,
+        }),
+      );
+      setInventory((rows) => [...rows, newRow(created.id)]);
+      setNewFurnName('');
+      setNewFurnKind('furniture');
+      toast.success('Furniture item added');
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to add furniture',
+      );
+    } finally {
+      setCreatingFurniture(false);
+    }
   }
 
   function updateRow(key: string, patch: Partial<RoomInventoryRow>) {
     setInventory((rows) =>
-      rows.map((r) => (r._key === key ? { ...r, ...patch } : r)),
-    )
+      rows.map((row) => (row._key === key ? { ...row, ...patch } : row)),
+    );
   }
 
   return (
     <AdaptiveModal
       open={open}
       onClose={onClose}
-      title={isEditing ? "Edit Room" : "Add Room"}
+      title={isEditing ? 'Edit Room' : 'Add Room'}
       description={
         isEditing
-          ? "Update the room details and its inventory."
-          : "Enter the details and inventory for the new guest room."
+          ? 'Update the room details and its inventory.'
+          : 'Enter the details and inventory for the new guest room.'
       }
       footer={
         <Button
           type="submit"
           form="room-form"
-          disabled={pending}
+          disabled={pending || inventoryLoading}
           className="press"
         >
           {pending
             ? isEditing
-              ? "Updating..."
-              : "Creating..."
+              ? 'Updating...'
+              : 'Creating...'
             : isEditing
-              ? "Save Changes"
-              : "Create Room"}
+              ? 'Save Changes'
+              : 'Create Room'}
         </Button>
       }
     >
-      <form id="room-form" action={formAction} className="space-y-5 py-4">
+      <form id="room-form" onSubmit={handleSubmit} className="space-y-5 py-4">
         <div className="space-y-1.5">
           <Label htmlFor="name" className="text-sm font-medium">
             Room Name / Number
@@ -260,7 +291,12 @@ export function RoomForm({
           <Label htmlFor="status" className="text-sm font-medium">
             Status
           </Label>
-          <Select value={status} onValueChange={setStatus}>
+          <Select
+            value={status}
+            onValueChange={(value) =>
+              setStatus(value as CreateRoomInput['status'])
+            }
+          >
             <SelectTrigger id="status">
               <SelectValue />
             </SelectTrigger>
@@ -286,15 +322,19 @@ export function RoomForm({
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setInventory((r) => [...r, newRow()])}
-              disabled={catalogue.length === 0}
+              onClick={() => setInventory((rows) => [...rows, newRow()])}
+              disabled={catalogue.length === 0 || inventoryLoading}
             >
               <Plus className="mr-1.5 h-4 w-4" />
               Add item
             </Button>
           </div>
 
-          {inventory.length === 0 ? (
+          {inventoryLoading ? (
+            <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+              Loading room inventory...
+            </p>
+          ) : inventory.length === 0 ? (
             <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
               No inventory recorded for this room yet.
             </p>
@@ -312,17 +352,17 @@ export function RoomForm({
                       </Label>
                       <Select
                         value={row.furniture_id || undefined}
-                        onValueChange={(v) =>
-                          updateRow(row._key, { furniture_id: v })
+                        onValueChange={(value) =>
+                          updateRow(row._key, { furniture_id: value })
                         }
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Select furniture" />
                         </SelectTrigger>
                         <SelectContent>
-                          {catalogue.map((f) => (
-                            <SelectItem key={f.id} value={f.id}>
-                              {f.name}
+                          {catalogue.map((furniture) => (
+                            <SelectItem key={furniture.id} value={furniture.id}>
+                              {furniture.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -338,10 +378,7 @@ export function RoomForm({
                         value={row.quantity}
                         onChange={(e) =>
                           updateRow(row._key, {
-                            quantity: Math.max(
-                              1,
-                              Number(e.target.value) || 1,
-                            ),
+                            quantity: Math.max(1, Number(e.target.value) || 1),
                           })
                         }
                       />
@@ -352,9 +389,9 @@ export function RoomForm({
                       </Label>
                       <Select
                         value={row.condition}
-                        onValueChange={(v) =>
+                        onValueChange={(value) =>
                           updateRow(row._key, {
-                            condition: v as RoomInventoryRow["condition"],
+                            condition: value as RoomInventoryRow['condition'],
                           })
                         }
                       >
@@ -362,13 +399,13 @@ export function RoomForm({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {CONDITIONS.map((c) => (
+                          {CONDITIONS.map((condition) => (
                             <SelectItem
-                              key={c}
-                              value={c}
+                              key={condition}
+                              value={condition}
                               className="capitalize"
                             >
-                              {c}
+                              {condition}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -381,7 +418,7 @@ export function RoomForm({
                       className="mt-6 h-9 w-9 text-muted-foreground"
                       onClick={() =>
                         setInventory((rows) =>
-                          rows.filter((r) => r._key !== row._key),
+                          rows.filter((item) => item._key !== row._key),
                         )
                       }
                     >
@@ -391,7 +428,7 @@ export function RoomForm({
                   </div>
                   <Input
                     placeholder="Notes (optional)"
-                    value={row.notes ?? ""}
+                    value={row.notes ?? ''}
                     onChange={(e) =>
                       updateRow(row._key, {
                         notes: e.target.value || null,
@@ -413,25 +450,25 @@ export function RoomForm({
                 value={newFurnName}
                 onChange={(e) => setNewFurnName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault()
-                    handleAddFurniture()
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddFurniture();
                   }
                 }}
               />
               <Select
                 value={newFurnKind}
-                onValueChange={(v) =>
-                  setNewFurnKind(v as (typeof FURNITURE_KINDS)[number])
+                onValueChange={(value) =>
+                  setNewFurnKind(value as (typeof FURNITURE_KINDS)[number])
                 }
               >
                 <SelectTrigger className="w-36">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {FURNITURE_KINDS.map((k) => (
-                    <SelectItem key={k} value={k} className="capitalize">
-                      {k}
+                  {FURNITURE_KINDS.map((kind) => (
+                    <SelectItem key={kind} value={kind} className="capitalize">
+                      {kind}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -442,14 +479,14 @@ export function RoomForm({
                 onClick={handleAddFurniture}
                 disabled={creatingFurniture || !newFurnName.trim()}
               >
-                Add
+                {creatingFurniture ? 'Adding...' : 'Add'}
               </Button>
             </div>
           </div>
         </div>
 
-        <FormError message={state?.error} />
+        <FormError message={submitError ?? inventoryRequest.error} />
       </form>
     </AdaptiveModal>
-  )
+  );
 }

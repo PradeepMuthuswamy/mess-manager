@@ -25,7 +25,7 @@ interface BookingDetailsDialogProps {
   onViewBill: (booking: Booking) => void;
   onUndoCheckIn: (bookingId: string) => void;
   onUndoCheckOut: (bookingId: string) => void;
-  isPending?: boolean;
+  pendingActions: Record<string, true | undefined>;
 }
 
 function fmtDate(iso: string) {
@@ -49,9 +49,13 @@ export function BookingDetailsDialog({
   onViewBill,
   onUndoCheckIn,
   onUndoCheckOut,
-  isPending = false,
+  pendingActions,
 }: BookingDetailsDialogProps) {
   if (!booking) return null;
+
+  const isPending = Object.keys(pendingActions).some((key) =>
+    key.endsWith(`:${booking.id}`),
+  );
 
   const nights = Math.max(
     1,

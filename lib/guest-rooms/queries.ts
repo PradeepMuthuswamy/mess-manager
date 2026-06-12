@@ -37,6 +37,36 @@ export async function getBookings(unitId: string, from: string, to: string) {
   return data as Booking[];
 }
 
+export async function getBookingSummaryById(id: string): Promise<Booking> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('bookings')
+    .select(`
+      *,
+      room:room_id (name)
+    `)
+    .eq('id', id)
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data as Booking;
+}
+
+export async function getRoomsByIds(unitId: string, ids: string[]) {
+  if (ids.length === 0) return [];
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('v_rooms_current')
+    .select('*')
+    .eq('unit_id', unitId)
+    .in('id', ids)
+    .order('name');
+
+  if (error) throw new Error(error.message);
+  return data as Room[];
+}
+
 type RawBookingWithBill = Database['public']['Tables']['bookings']['Row'] & {
   room: { name: string };
   bill: (Database['public']['Tables']['room_bills']['Row'] & {
