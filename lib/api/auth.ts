@@ -43,6 +43,12 @@ export async function requireApiUser(req: NextRequest): Promise<ApiContext> {
     .single();
   if (!profile) throw Errors.unauthenticated('Profile not found');
 
+  // App segregation: admin accounts operate through the Admin Console and
+  // its API, never this ops app — mirror the web-surface block here.
+  if (profile.role === 'admin') {
+    throw Errors.forbidden('Admin accounts must use the Admin Console API.');
+  }
+
   const { data: caps } = await supabase
     .from('user_capabilities')
     .select('capability, unit_id')

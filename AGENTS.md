@@ -139,6 +139,7 @@ Auth lives in three layers. Skipping any one of them is a bug, not a shortcut.
 - One `policy ... for select` per intended reader, one `policy ... for insert/update/delete` per intended writer. Don't use `for all to authenticated using (true)` — be explicit.
 - Helper functions in schema `app` that are called from policies must be `security definer set search_path = ''`. Otherwise a future policy can produce a recursive RLS evaluation.
 - Wire the new table into the audit trigger (`for each row execute function app.audit_trigger()`) if it carries business state.
+- Add the three `aal2_admin_*` RESTRICTIVE write policies (insert/update/delete) requiring `auth.jwt()->>'aal' = 'aal2'` for admin-role accounts — see migration `20260612125800_aal2_admin_write_enforcement.sql` for the exact shape. The DO-block there only covered tables existing at the time; new tables must add them explicitly.
 - Grant `usage on schema app` and `execute` on any new helpers to `authenticated, anon`.
 
 **Schemas — `lib/schemas/`**
