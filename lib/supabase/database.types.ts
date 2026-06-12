@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.5"
+  }
   app: {
     Tables: {
       [_ in never]: never
@@ -322,7 +327,9 @@ export type Database = {
           check_out_date: string
           created_at: string
           created_by: string | null
+          guest_email: string | null
           guest_name: string
+          guest_phone: string | null
           guest_rank: string | null
           id: string
           room_id: string
@@ -337,7 +344,9 @@ export type Database = {
           check_out_date: string
           created_at?: string
           created_by?: string | null
+          guest_email?: string | null
           guest_name: string
+          guest_phone?: string | null
           guest_rank?: string | null
           id?: string
           room_id: string
@@ -352,7 +361,9 @@ export type Database = {
           check_out_date?: string
           created_at?: string
           created_by?: string | null
+          guest_email?: string | null
           guest_name?: string
+          guest_phone?: string | null
           guest_rank?: string | null
           id?: string
           room_id?: string
@@ -1968,4 +1979,3 @@ export const Constants = {
     },
   },
 } as const
-
