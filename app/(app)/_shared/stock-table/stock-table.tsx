@@ -398,48 +398,46 @@ export function StockTable({
       </div>
 
       {/* Pagination Footer */}
-      {totalCount > pageSize && (
-        <div className="flex items-center justify-between py-2 px-1">
-          <span className="text-xs text-muted-foreground">
-            Showing{' '}
-            <span className="font-semibold text-foreground">
-              {(currentPage - 1) * pageSize + 1}
-            </span>{' '}
-            to{' '}
-            <span className="font-semibold text-foreground">
-              {Math.min(currentPage * pageSize, totalCount)}
-            </span>{' '}
-            of{' '}
-            <span className="font-semibold text-foreground">{totalCount}</span>{' '}
-            results
+      <div className="flex items-center justify-between py-2 px-1 border-t border-border/50">
+        <span className="text-xs text-muted-foreground">
+          Showing{' '}
+          <span className="font-semibold text-foreground">
+            {totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1}
+          </span>{' '}
+          to{' '}
+          <span className="font-semibold text-foreground">
+            {Math.min(currentPage * pageSize, totalCount)}
+          </span>{' '}
+          of{' '}
+          <span className="font-semibold text-foreground">{totalCount}</span>{' '}
+          results
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentPage <= 1}
+            onClick={() => handlePageChange(currentPage - 1)}
+            className="h-8 w-8 p-0 cursor-pointer"
+          >
+            <ChevronLeft className="size-4" />
+            <span className="sr-only">Previous Page</span>
+          </Button>
+          <span className="text-xs px-2 font-medium">
+            Page {currentPage} of {Math.ceil(totalCount / pageSize) || 1}
           </span>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={currentPage <= 1}
-              onClick={() => handlePageChange(currentPage - 1)}
-              className="h-8 w-8 p-0 cursor-pointer"
-            >
-              <ChevronLeft className="size-4" />
-              <span className="sr-only">Previous Page</span>
-            </Button>
-            <span className="text-xs px-2 font-medium">
-              Page {currentPage} of {Math.ceil(totalCount / pageSize)}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={currentPage * pageSize >= totalCount}
-              onClick={() => handlePageChange(currentPage + 1)}
-              className="h-8 w-8 p-0 cursor-pointer"
-            >
-              <ChevronRight className="size-4" />
-              <span className="sr-only">Next Page</span>
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentPage * pageSize >= totalCount || totalCount === 0}
+            onClick={() => handlePageChange(currentPage + 1)}
+            className="h-8 w-8 p-0 cursor-pointer"
+          >
+            <ChevronRight className="size-4" />
+            <span className="sr-only">Next Page</span>
+          </Button>
         </div>
-      )}
+      </div>
 
       {/* Dialogs */}
       {isAddOpen && category !== 'grocery' ? (

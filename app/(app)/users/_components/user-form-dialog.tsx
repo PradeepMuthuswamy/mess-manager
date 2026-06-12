@@ -123,17 +123,19 @@ export function UserFormDialog({
         fr.capabilities.forEach((c) => {
           if (!next.includes(c as Capability)) next.push(c as Capability);
         });
-        if (key === 'mess_secretary') {
-          setRole('mess_secretary');
-        }
       } else {
         next = next.filter((c) => !(fr.capabilities as readonly string[]).includes(c));
-        if (key === 'mess_secretary' && role === 'mess_secretary') {
-          setRole('user');
-        }
       }
       return next;
     });
+
+    if (key === 'mess_secretary') {
+      if (checked) {
+        setRole('mess_secretary');
+      } else if (role === 'mess_secretary') {
+        setRole('user');
+      }
+    }
   };
 
   // Initialize values when modal opens
