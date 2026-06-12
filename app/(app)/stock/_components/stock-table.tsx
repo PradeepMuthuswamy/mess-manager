@@ -29,7 +29,7 @@ import { MoreHorizontal, Plus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { EmptyState } from '@/components/shared/empty-state';
 import { toast } from 'sonner';
-import { deactivateLotAction } from '@/lib/inventory/actions';
+import { deactivateLotAction, deactivateLotsAction } from '@/lib/stock/actions';
 import {
   servingsOnHand,
   lotValue,
@@ -37,15 +37,14 @@ import {
   servingLabel,
   containerLabel,
   pluralize,
-} from '@/lib/inventory/compute';
+} from '@/lib/stock/compute';
 import type {
   InventoryLotRow,
-  PackSize,
   MasterItemPick,
-} from '@/lib/inventory/types';
+} from '@/lib/stock/types';
 import type { InventoryCategory } from '@/lib/masters/categories';
-import { AddLotDialog } from './add-lot-dialog';
-import { EditLotDialog } from './edit-lot-dialog';
+import { AddStockDialog } from './add-stock-dialog';
+import { EditStockDialog } from './edit-stock-dialog';
 
 function formatNum(n: number): string {
   if (!Number.isFinite(n)) return '—';
@@ -58,38 +57,67 @@ function formatMoney(n: number): string {
   return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
-export function InventoryTable({
-  unitId,
+function formatDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return '—';
+  const datePart = dateStr.split('T')[0];
+  const parts = datePart.split('-');
+  if (parts.length !== 3) return dateStr;
+  const [y, m, d] = parts;
+  return `${d}/${m}/${y}`;
+}
+
+export function StockTable({
   category,
   categoryLabel,
   rows,
-  packSizes,
   masterItems,
   canWrite,
-  canManagePackSizes,
   canManageMasters,
 }: {
-  unitId: string;
   category: InventoryCategory;
   categoryLabel: string;
   rows: InventoryLotRow[];
-  packSizes: PackSize[];
   masterItems: MasterItemPick[];
   canWrite: boolean;
-  canManagePackSizes: boolean;
   canManageMasters: boolean;
 }) {
   const router = useRouter();
   const [filter, setFilter] = useState('');
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<InventoryLotRow | null>(null);
+  const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(() => router.refresh(), [router]);
   const closeAdd = useCallback(() => setCreating(false), []);
   const closeEdit = useCallback(() => setEditing(null), []);
 
+  const selectedIds = useMemo(() => {
+    return Object.keys(rowSelection).filter((id) => rowSelection[id]);
+  }, [rowSelection]);
+
   const columns = useMemo<ColumnDef<InventoryLotRow>[]>(() => {
     const cols: ColumnDef<InventoryLotRow>[] = [
+      {
+        id: 'select',
+        header: ({ table }) => (
+          <input
+            type="checkbox"
+            className="rounded border-border text-primary focus:ring-ring cursor-pointer size-4"
+            checked={table.getIsAllPageRowsSelected()}
+            onChange={(e) => table.toggleAllPageRowsSelected(!!e.target.checked)}
+            aria-label="Select all"
+          />
+        ),
+        cell: ({ row }) => (
+          <input
+            type="checkbox"
+            className="rounded border-border text-primary focus:ring-ring cursor-pointer size-4"
+            checked={row.getIsSelected()}
+            onChange={(e) => row.toggleSelected(!!e.target.checked)}
+            aria-label="Select row"
+          />
+        ),
+      },
       {
         accessorKey: 'item_name',
         header: 'Item',
@@ -175,7 +203,7 @@ export function InventoryTable({
             <div className="flex flex-col">
               {on ? (
                 <span className="font-mono text-xs tabular-nums">
-                  {new Date(on).toLocaleDateString()}
+                  {formatDate(on)}
                 </span>
               ) : null}
               {src ? (
@@ -212,7 +240,7 @@ export function InventoryTable({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => setEditing(row.original)}>
-                  Edit
+                  Edit details
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setEditing(row.original)}>
                   Adjust quantity
@@ -243,17 +271,16 @@ export function InventoryTable({
     return cols;
   }, [canWrite, refresh]);
 
-  const tableState = useMemo(
-    () => ({
-      columnFilters: filter ? [{ id: 'item_name', value: filter }] : [],
-    }),
-    [filter],
-  );
-
   const table = useReactTable({
     data: rows,
     columns,
-    state: tableState,
+    state: {
+      columnFilters: filter ? [{ id: 'item_name', value: filter }] : [],
+      rowSelection,
+    },
+    onRowSelectionChange: setRowSelection,
+    enableRowSelection: true,
+    getRowId: (row) => row.id ?? '',
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
   });
@@ -267,13 +294,31 @@ export function InventoryTable({
           onChange={(e) => setFilter(e.target.value)}
           className="max-w-xs"
         />
+        {selectedIds.length > 0 && (
+          <Button
+            variant="destructive"
+            onClick={async () => {
+              const res = await deactivateLotsAction(selectedIds);
+              if (res?.ok) {
+                toast.success(`${selectedIds.length} stock lot(s) deactivated`);
+                setRowSelection({});
+                refresh();
+              } else {
+                toast.error(res?.error ?? 'Could not deactivate selected lots');
+              }
+            }}
+            className="transition-ds press"
+          >
+            Deactivate Selected ({selectedIds.length})
+          </Button>
+        )}
         <div className="flex-1" />
         {canWrite ? (
           <Button
             onClick={() => setCreating(true)}
             className="transition-ds press"
           >
-            <Plus className="size-4 mr-1" /> Add to inventory
+            <Plus className="size-4 mr-1" /> Add to stock
           </Button>
         ) : null}
       </div>
@@ -304,7 +349,7 @@ export function InventoryTable({
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={columns.length} className="p-0">
                   <EmptyState
-                    title={`No ${categoryLabel.toLowerCase()} inventory yet`}
+                    title={`No ${categoryLabel.toLowerCase()} stock yet`}
                     description={`Add a ${categoryLabel.toLowerCase()} purchase lot to start tracking stock for this unit.`}
                     className="rounded-none border-0"
                   />
@@ -329,23 +374,19 @@ export function InventoryTable({
       </div>
 
       {creating ? (
-        <AddLotDialog
+        <AddStockDialog
           open
-          unitId={unitId}
           category={category}
           masterItems={masterItems}
-          packSizes={packSizes}
-          canManagePackSizes={canManagePackSizes}
           canManageMasters={canManageMasters}
           onClose={closeAdd}
           onChanged={refresh}
         />
       ) : null}
       {editing ? (
-        <EditLotDialog
+        <EditStockDialog
           open
           lot={editing}
-          packSizes={packSizes}
           onClose={closeEdit}
           onChanged={refresh}
         />
@@ -353,3 +394,4 @@ export function InventoryTable({
     </div>
   );
 }
+

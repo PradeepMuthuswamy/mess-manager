@@ -5,17 +5,19 @@ import {
 } from '@/lib/auth/require-capability';
 import {
   listInventory,
-  listPackSizes,
   listMasterItemsForPicker,
-} from '@/lib/inventory/queries';
+} from '@/lib/stock/queries';
 import { EmptyState } from '@/components/shared/empty-state';
-import { InventoryTable } from './_components/inventory-table';
-import { InventoryCategoryNav } from './_components/inventory-category-nav';
+import { StockTable } from './_components/stock-table';
+import { InventoryCategoryNav } from './_components/stock-category-nav';
 import {
   CATEGORY_META,
-  CATEGORY_PACK_KIND,
   isInventoryCategory,
+  slugFromCategory,
+  categoryFromSlug,
+  CATEGORY_SLUGS,
   type InventoryCategory,
+  type CategorySlug,
 } from '@/lib/masters/categories';
 
 export const dynamic = 'force-dynamic';
@@ -34,23 +36,36 @@ export default async function InventoryPage({
   const user = await requireUser();
   await requireCapability(INVENTORY_READ, user.activeUnitId ?? null);
 
-  // Normalize the active tab from `?cat=`. Anything not one of the four
-  // stockable categories (including `ration`) falls back to the default —
-  // ration can never be selected.
+  // Normalize the active tab from `?cat=`. Handles both slugs (e.g. cold-drinks)
+  // and database category names (e.g. soft_drink). Anything not one of the four
+  // stockable categories falls back to the default.
   const { cat } = await searchParams;
-  const category: InventoryCategory = isInventoryCategory(cat)
-    ? cat
-    : DEFAULT_CATEGORY;
+  let category: InventoryCategory = DEFAULT_CATEGORY;
+
+  if (cat) {
+    if (isInventoryCategory(cat)) {
+      category = cat;
+    } else {
+      const isSlug = (v: string | undefined): v is CategorySlug =>
+        !!v && (CATEGORY_SLUGS as readonly string[]).includes(v);
+      if (isSlug(cat)) {
+        const dbCat = categoryFromSlug(cat);
+        if (isInventoryCategory(dbCat)) {
+          category = dbCat;
+        }
+      }
+    }
+  }
 
   if (!user.activeUnitId) {
     return (
       <section className="space-y-6">
         <header>
           <h1 className="font-heading text-3xl font-bold tracking-tight">
-            Inventory
+            Stock
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Per-unit purchase lots tracked against the master catalogue.
+            Stock purchase lots tracked against the master catalogue.
           </p>
         </header>
         <EmptyState
@@ -62,18 +77,12 @@ export default async function InventoryPage({
   }
 
   const unitId = user.activeUnitId;
-  // Pack sizes are typed per category: alcohol/soft_drink use volume-kind
-  // sizes, cigar/grocery use count-kind sizes. Filter at the source so the
-  // picker and dialogs only ever see sensible options for the active tab.
-  const packKind = CATEGORY_PACK_KIND[category];
-  const [rows, packSizes, masterItems] = await Promise.all([
+  const [rows, masterItems] = await Promise.all([
     listInventory(unitId, { category }),
-    listPackSizes(packKind),
     listMasterItemsForPicker(unitId, undefined, category),
   ]);
 
   const canWrite = userHasCapability(user, INVENTORY_WRITE, unitId);
-  const canManagePackSizes = userHasCapability(user, MASTERS_WRITE, null);
   // Inline master-item creation posts unit_id, so createMasterItemAction
   // requires the unit-scoped masters.write (admins/unit_admin bypass inside
   // userHasCapability). UI affordance only — the action is the real gate.
@@ -83,7 +92,7 @@ export default async function InventoryPage({
     <section className="space-y-6">
       <header>
         <h1 className="font-heading text-3xl font-bold tracking-tight">
-          Inventory
+          Stock
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Purchase lots for this unit. The same item at a different price is a
@@ -93,17 +102,15 @@ export default async function InventoryPage({
 
       <InventoryCategoryNav active={category} />
 
-      <InventoryTable
-        unitId={unitId}
+      <StockTable
         category={category}
-        categoryLabel={CATEGORY_META[category].title}
+        categoryLabel={CATEGORY_META[slugFromCategory(category)]?.title ?? category}
         rows={rows}
-        packSizes={packSizes}
         masterItems={masterItems}
         canWrite={canWrite}
-        canManagePackSizes={canManagePackSizes}
         canManageMasters={canManageMasters}
       />
     </section>
   );
 }
+

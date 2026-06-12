@@ -78,8 +78,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     .from('unit_inventory')
     .insert({
       unit_id: parsed.data.unit_id,
-      item_id: parsed.data.item_id,
-      pack_size_id: parsed.data.pack_size_id,
+      variant_id: parsed.data.pack_size_id,
       qty_packs: parsed.data.qty_packs,
       rate: parsed.data.rate,
       acquired_on: parsed.data.acquired_on
@@ -94,5 +93,5 @@ export const POST = withRoute(async (req: NextRequest) => {
   if (insErr || !lotRow) throw Errors.internal(insErr?.message ?? 'create failed');
 
   if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, lotRow);
-  return created(lotRow, `/api/v1/inventory/${lotRow.id}`);
+  return created(lotRow, `/api/v1/stock/${lotRow.id}`);
 });

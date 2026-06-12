@@ -1,9 +1,7 @@
 import 'server-only';
-import { cache } from 'react';
 import { createClient } from '@/lib/supabase/server';
 import type {
   InventoryLotRow,
-  PackSize,
   ListInventoryOpts,
   MasterItemPick,
 } from './types';
@@ -61,7 +59,7 @@ export async function listMasterItemsForPicker(
   const supabase = await createClient();
   let query = supabase
     .from('v_items_current')
-    .select('id, name, category, uom')
+    .select('id, name, category, uom, pack_label, pack_kind, volume_ml, unit_count')
     .eq('is_active', true)
     // Hard exclude ration even if no category is passed.
     .neq('category', 'ration')
@@ -79,27 +77,5 @@ export async function listMasterItemsForPicker(
 
   const { data, error } = await query;
   if (error) throw new Error(error.message);
-  return (data ?? []) as MasterItemPick[];
+  return (data ?? []) as unknown as MasterItemPick[];
 }
-
-// Active pack sizes (reference data). Wrapped in React `cache` so multiple
-// callers within a single request share one DB read. When `kind` is supplied
-// the list is restricted to that facet so the picker only shows sensible
-// options (volume kind for alcohol/soft_drink, count kind for cigar/grocery).
-export const listPackSizes = cache(
-  async (kind?: 'volume' | 'count'): Promise<PackSize[]> => {
-    const supabase = await createClient();
-    let query = supabase
-      .from('pack_sizes')
-      .select(
-        'id, label, kind, volume_ml, unit_count, sort_order, is_active, created_at, created_by, updated_at, updated_by',
-      )
-      .eq('is_active', true)
-      .order('sort_order')
-      .order('label');
-    if (kind) query = query.eq('kind', kind);
-    const { data, error } = await query;
-    if (error) throw new Error(error.message);
-    return (data ?? []) as PackSize[];
-  },
-);

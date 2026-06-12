@@ -49,9 +49,10 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
     if (replay) return replay;
   }
 
-  const { acquired_on, ...rest } = parsed.data;
+  const { acquired_on, pack_size_id, ...rest } = parsed.data;
   const update = {
     ...rest,
+    ...(pack_size_id !== undefined ? { variant_id: pack_size_id } : {}),
     ...(acquired_on !== undefined
       ? { acquired_on: acquired_on ? acquired_on.toISOString().slice(0, 10) : null }
       : {}),

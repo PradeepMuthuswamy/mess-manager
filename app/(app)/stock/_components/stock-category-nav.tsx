@@ -2,12 +2,13 @@ import Link from 'next/link';
 import {
   INVENTORY_CATEGORIES,
   CATEGORY_META,
+  slugFromCategory,
   type InventoryCategory,
 } from '@/lib/masters/categories';
 
 // Tab strip over the four stockable inventory categories. Mirrors the Masters
 // category nav visually (same shadcn-token strip + active state) but is
-// link/URL driven (`?cat=`) so the single /inventory route stays SSR and
+// link/URL driven (`?cat=`) so the single /stock route stays SSR and
 // linkable — no per-category routes, no client state. Labels are reused from
 // CATEGORY_META so they always match Masters.
 export function InventoryCategoryNav({
@@ -25,7 +26,7 @@ export function InventoryCategoryNav({
         return (
           <Link
             key={cat}
-            href={`/inventory?cat=${cat}`}
+            href={`/stock?cat=${slugFromCategory(cat)}`}
             scroll={false}
             className={[
               'transition-ds rounded-[0.25rem] px-3 py-1.5 text-sm font-medium leading-none',
@@ -35,7 +36,7 @@ export function InventoryCategoryNav({
             ].join(' ')}
             aria-current={isActive ? 'page' : undefined}
           >
-            {CATEGORY_META[cat].title}
+            {CATEGORY_META[slugFromCategory(cat)]?.title ?? cat}
           </Link>
         );
       })}

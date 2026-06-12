@@ -21,10 +21,11 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { FormError } from '@/components/shared/form-error';
 import { createMasterItemAction } from '@/lib/masters/actions';
-import { CATEGORY_META } from '@/lib/masters/categories';
+import { CATEGORY_META, slugFromCategory } from '@/lib/masters/categories';
 import type { InventoryCategory } from '@/lib/masters/categories';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
+import { useAppContext } from '@/lib/auth/context';
 
 type ActionState = {
   ok?: boolean;
@@ -52,13 +53,11 @@ const UOM_OPTIONS = ['kg', 'g', 'l', 'ml', 'piece', 'pack', 'bottle'] as const;
  */
 export function AddMasterItemDialog({
   open,
-  unitId,
   category,
   onClose,
   onCreated,
 }: {
   open: boolean;
-  unitId: string;
   category: InventoryCategory;
   onClose: () => void;
   onCreated: (item: {
@@ -68,8 +67,9 @@ export function AddMasterItemDialog({
     uom: string;
   }) => void;
 }) {
+  const { activeUnitId } = useAppContext();
   const [name, setName] = useState('');
-  const [uom, setUom] = useState<string>(CATEGORY_META[category].defaultUom);
+  const [uom, setUom] = useState<string>(CATEGORY_META[slugFromCategory(category)]?.defaultUom ?? 'piece');
 
   const [state, formAction, pending] = useActionState<ActionState, FormData>(
     createMasterItemAction,
@@ -127,7 +127,7 @@ export function AddMasterItemDialog({
         action={formAction}
         className="space-y-5"
       >
-          <input type="hidden" name="unit_id" value={unitId} />
+          <input type="hidden" name="unit_id" value={activeUnitId || ''} />
           <input type="hidden" name="category" value={category} />
           <input type="hidden" name="initial_rate" value="0" />
           <input type="hidden" name="uom" value={uom} />
@@ -192,7 +192,7 @@ export function AddMasterItemDialog({
               <FieldLabel>Category</FieldLabel>
               <div>
                 <Badge variant="secondary">
-                  {CATEGORY_META[category].title}
+                  {CATEGORY_META[slugFromCategory(category)]?.title ?? category}
                 </Badge>
               </div>
               <FieldDescription>

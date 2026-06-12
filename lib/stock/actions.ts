@@ -5,19 +5,16 @@ import { createClient } from '@/lib/supabase/server';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
 import {
-  createLotSchema,
   updateLotSchema,
   adjustQtySchema,
-  createPackSizeSchema,
 } from '@/lib/schemas/inventory';
 import type { Database } from '@/lib/supabase/database.types';
 
 type UnitInventoryUpdate = Database['public']['Tables']['unit_inventory']['Update'];
 
 const INVENTORY_WRITE = 'inventory.write';
-const MASTERS_WRITE = 'masters.write';
 
-const ACTION_RESULT = '/inventory';
+const ACTION_RESULT = '/stock';
 
 type ActionResult = {
   ok?: boolean;
@@ -32,44 +29,6 @@ function toDateString(d: Date | null | undefined): string | null | undefined {
   if (d === undefined) return undefined;
   if (d === null) return null;
   return d.toISOString().slice(0, 10);
-}
-
-export async function createLotAction(
-  _prev: unknown,
-  formData: FormData,
-): Promise<ActionResult> {
-  const parsed = createLotSchema.safeParse({
-    unit_id: formData.get('unit_id'),
-    item_id: formData.get('item_id'),
-    pack_size_id: formData.get('pack_size_id'),
-    qty_packs: formData.get('qty_packs'),
-    rate: formData.get('rate'),
-    acquired_on: formData.get('acquired_on') || undefined,
-    source: formData.get('source') || undefined,
-  });
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
-
-  // FIRST line of defence — never rely on RLS alone.
-  await requireCapability(INVENTORY_WRITE, parsed.data.unit_id);
-
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('unit_inventory')
-    .insert({
-      unit_id: parsed.data.unit_id,
-      item_id: parsed.data.item_id,
-      pack_size_id: parsed.data.pack_size_id,
-      qty_packs: parsed.data.qty_packs,
-      rate: parsed.data.rate,
-      acquired_on: toDateString(parsed.data.acquired_on) ?? null,
-      source: parsed.data.source ?? null,
-    })
-    .select('id')
-    .single();
-  if (error || !data) return { error: error?.message ?? 'Could not create lot' };
-
-  revalidatePath(ACTION_RESULT);
-  return { ok: true, id: data.id };
 }
 
 export async function updateLotAction(
@@ -107,7 +66,7 @@ export async function updateLotAction(
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
   const patch: UnitInventoryUpdate = {};
-  if (parsed.data.pack_size_id !== undefined) patch.pack_size_id = parsed.data.pack_size_id;
+  if (parsed.data.pack_size_id !== undefined) patch.variant_id = parsed.data.pack_size_id;
   if (parsed.data.rate !== undefined) patch.rate = parsed.data.rate;
   if (parsed.data.acquired_on !== undefined) patch.acquired_on = toDateString(parsed.data.acquired_on);
   if (parsed.data.source !== undefined) patch.source = parsed.data.source;
@@ -185,37 +144,80 @@ export async function deactivateLotAction(
   return { ok: true };
 }
 
-export async function createPackSizeAction(
-  _prev: unknown,
-  formData: FormData,
-): Promise<ActionResult> {
-  const parsed = createPackSizeSchema.safeParse({
-    label: formData.get('label'),
-    kind: formData.get('kind'),
-    volume_ml: formData.get('volume_ml') || undefined,
-    unit_count: formData.get('unit_count') || undefined,
-    sort_order: formData.get('sort_order') || undefined,
-  });
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
+export async function deactivateLotsAction(ids: string[]): Promise<ActionResult> {
+  // Authenticated session first — never touch the DB for an anon caller.
+  await requireUser();
 
-  // Pack sizes are global reference/master data — gate on masters.write
-  // (global scope). FIRST line of defence — never rely on RLS alone.
-  await requireCapability(MASTERS_WRITE, null);
+  if (!ids || ids.length === 0) {
+    return { error: 'Missing ids' };
+  }
 
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('pack_sizes')
-    .insert({
-      label: parsed.data.label,
-      kind: parsed.data.kind,
-      volume_ml: parsed.data.volume_ml ?? null,
-      unit_count: parsed.data.unit_count ?? null,
-      sort_order: parsed.data.sort_order,
-    })
-    .select('id')
-    .single();
-  if (error || !data) return { error: error?.message ?? 'Could not create pack size' };
+  const { data: existing, error: selectError } = await supabase
+    .from('unit_inventory')
+    .select('unit_id')
+    .in('id', ids);
+
+  if (selectError) return { error: selectError.message };
+  if (!existing || existing.length === 0) return { error: 'Lots not found' };
+
+  const distinctUnitIds = Array.from(new Set(existing.map((e) => e.unit_id)));
+  for (const unitId of distinctUnitIds) {
+    await requireCapability(INVENTORY_WRITE, unitId);
+  }
+
+  const { error: updateError } = await supabase
+    .from('unit_inventory')
+    .update({ is_active: false })
+    .in('id', ids);
+
+  if (updateError) return { error: updateError.message };
 
   revalidatePath(ACTION_RESULT);
-  return { ok: true, id: data.id };
+  return { ok: true };
 }
+
+export async function createLotsAction(
+  lots: Array<{
+    unit_id: string;
+    variant_id: string;
+    qty_packs: number;
+    rate: number;
+    acquired_on: string | null;
+    source: string | null;
+  }>,
+): Promise<ActionResult> {
+  await requireUser();
+  if (!lots || lots.length === 0) return { error: 'No lots provided' };
+
+  for (const lot of lots) {
+    if (!lot.unit_id || !lot.variant_id || lot.qty_packs < 0 || lot.rate < 0) {
+      return { error: 'Invalid input data in lot list' };
+    }
+  }
+
+  const distinctUnitIds = Array.from(new Set(lots.map((l) => l.unit_id)));
+  for (const unitId of distinctUnitIds) {
+    await requireCapability(INVENTORY_WRITE, unitId);
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from('unit_inventory')
+    .insert(
+      lots.map((l) => ({
+        unit_id: l.unit_id,
+        variant_id: l.variant_id,
+        qty_packs: l.qty_packs,
+        rate: l.rate,
+        acquired_on: l.acquired_on ? l.acquired_on.slice(0, 10) : null,
+        source: l.source,
+      }))
+    );
+
+  if (error) return { error: error.message };
+
+  revalidatePath(ACTION_RESULT);
+  return { ok: true };
+}
+

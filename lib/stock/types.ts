@@ -12,10 +12,6 @@ import type { Category, InventoryCategory } from '@/lib/masters/categories';
 export type InventoryLotRow =
   Database['public']['Views']['v_unit_inventory_current']['Row'];
 
-// A reusable pack size (e.g. "750 ml bottle", "carton of 24"). Reference data
-// used to populate the add-lot pack-size picker.
-export type PackSize = Database['public']['Tables']['pack_sizes']['Row'];
-
 // Options accepted by `listInventory` to filter the current-lots view.
 export type ListInventoryOpts = {
   q?: string;
@@ -29,10 +25,14 @@ export type ListInventoryOpts = {
 // Minimal master-item shape for the add-lot picker. Lots can be opened off ANY
 // master category (alcohol, cigar, soft_drink, ration, grocery), so the picker
 // surfaces the category alongside the name to disambiguate ("Old Monk Rum
-// (alcohol)"). Kept tiny on purpose — the picker only needs id/name/category/uom.
+// (alcohol)"). Kept tiny on purpose — the picker only needs id/name/category/uom/pack_label.
 export type MasterItemPick = {
   id: string;
   name: string;
   category: Category;
   uom: string;
+  pack_label: string;
+  pack_kind: 'volume' | 'count' | null;
+  volume_ml: number | null;
+  unit_count: number | null;
 };
