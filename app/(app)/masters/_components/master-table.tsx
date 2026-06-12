@@ -1,10 +1,10 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, useEffect } from 'react';
+import { format } from 'date-fns';
 import {
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
   useReactTable,
   type ColumnDef,
 } from '@tanstack/react-table';
@@ -31,9 +31,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { MoreHorizontal, Pencil, Plus, Upload } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { MasterFormDialog } from './master-form-dialog';
-import { MasterHistoryDialog } from './master-history-dialog';
 import { MasterBulkImportDialog } from './master-bulk-import-dialog';
 import { MasterMultiEditDialog } from './master-multi-edit-dialog';
 import { deactivateMasterItemAction } from '@/lib/masters/actions';
@@ -126,20 +125,17 @@ export function MasterTable({
   defaultUnitId,
   isAllUnits,
   canWrite = true,
+  categories = [],
+  page = 1,
+  pageSize = 15,
+  totalCount = 0,
+  sortBy = 'name',
+  sortOrder = 'asc',
 }: {
   category: Category;
   slug: CategorySlug;
   rows: MasterRow[];
-  /** Map item_id → list of authorisation chips. Only populated for category='ration'. */
   authorisations?: Record<string, AuthorisationChip[]>;
-  /**
-   * Unit scoping for the ration view. `null` ⇒ full matrix (super admin, or a
-   * unit with no mess_type/terrain configured): render the complete CLASS /
-   * TERRAIN filter UI. When provided, a non-null `rankClass`/`terrain` locks
-   * that dimension to a read-only label (server data is already restricted);
-   * a null dimension keeps its normal filter buttons. Only `/masters` passes
-   * this — admin Masters usage leaves it defaulted and is unaffected.
-   */
   rationScope?: {
     rankClass: RationClass | null;
     terrain: RationTerrain | null;
@@ -147,30 +143,80 @@ export function MasterTable({
   allowGlobal: boolean;
   defaultUnitId: string | null;
   isAllUnits: boolean;
-  /**
-   * UI-only gate for mutation affordances. Defaults to `true` so existing
-   * admin usage is byte-unchanged. When `false`, Add / Bulk import /
-   * Edit all / row Edit & Deactivate are hidden; search, table, and the
-   * read-only History view remain. The server actions are still the real
-   * 3-layer enforcement — this only hides controls.
-   */
   canWrite?: boolean;
+  categories?: Array<{ id: string; name: string; parent_id: string | null }>;
+  page?: number;
+  pageSize?: number;
+  totalCount?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
 }) {
   const router = useRouter();
-  const [filter, setFilter] = useState('');
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+  
+  const initialQ = searchParams.get('q') || '';
+  const [filter, setFilter] = useState(initialQ);
+  
   const [rankFilter, setRankFilter] = useState<RationClass | 'all'>('all');
   const [terrainFilter, setTerrainFilter] = useState<RationTerrain | 'all'>('all');
   const [editing, setEditing] = useState<MasterRow | null>(null);
-  const [historyOf, setHistoryOf] = useState<MasterRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [multiEditing, setMultiEditing] = useState(false);
+
+  // Debounced search logic
+  useEffect(() => {
+    const delayDebounceFn = setTimeout(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (filter) {
+        params.set('q', filter);
+      } else {
+        params.delete('q');
+      }
+      params.delete('page'); // Reset to page 1 on search
+      router.push(`${pathname}?${params.toString()}`);
+    }, 300);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [filter, pathname, router, searchParams]);
+
+  const handleSort = (field: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (sortBy === field) {
+      const newOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+      params.set('sortOrder', newOrder);
+    } else {
+      params.set('sortBy', field);
+      params.set('sortOrder', 'asc');
+    }
+    params.delete('page'); // Reset to page 1 on sort change
+    router.push(`${pathname}?${params.toString()}`);
+  };
+
+  const renderSortIcon = (field: string) => {
+    if (sortBy !== field) return <span className="text-muted-foreground/30 ml-1 text-xs">↕</span>;
+    return sortOrder === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const handlePageChange = (newPage: number) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('page', String(newPage));
+    router.push(`${pathname}?${params.toString()}`);
+  };
 
   const columns = useMemo<ColumnDef<MasterRow>[]>(() => {
     const cols: ColumnDef<MasterRow>[] = [
       {
         accessorKey: 'name',
-        header: 'Name',
+        header: () => (
+          <button
+            onClick={() => handleSort('name')}
+            className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+          >
+            Product {renderSortIcon('name')}
+          </button>
+        ),
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <span className="font-medium">{row.original.name}</span>
@@ -184,8 +230,36 @@ export function MasterTable({
         ),
       },
       {
+        id: 'size_packaging',
+        header: () => (
+          <button
+            onClick={() => handleSort('unit_value')}
+            className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+          >
+            Size/Packaging {renderSortIcon('unit_value')}
+          </button>
+        ),
+        cell: ({ row }) => {
+          const val = row.original.unit_value;
+          const type = row.original.unit_type;
+          const pkg = row.original.package_type;
+          return (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {val !== undefined ? `${val} ${type} ${pkg}` : row.original.pack_label ?? '—'}
+            </span>
+          );
+        },
+      },
+      {
         accessorKey: 'sku',
-        header: 'SKU',
+        header: () => (
+          <button
+            onClick={() => handleSort('sku')}
+            className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+          >
+            SKU {renderSortIcon('sku')}
+          </button>
+        ),
         cell: ({ getValue }) => (
           <span className="font-mono text-xs tabular-nums text-muted-foreground">
             {getValue<string>() ?? '—'}
@@ -193,13 +267,25 @@ export function MasterTable({
         ),
       },
       {
-        accessorKey: 'uom',
-        header: 'UoM',
-        cell: ({ getValue }) => (
-          <span className="font-mono text-xs tabular-nums">
-            {getValue<string>() ?? '—'}
-          </span>
-        ),
+        id: 'category',
+        header: 'Category',
+        cell: ({ row }) => {
+          const catName = row.original.category_name ?? row.original.category;
+          const subcat = row.original.subcategory_name;
+          return (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-foreground">
+                {catName === 'soft_drink' ? 'Cold Drinks' : catName === 'cigar' ? 'Cigars' : catName}
+              </span>
+              {subcat && (
+                <>
+                  <span className="text-muted-foreground/50 text-xs">/</span>
+                  <span className="text-xs text-muted-foreground">{subcat}</span>
+                </>
+              )}
+            </div>
+          );
+        },
       },
     ];
 
@@ -221,12 +307,19 @@ export function MasterTable({
 
     cols.push({
       accessorKey: 'updated_at',
-      header: 'Updated',
+      header: () => (
+        <button
+          onClick={() => handleSort('updated_at')}
+          className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+        >
+          Updated {renderSortIcon('updated_at')}
+        </button>
+      ),
       cell: ({ getValue }) => {
         const v = getValue<string>();
         return (
           <span className="font-mono text-xs tabular-nums text-muted-foreground">
-            {v ? new Date(v).toLocaleDateString() : '—'}
+            {v ? format(new Date(v), 'dd/MM/yyyy') : '—'}
           </span>
         );
       },
@@ -250,9 +343,6 @@ export function MasterTable({
                   Edit
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem onClick={() => setHistoryOf(row.original)}>
-                History
-              </DropdownMenuItem>
               {canWrite ? (
                 <DropdownMenuItem
                   onClick={async () => {
@@ -278,28 +368,18 @@ export function MasterTable({
     });
 
     return cols;
-  }, [category, router, authorisations, rankFilter, terrainFilter]);
-
-  const tableState = useMemo(
-    () => ({
-      columnFilters: filter ? [{ id: 'name', value: filter }] : [],
-    }),
-    [filter],
-  );
+  }, [category, router, authorisations, rankFilter, terrainFilter, canWrite, sortBy, sortOrder]);
 
   const table = useReactTable({
     data: rows,
     columns,
-    state: tableState,
     getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
   });
 
   const closeForm = useCallback(() => {
     setCreating(false);
     setEditing(null);
   }, []);
-  const closeHistory = useCallback(() => setHistoryOf(null), []);
   const closeImport = useCallback(() => setImporting(false), []);
   const closeMultiEdit = useCallback(() => setMultiEditing(false), []);
   const handleImported = useCallback(() => router.refresh(), [router]);
@@ -458,6 +538,39 @@ export function MasterTable({
         </Table>
       </div>
 
+      {/* Pagination controls */}
+      {totalCount > pageSize ? (
+        <div className="flex items-center justify-between py-1">
+          <div className="text-xs text-muted-foreground font-medium">
+            Showing {Math.min(totalCount, (page - 1) * pageSize + 1)} to{' '}
+            {Math.min(totalCount, page * pageSize)} of {totalCount} items
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handlePageChange(page - 1)}
+              disabled={page <= 1}
+              className="transition-ds select-none cursor-pointer"
+            >
+              Previous
+            </Button>
+            <span className="text-xs text-muted-foreground font-medium">
+              Page {page} of {Math.ceil(totalCount / pageSize)}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handlePageChange(page + 1)}
+              disabled={page >= Math.ceil(totalCount / pageSize)}
+              className="transition-ds select-none cursor-pointer"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {canWrite && formOpen ? (
         <MasterFormDialog
           open
@@ -468,10 +581,8 @@ export function MasterTable({
           allowGlobal={allowGlobal}
           defaultUnitId={defaultUnitId}
           onClose={closeForm}
+          categories={categories}
         />
-      ) : null}
-      {historyOf ? (
-        <MasterHistoryDialog item={historyOf} open onClose={closeHistory} />
       ) : null}
       {canWrite && importing ? (
         <MasterBulkImportDialog

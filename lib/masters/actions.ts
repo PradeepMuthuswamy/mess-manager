@@ -1,13 +1,18 @@
 'use server';
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
-import { createItemSchema, updateItemSchema, newItemVersionSchema, itemCategorySchema } from '@/lib/schemas/items';
-import type { Database } from '@/lib/supabase/database.types';
-
-type ItemUpdate = Database['public']['Tables']['items']['Update'];
+import {
+  createProductSchema,
+  updateProductSchema,
+  createVariantSchema,
+  updateVariantSchema,
+  itemCategorySchema,
+} from '@/lib/schemas/items';
 import { bulkImportRowSchema, type BulkImportRow } from './bulk-import';
 import type { Category } from './categories';
 
@@ -18,68 +23,158 @@ export type BulkImportResult = {
   errors: Array<{ rowNumber: number; name: string; message: string }>;
 };
 
-// Masters is now a single surface at /masters (admin links redirect here),
-// so there is one path to revalidate regardless of category.
 function revalidateMasters() {
   revalidatePath('/masters');
 }
 
-export async function createMasterItemAction(_prev: unknown, formData: FormData) {
-  const parsed = createItemSchema.safeParse({
-    unit_id: formData.get('unit_id') || null,
-    category: formData.get('category'),
-    name: formData.get('name'),
-    sku: formData.get('sku') || undefined,
-    uom: formData.get('uom'),
-    initial_rate: formData.get('initial_rate'),
-    initial_ration_scale: formData.get('initial_ration_scale') || undefined,
-    notes: formData.get('notes') || undefined,
-  });
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
+const CATEGORY_ID_MAP: Record<string, string> = {
+  alcohol: '00000000-0000-0000-0000-000000000001',
+  soft_drink: '00000000-0000-0000-0000-000000000002',
+  cigar: '00000000-0000-0000-0000-000000000003',
+  ration: '00000000-0000-0000-0000-000000000005',
+  grocery: '00000000-0000-0000-0000-000000000006',
+};
 
-  const cap = parsed.data.unit_id ? 'masters.write' : 'masters.write.global';
-  await requireCapability(cap, parsed.data.unit_id ?? null);
+function mapUomToVariant(uom: string): {
+  unit_value: number;
+  unit_type: 'ML' | 'LITRE' | 'GRAM' | 'KG' | 'PIECE';
+  package_type: 'BOTTLE' | 'CAN' | 'PACKET' | 'BOX' | 'LOOSE';
+} {
+  switch (uom) {
+    case 'kg':
+      return { unit_value: 1.0, unit_type: 'KG', package_type: 'LOOSE' };
+    case 'g':
+      return { unit_value: 1.0, unit_type: 'GRAM', package_type: 'LOOSE' };
+    case 'l':
+      return { unit_value: 1.0, unit_type: 'LITRE', package_type: 'LOOSE' };
+    case 'ml':
+      return { unit_value: 1.0, unit_type: 'ML', package_type: 'LOOSE' };
+    case 'bottle':
+      return { unit_value: 1.0, unit_type: 'PIECE', package_type: 'BOTTLE' };
+    case 'pack':
+      return { unit_value: 1.0, unit_type: 'PIECE', package_type: 'PACKET' };
+    case 'piece':
+    default:
+      return { unit_value: 1.0, unit_type: 'PIECE', package_type: 'LOOSE' };
+  }
+}
+
+export async function createMasterItemAction(_prev: unknown, formData: FormData) {
+  const unit_id = formData.get('unit_id') ? String(formData.get('unit_id')) : null;
+  const categoryRaw = formData.get('category') ? String(formData.get('category')) : '';
+  const category_id = CATEGORY_ID_MAP[categoryRaw] || String(formData.get('category_id') ?? '');
+  const name = String(formData.get('name') ?? '');
+  const description = formData.get('notes') ? String(formData.get('notes')) : (formData.get('description') ? String(formData.get('description')) : null);
+
+  const productParsed = createProductSchema.safeParse({
+    unit_id,
+    category_id,
+    name,
+    description,
+  });
+
+  const uom = formData.get('uom') ? String(formData.get('uom')) : undefined;
+  let variantData;
+  if (uom && !formData.get('unit_type')) {
+    variantData = mapUomToVariant(uom);
+  } else {
+    variantData = {
+      unit_value: Number(formData.get('unit_value') ?? 1.0),
+      unit_type: String(formData.get('unit_type') ?? 'PIECE') as any,
+      package_type: String(formData.get('package_type') ?? 'LOOSE') as any,
+    };
+  }
+
+  const variantParsed = createVariantSchema.safeParse({
+    unit_value: variantData.unit_value,
+    unit_type: variantData.unit_type,
+    package_type: variantData.package_type,
+    sku: formData.get('sku') || undefined,
+  });
+
+  if (!productParsed.success) {
+    return { error: 'Invalid product input', details: productParsed.error.flatten() };
+  }
+  if (!variantParsed.success) {
+    return { error: 'Invalid variant input', details: variantParsed.error.flatten() };
+  }
+
+  const cap = productParsed.data.unit_id ? 'masters.write' : 'masters.write.global';
+  await requireCapability(cap, productParsed.data.unit_id ?? null);
 
   const supabase = await createClient();
-  const { data: itemRow, error: insErr } = await supabase
-    .from('items')
+  const { data: productRow, error: prodErr } = await supabase
+    .from('products')
     .insert({
-      unit_id: parsed.data.unit_id ?? null,
-      category: parsed.data.category,
-      name: parsed.data.name,
-      sku: parsed.data.sku ?? null,
-      uom: parsed.data.uom,
+      unit_id: productParsed.data.unit_id ?? null,
+      category_id: productParsed.data.category_id,
+      name: productParsed.data.name,
+      description: productParsed.data.description ?? null,
     })
     .select('id')
     .single();
-  if (insErr || !itemRow) return { error: insErr?.message ?? 'Could not create item' };
 
-  const { error: rpcErr } = await supabase.rpc('set_item_rate', {
-    p_item_id: itemRow.id,
-    p_rate: parsed.data.initial_rate,
-    p_ration_scale: parsed.data.initial_ration_scale ?? undefined,
-    p_notes: parsed.data.notes ?? undefined,
-    p_effective_at: new Date().toISOString(),
-  });
-  if (rpcErr) return { error: rpcErr.message };
+  if (prodErr || !productRow) {
+    return { error: prodErr?.message ?? 'Could not create product' };
+  }
+
+  const { data: variantRow, error: varErr } = await supabase
+    .from('product_variants')
+    .insert({
+      product_id: productRow.id,
+      unit_value: variantParsed.data.unit_value,
+      unit_type: variantParsed.data.unit_type,
+      package_type: variantParsed.data.package_type,
+      sku: variantParsed.data.sku ?? null,
+    })
+    .select('id')
+    .single();
+
+  if (varErr || !variantRow) {
+    await supabase.from('products').delete().eq('id', productRow.id);
+    return { error: varErr?.message ?? 'Could not create variant' };
+  }
 
   revalidateMasters();
-  return { ok: true, id: itemRow.id };
+  return { ok: true, id: variantRow.id };
 }
 
 export async function updateMasterItemAction(_prev: unknown, formData: FormData) {
   const id = String(formData.get('id') ?? '');
   if (!id) return { error: 'Missing id' };
-  const parsed = updateItemSchema.safeParse({
-    name: formData.get('name') || undefined,
-    sku: formData.get('sku') || undefined,
-    uom: formData.get('uom') || undefined,
-    is_active: formData.get('is_active') == null ? undefined : formData.get('is_active') === 'true',
-  });
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  // Re-scope is opt-in: only present when the admin-only scope control was
-  // rendered. Empty string = Global (null), a uuid = that unit.
+  const supabase = await createClient();
+  const { data: variantRow } = await supabase
+    .from('product_variants')
+    .select('id, product_id')
+    .eq('id', id)
+    .single();
+  if (!variantRow) return { error: 'Variant not found' };
+
+  const { data: productRow } = await supabase
+    .from('products')
+    .select('id, unit_id, category_id')
+    .eq('id', variantRow.product_id)
+    .single();
+  if (!productRow) return { error: 'Product not found' };
+
+  const cap = productRow.unit_id ? 'masters.write' : 'masters.write.global';
+  await requireCapability(cap, productRow.unit_id ?? null);
+
+  const name = formData.get('name') ? String(formData.get('name')) : undefined;
+  const description = formData.get('description') !== null && formData.get('description') !== undefined
+    ? String(formData.get('description'))
+    : (formData.get('notes') ? String(formData.get('notes')) : undefined);
+
+  const productUpdate: Record<string, any> = {};
+  if (name !== undefined) productUpdate.name = name;
+  if (description !== undefined) productUpdate.description = description;
+
+  const productParsed = updateProductSchema.safeParse(productUpdate);
+  if (!productParsed.success) {
+    return { error: 'Invalid product input', details: productParsed.error.flatten() };
+  }
+
   const scopeControl = formData.get('scope_control') === '1';
   const rawUnit = formData.get('unit_id');
   const desiredUnitId: string | null | undefined = scopeControl
@@ -88,53 +183,59 @@ export async function updateMasterItemAction(_prev: unknown, formData: FormData)
       : null
     : undefined;
 
-  const supabase = await createClient();
-  // Look up unit_id so we can check capability accurately
-  const { data: existing } = await supabase.from('items').select('unit_id, category').eq('id', id).single();
-  if (!existing) return { error: 'Item not found' };
-  const cap = existing.unit_id ? 'masters.write' : 'masters.write.global';
-  await requireCapability(cap, existing.unit_id ?? null);
-
-  const patch: ItemUpdate = { ...parsed.data };
-  if (desiredUnitId !== undefined && desiredUnitId !== existing.unit_id) {
-    // Changing an item's visibility scope (unit ⇄ global) is admin-grade.
+  if (desiredUnitId !== undefined && desiredUnitId !== productRow.unit_id) {
     await requireCapability('masters.write.global', null);
-    patch.unit_id = desiredUnitId;
+    productUpdate.unit_id = desiredUnitId;
   }
 
-  const { error } = await supabase.from('items').update(patch).eq('id', id);
-  if (error) return { error: error.message };
+  if (Object.keys(productUpdate).length > 0) {
+    const { error: prodUpErr } = await supabase
+      .from('products')
+      .update(productUpdate as any)
+      .eq('id', productRow.id);
+    if (prodUpErr) return { error: prodUpErr.message };
+  }
 
-  revalidateMasters();
-  return { ok: true };
-}
+  const sku = formData.get('sku') !== null && formData.get('sku') !== undefined
+    ? String(formData.get('sku'))
+    : undefined;
+  const is_active_val = formData.get('is_active');
+  const is_active = is_active_val == null ? undefined : is_active_val === 'true';
 
-export async function newItemVersionAction(_prev: unknown, formData: FormData) {
-  const id = String(formData.get('id') ?? '');
-  if (!id) return { error: 'Missing id' };
+  const uom = formData.get('uom') ? String(formData.get('uom')) : undefined;
+  const variantUpdate: Record<string, any> = {};
+  if (sku !== undefined) variantUpdate.sku = sku || null;
+  if (is_active !== undefined) variantUpdate.is_active = is_active;
 
-  const parsed = newItemVersionSchema.safeParse({
-    rate: formData.get('rate'),
-    ration_scale: formData.get('ration_scale') || undefined,
-    notes: formData.get('notes') || undefined,
-    effective_at: formData.get('effective_at') || undefined,
-  });
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
+  if (formData.get('unit_value') !== undefined && formData.get('unit_value') !== null) {
+    variantUpdate.unit_value = Number(formData.get('unit_value'));
+  }
+  if (formData.get('unit_type') !== undefined && formData.get('unit_type') !== null) {
+    variantUpdate.unit_type = String(formData.get('unit_type'));
+  }
+  if (formData.get('package_type') !== undefined && formData.get('package_type') !== null) {
+    variantUpdate.package_type = String(formData.get('package_type'));
+  }
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase.from('items').select('unit_id, category').eq('id', id).single();
-  if (!existing) return { error: 'Item not found' };
-  const cap = existing.unit_id ? 'masters.write' : 'masters.write.global';
-  await requireCapability(cap, existing.unit_id ?? null);
+  if (uom && variantUpdate.unit_type === undefined) {
+    const mapped = mapUomToVariant(uom);
+    variantUpdate.unit_value = mapped.unit_value;
+    variantUpdate.unit_type = mapped.unit_type;
+    variantUpdate.package_type = mapped.package_type;
+  }
 
-  const { error } = await supabase.rpc('set_item_rate', {
-    p_item_id: id,
-    p_rate: parsed.data.rate,
-    p_ration_scale: parsed.data.ration_scale ?? undefined,
-    p_notes: parsed.data.notes ?? undefined,
-    p_effective_at: parsed.data.effective_at ? new Date(parsed.data.effective_at).toISOString() : new Date().toISOString(),
-  });
-  if (error) return { error: error.message };
+  const variantParsed = updateVariantSchema.safeParse(variantUpdate);
+  if (!variantParsed.success) {
+    return { error: 'Invalid variant input', details: variantParsed.error.flatten() };
+  }
+
+  if (Object.keys(variantUpdate).length > 0) {
+    const { error: varUpErr } = await supabase
+      .from('product_variants')
+      .update(variantUpdate as any)
+      .eq('id', variantRow.id);
+    if (varUpErr) return { error: varUpErr.message };
+  }
 
   revalidateMasters();
   return { ok: true };
@@ -142,7 +243,7 @@ export async function newItemVersionAction(_prev: unknown, formData: FormData) {
 
 export async function bulkImportMasterItemsAction(input: {
   category: Category;
-  unit_id: string | null; // null = global
+  unit_id: string | null;
   rows: Array<Record<string, unknown>>;
 }): Promise<{ ok?: boolean; result?: BulkImportResult; error?: string }> {
   const catParse = itemCategorySchema.safeParse(input.category);
@@ -161,6 +262,8 @@ export async function bulkImportMasterItemsAction(input: {
     errors: [],
   };
 
+  const categoryId = CATEGORY_ID_MAP[category] || '00000000-0000-0000-0000-000000000006';
+
   for (let i = 0; i < input.rows.length; i++) {
     const rowNumber = i + 1;
     const parsed = bulkImportRowSchema.safeParse(input.rows[i]);
@@ -176,40 +279,47 @@ export async function bulkImportMasterItemsAction(input: {
     }
     const row: BulkImportRow = parsed.data;
 
-    const { data: itemRow, error: insErr } = await supabase
-      .from('items')
+    const { data: productRow, error: prodErr } = await supabase
+      .from('products')
       .insert({
         unit_id: unitId,
-        category,
+        category_id: categoryId,
         name: row.name,
-        sku: row.sku ?? null,
-        uom: row.uom,
+        description: row.notes ?? null,
       })
       .select('id')
       .single();
-    if (insErr || !itemRow) {
+
+    if (prodErr || !productRow) {
       result.failed++;
       result.errors.push({
         rowNumber,
         name: row.name,
-        message: insErr?.message ?? 'Insert failed',
+        message: prodErr?.message ?? 'Product insert failed',
       });
       continue;
     }
 
-    const { error: rpcErr } = await supabase.rpc('set_item_rate', {
-      p_item_id: itemRow.id,
-      p_rate: row.rate,
-      p_ration_scale: row.ration_scale ?? undefined,
-      p_notes: row.notes ?? undefined,
-      p_effective_at: new Date().toISOString(),
-    });
-    if (rpcErr) {
+    const variantData = mapUomToVariant(row.uom);
+    const { data: variantRow, error: varErr } = await supabase
+      .from('product_variants')
+      .insert({
+        product_id: productRow.id,
+        unit_value: variantData.unit_value,
+        unit_type: variantData.unit_type,
+        package_type: variantData.package_type,
+        sku: row.sku ?? null,
+      })
+      .select('id')
+      .single();
+
+    if (varErr || !variantRow) {
+      await supabase.from('products').delete().eq('id', productRow.id);
       result.failed++;
       result.errors.push({
         rowNumber,
         name: row.name,
-        message: rpcErr.message,
+        message: varErr?.message ?? 'Variant insert failed',
       });
       continue;
     }
@@ -220,13 +330,6 @@ export async function bulkImportMasterItemsAction(input: {
   revalidateMasters();
   return { ok: true, result };
 }
-
-// ---------------------------------------------------------------------------
-// Multi-edit: apply patches across many items in a single request.
-// Each patch may carry property edits (name/sku/uom/is_active) AND/OR a new
-// rate/ration_scale (which goes through set_item_rate so version history is
-// preserved). Only fields present in a patch are touched.
-// ---------------------------------------------------------------------------
 
 export type MasterPatch = {
   id: string;
@@ -249,9 +352,6 @@ export type BulkUpdateMastersResult = {
 export async function bulkUpdateMasterItemsAction(input: {
   patches: MasterPatch[];
 }): Promise<{ ok?: boolean; result?: BulkUpdateMastersResult; error?: string }> {
-  // First line of defence: an authenticated session before any DB access.
-  // The per-unit capability gate below is the real authorisation, but it
-  // must never be skippable — see the byId.size guard.
   await requireUser();
 
   const patches = (input?.patches ?? []).filter((p) => p && p.id);
@@ -260,25 +360,43 @@ export async function bulkUpdateMasterItemsAction(input: {
 
   const supabase = await createClient();
 
-  // Look up unit_id + category for every patched item — needed for capability
-  // checks and revalidation paths.
   const ids = Array.from(new Set(patches.map((p) => p.id)));
-  const { data: existing, error: lookupErr } = await supabase
-    .from('items')
-    .select('id, unit_id, category')
+  const { data: existingVariants, error: lookupErr } = await supabase
+    .from('product_variants')
+    .select('id, product_id')
     .in('id', ids);
   if (lookupErr) return { error: lookupErr.message };
-  const byId = new Map<string, { unit_id: string | null; category: Category }>();
-  for (const e of existing ?? []) {
-    byId.set(e.id, { unit_id: e.unit_id, category: e.category as Category });
+  if (!existingVariants || existingVariants.length === 0) return { error: 'No matching variants' };
+
+  const productIds = Array.from(new Set(existingVariants.map((v) => v.product_id)));
+  const { data: existingProducts, error: prodLookupErr } = await supabase
+    .from('products')
+    .select('id, unit_id, category_id')
+    .in('id', productIds);
+  if (prodLookupErr) return { error: prodLookupErr.message };
+
+  const productMap = new Map<string, { unit_id: string | null; category_id: string }>();
+  for (const p of existingProducts ?? []) {
+    productMap.set(p.id, { unit_id: p.unit_id, category_id: p.category_id });
   }
 
-  // If nothing resolved (all ids unknown or hidden by RLS), refuse rather
-  // than fall through the capability loop as an ungated no-op.
+  const byId = new Map<string, { product_id: string; unit_id: string | null; category: Category }>();
+  for (const v of existingVariants) {
+    const p = productMap.get(v.product_id);
+    if (p) {
+      let catSlug: Category = 'grocery';
+      for (const [k, val] of Object.entries(CATEGORY_ID_MAP)) {
+        if (val === p.category_id) {
+          catSlug = k as Category;
+          break;
+        }
+      }
+      byId.set(v.id, { product_id: v.product_id, unit_id: p.unit_id, category: catSlug });
+    }
+  }
+
   if (byId.size === 0) return { error: 'No matching items' };
 
-  // Capability gate per distinct (unit_id) bucket. We require either the
-  // unit-scoped or global write capability depending on the item's scope.
   const unitsTouched = new Set<string | null>();
   for (const p of patches) {
     const row = byId.get(p.id);
@@ -295,6 +413,7 @@ export async function bulkUpdateMasterItemsAction(input: {
     failed: 0,
     errors: [],
   };
+
   for (const patch of patches) {
     const row = byId.get(patch.id);
     if (!row) {
@@ -303,59 +422,47 @@ export async function bulkUpdateMasterItemsAction(input: {
       continue;
     }
 
-    // 1. Property edits on items.
-    const propPatch: ItemUpdate = {};
-    if (patch.name !== undefined) propPatch.name = patch.name;
-    if (patch.sku !== undefined) propPatch.sku = patch.sku;
-    if (patch.uom !== undefined) propPatch.uom = patch.uom;
-    if (patch.is_active !== undefined) propPatch.is_active = patch.is_active;
-
-    if (Object.keys(propPatch).length > 0) {
-      const { error } = await supabase
-        .from('items')
-        .update(propPatch)
-        .eq('id', patch.id);
-      if (error) {
+    if (patch.name !== undefined) {
+      const { data: variant } = await supabase
+        .from('product_variants')
+        .select('product_id')
+        .eq('id', patch.id)
+        .single();
+      if (variant) {
+        const { error: prodErr } = await supabase
+          .from('products')
+          .update({ name: patch.name } as any)
+          .eq('id', variant.product_id);
+        if (prodErr) {
+          result.failed++;
+          result.errors.push({ id: patch.id, message: prodErr.message });
+          continue;
+        }
+      } else {
         result.failed++;
-        result.errors.push({ id: patch.id, message: error.message });
+        result.errors.push({ id: patch.id, message: 'Variant not found' });
         continue;
       }
     }
 
-    // 2. New version via set_item_rate if rate or ration_scale supplied.
-    if (patch.rate !== undefined || patch.ration_scale !== undefined) {
-      // set_item_rate requires a rate. If only ration_scale changed but the
-      // caller didn't pass a rate, we need to read the current rate first.
-      let nextRate = patch.rate;
-      if (nextRate === undefined) {
-        const { data: cur } = await supabase
-          .from('v_items_current')
-          .select('current_rate')
-          .eq('id', patch.id)
-          .maybeSingle();
-        nextRate = cur?.current_rate ?? undefined;
-      }
-      if (nextRate === undefined || nextRate === null) {
-        result.failed++;
-        result.errors.push({
-          id: patch.id,
-          message: 'No current rate; supply a rate when editing the scale',
-        });
-        continue;
-      }
+    const varPatch: Record<string, any> = {};
+    if (patch.sku !== undefined) varPatch.sku = patch.sku;
+    if (patch.is_active !== undefined) varPatch.is_active = patch.is_active;
+    if (patch.uom !== undefined) {
+      const mapped = mapUomToVariant(patch.uom);
+      varPatch.unit_value = mapped.unit_value;
+      varPatch.unit_type = mapped.unit_type;
+      varPatch.package_type = mapped.package_type;
+    }
 
-      const { error: rpcErr } = await supabase.rpc('set_item_rate', {
-        p_item_id: patch.id,
-        p_rate: nextRate,
-        ...(patch.ration_scale !== undefined
-          ? { p_ration_scale: patch.ration_scale ?? undefined }
-          : {}),
-        ...(patch.notes ? { p_notes: patch.notes } : {}),
-        p_effective_at: new Date().toISOString(),
-      });
-      if (rpcErr) {
+    if (Object.keys(varPatch).length > 0) {
+      const { error: varErr } = await supabase
+        .from('product_variants')
+        .update(varPatch as any)
+        .eq('id', patch.id);
+      if (varErr) {
         result.failed++;
-        result.errors.push({ id: patch.id, message: rpcErr.message });
+        result.errors.push({ id: patch.id, message: varErr.message });
         continue;
       }
     }
@@ -370,13 +477,28 @@ export async function bulkUpdateMasterItemsAction(input: {
 export async function deactivateMasterItemAction(_prev: unknown, formData: FormData) {
   const id = String(formData.get('id') ?? '');
   if (!id) return { error: 'Missing id' };
+
   const supabase = await createClient();
-  const { data: existing } = await supabase.from('items').select('unit_id, category').eq('id', id).single();
-  if (!existing) return { error: 'Item not found' };
-  const cap = existing.unit_id ? 'masters.write' : 'masters.write.global';
-  await requireCapability(cap, existing.unit_id ?? null);
-  const { error } = await supabase.from('items').update({ is_active: false }).eq('id', id);
+  const { data: variantRow } = await supabase
+    .from('product_variants')
+    .select('product_id')
+    .eq('id', id)
+    .single();
+  if (!variantRow) return { error: 'Item not found' };
+
+  const { data: productRow } = await supabase
+    .from('products')
+    .select('unit_id')
+    .eq('id', variantRow.product_id)
+    .single();
+  if (!productRow) return { error: 'Item not found' };
+
+  const cap = productRow.unit_id ? 'masters.write' : 'masters.write.global';
+  await requireCapability(cap, productRow.unit_id ?? null);
+
+  const { error } = await supabase.from('product_variants').update({ is_active: false }).eq('id', id);
   if (error) return { error: error.message };
+
   revalidateMasters();
   return { ok: true };
 }

@@ -26,6 +26,20 @@ export type MasterRow = {
   rate_valid_from: string | null;
   version_id: string | null;
   updated_at: string;
+  pack_size_id: string | null;
+  pack_label: string | null;
+  pack_kind: 'volume' | 'count' | null;
+  volume_ml: number | null;
+  unit_count: number | null;
+  // Variant-specific fields for UI
+  product_id?: string;
+  product_name?: string;
+  product_description?: string | null;
+  category_name?: string;
+  subcategory_name?: string | null;
+  unit_value?: number;
+  unit_type?: string;
+  package_type?: string;
 };
 
 export type VersionRow = {
@@ -43,5 +57,8 @@ export type ListMastersOpts = {
   activeUnitId: string | null;
   isAllUnits: boolean;
   includeInactive?: boolean;
-  limit?: number;
+  page?: number;
+  pageSize?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
 };

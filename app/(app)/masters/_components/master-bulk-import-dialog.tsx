@@ -24,7 +24,7 @@ import {
   type ParsedBulkImport,
 } from '@/lib/masters/bulk-import';
 import { bulkImportMasterItemsAction } from '@/lib/masters/actions';
-import { CATEGORY_META } from '@/lib/masters/categories';
+import { CATEGORY_META, slugFromCategory } from '@/lib/masters/categories';
 import type { Category } from '@/lib/masters/categories';
 import { FileDown, Upload } from 'lucide-react';
 
@@ -179,7 +179,7 @@ export function MasterBulkImportDialog({
     <AdaptiveModal
       open={open}
       onClose={onClose}
-      title={`Bulk import — ${CATEGORY_META[category].title}`}
+      title={`Bulk import — ${CATEGORY_META[slugFromCategory(category)].title}`}
       contentClassName="sm:max-w-2xl max-h-[85vh]"
       footer={
         <>

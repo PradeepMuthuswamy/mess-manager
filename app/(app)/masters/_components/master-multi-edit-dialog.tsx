@@ -27,13 +27,9 @@ import { bulkUpdateMasterItemsAction, type MasterPatch } from '@/lib/masters/act
 import type { MasterRow } from '@/lib/masters/types';
 import type { Category } from '@/lib/masters/categories';
 
-const UOMS = ['kg', 'g', 'l', 'ml', 'piece', 'pack', 'bottle'] as const;
-type Uom = (typeof UOMS)[number];
-
 type Draft = {
   name: string;
   sku: string;
-  uom: Uom;
   is_active: boolean;
 };
 
@@ -41,7 +37,6 @@ function rowToDraft(row: MasterRow): Draft {
   return {
     name: row.name ?? '',
     sku: row.sku ?? '',
-    uom: (row.uom as Uom) ?? 'kg',
     is_active: row.is_active ?? true,
   };
 }
@@ -50,7 +45,6 @@ function diff(orig: Draft, next: Draft): Partial<MasterPatch> | null {
   const p: Partial<MasterPatch> = {};
   if (next.name.trim() && next.name !== orig.name) p.name = next.name.trim();
   if (next.sku !== orig.sku) p.sku = next.sku.trim() || null;
-  if (next.uom !== orig.uom) p.uom = next.uom;
   if (next.is_active !== orig.is_active) p.is_active = next.is_active;
   return Object.keys(p).length === 0 ? null : p;
 }
@@ -105,6 +99,16 @@ export function MasterMultiEditDialog({
 
   function patch(id: string, mutate: (d: Draft) => Draft) {
     setDrafts((prev) => ({ ...prev, [id]: mutate(prev[id]) }));
+  }
+
+  // Helper to bulk toggle active status of all currently visible items in the modal.
+  function bulkToggleStatus(active: boolean) {
+    const mutation: Record<string, Draft> = {};
+    for (const r of visible) {
+      mutation[r.id] = { ...drafts[r.id], is_active: active };
+    }
+    setDrafts((prev) => ({ ...prev, ...mutation }));
+    toast.success(`Set ${visible.length} items to ${active ? 'Active' : 'Inactive'}`);
   }
 
   function resetRow(id: string) {
@@ -178,139 +182,142 @@ export function MasterMultiEditDialog({
       }
     >
       <div className="space-y-4">
-          {/* Toolbar: search + dirty-count badge */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative max-w-xs flex-1">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Search items..."
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="pl-8"
-              />
-            </div>
-            <div className="flex-1" />
-            <Badge
-              variant={dirtyIds.length > 0 ? 'default' : 'secondary'}
-              className="tabular-nums"
-            >
-              {dirtyIds.length} pending change{dirtyIds.length === 1 ? '' : 's'}
-            </Badge>
+        {/* Toolbar: search + bulk actions + dirty-count badge */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative max-w-xs flex-1">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search items..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="pl-8"
+            />
           </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => bulkToggleStatus(true)}
+              disabled={visible.length === 0}
+              className="text-xs"
+            >
+              Mark Active
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => bulkToggleStatus(false)}
+              disabled={visible.length === 0}
+              className="text-xs text-destructive"
+            >
+              Mark Inactive
+            </Button>
+          </div>
+          <div className="flex-1" />
+          <Badge
+            variant={dirtyIds.length > 0 ? 'default' : 'secondary'}
+            className="tabular-nums"
+          >
+            {dirtyIds.length} pending change{dirtyIds.length === 1 ? '' : 's'}
+          </Badge>
+        </div>
 
-          {/* Inline table */}
-          <div className="rounded-md border overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/50">
-                  <TableHead className="min-w-[220px] text-xs font-medium">Name</TableHead>
-                  <TableHead className="min-w-[120px] text-xs font-medium">SKU</TableHead>
-                  <TableHead className="text-xs font-medium">UoM</TableHead>
-                  <TableHead className="text-xs font-medium">Status</TableHead>
-                  <TableHead className="w-[1%]" />
+        {/* Inline table */}
+        <div className="rounded-md border overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/50">
+                <TableHead className="min-w-[220px] text-xs font-medium">Product Name</TableHead>
+                <TableHead className="min-w-[150px] text-xs font-medium">SKU</TableHead>
+                <TableHead className="text-xs font-medium">Status</TableHead>
+                <TableHead className="w-[1%]" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visible.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={4}
+                    className="py-8 text-center text-sm text-muted-foreground"
+                  >
+                    No matching items.
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {visible.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={5}
-                      className="py-8 text-center text-sm text-muted-foreground"
-                    >
-                      No matching items.
+              ) : null}
+              {visible.map((r) => {
+                const d = drafts[r.id];
+                const o = originals[r.id];
+                if (!d || !o) return null;
+                const isDirty = diff(o, d) != null;
+                return (
+                  <TableRow
+                    key={r.id}
+                    data-dirty={isDirty || undefined}
+                    className="data-[dirty=true]:bg-accent/30"
+                  >
+                    <TableCell>
+                      <Input
+                        value={d.name}
+                        onChange={(e) =>
+                          patch(r.id, (cur) => ({ ...cur, name: e.currentTarget.value }))
+                        }
+                        className="h-8"
+                      />
+                      {r.unit_id == null ? (
+                        <span className="mt-1 inline-block text-[10px] text-muted-foreground">
+                          Global
+                        </span>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        value={d.sku}
+                        onChange={(e) =>
+                          patch(r.id, (cur) => ({ ...cur, sku: e.currentTarget.value }))
+                        }
+                        className="h-8 font-mono text-xs"
+                        placeholder="—"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Select
+                        value={d.is_active ? 'true' : 'false'}
+                        onValueChange={(v) =>
+                          patch(r.id, (cur) => ({ ...cur, is_active: v === 'true' }))
+                        }
+                      >
+                        <SelectTrigger className="h-8 w-28">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="true">Active</SelectItem>
+                          <SelectItem value="false">Inactive</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {isDirty ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => resetRow(r.id)}
+                          className="text-muted-foreground transition-ds"
+                        >
+                          Reset
+                        </Button>
+                      ) : null}
                     </TableCell>
                   </TableRow>
-                ) : null}
-                {visible.map((r) => {
-                  const d = drafts[r.id];
-                  const o = originals[r.id];
-                  if (!d || !o) return null;
-                  const isDirty = diff(o, d) != null;
-                  return (
-                    <TableRow
-                      key={r.id}
-                      data-dirty={isDirty || undefined}
-                      className="data-[dirty=true]:bg-accent/30"
-                    >
-                      <TableCell>
-                        <Input
-                          value={d.name}
-                          onChange={(e) =>
-                            patch(r.id, (cur) => ({ ...cur, name: e.currentTarget.value }))
-                          }
-                          className="h-8"
-                        />
-                        {r.unit_id == null ? (
-                          <span className="mt-1 inline-block text-[10px] text-muted-foreground">
-                            Global
-                          </span>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          value={d.sku}
-                          onChange={(e) =>
-                            patch(r.id, (cur) => ({ ...cur, sku: e.currentTarget.value }))
-                          }
-                          className="h-8 font-mono text-xs"
-                          placeholder="—"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={d.uom}
-                          onValueChange={(v) =>
-                            patch(r.id, (cur) => ({ ...cur, uom: v as Uom }))
-                          }
-                        >
-                          <SelectTrigger className="h-8 w-24">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {UOMS.map((u) => (
-                              <SelectItem key={u} value={u}>
-                                {u}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={d.is_active ? 'true' : 'false'}
-                          onValueChange={(v) =>
-                            patch(r.id, (cur) => ({ ...cur, is_active: v === 'true' }))
-                          }
-                        >
-                          <SelectTrigger className="h-8 w-28">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="true">Active</SelectItem>
-                            <SelectItem value="false">Inactive</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {isDirty ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => resetRow(r.id)}
-                            className="text-muted-foreground transition-ds"
-                          >
-                            Reset
-                          </Button>
-                        ) : null}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
+      </div>
     </AdaptiveModal>
   );
 }
+

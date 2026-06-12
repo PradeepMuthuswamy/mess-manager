@@ -1,35 +1,158 @@
 import 'server-only';
 import { createClient } from '@/lib/supabase/server';
-import type { Category } from './categories';
+import type { CategorySlug, Category } from './categories';
 import type {
   AuthorisationChip,
   MasterRow,
-  VersionRow,
   ListMastersOpts,
 } from './types';
 import type { RationClass, RationTerrain } from '@/lib/schemas/ration';
 
-export type { AuthorisationChip, MasterRow, VersionRow, ListMastersOpts } from './types';
+export type { AuthorisationChip, MasterRow, ListMastersOpts } from './types';
 
-export async function listMasterItems(category: Category, opts: ListMastersOpts): Promise<MasterRow[]> {
+export async function listMasterItems(categorySlug: CategorySlug, opts: ListMastersOpts): Promise<{ rows: MasterRow[]; totalCount: number }> {
   const supabase = await createClient();
-  let q = supabase
-    .from('v_items_current')
-    .select('id, unit_id, category, name, sku, uom, is_active, current_rate, current_ration_scale, rate_valid_from, version_id, updated_at')
-    .eq('category', category)
-    .order('name')
-    .limit(opts.limit ?? 200);
+  
+  // Define category UUIDs for main parent categories
+  const categoryIds: Record<CategorySlug, string> = {
+    alcohol: '00000000-0000-0000-0000-000000000001',
+    'cold-drinks': '00000000-0000-0000-0000-000000000002',
+    cigars: '00000000-0000-0000-0000-000000000003',
+    snacks: '00000000-0000-0000-0000-000000000004',
+    ration: '00000000-0000-0000-0000-000000000005',
+    grocery: '00000000-0000-0000-0000-000000000006',
+  };
+  const catId = categoryIds[categorySlug];
 
-  if (!opts.includeInactive) q = q.eq('is_active', true);
-  if (opts.q) q = q.ilike('name', `%${opts.q}%`);
+  let query = supabase
+    .from('v_masters_search')
+    .select('*', { count: 'exact' });
+
+  // Filter by category_id or category_parent_id matching catId
+  query = query.or(`category_id.eq.${catId},category_parent_id.eq.${catId}`);
+
+  if (!opts.includeInactive) {
+    query = query.eq('is_active', true);
+  }
+  
+  if (opts.q) {
+    const qClean = opts.q.trim();
+    if (qClean) {
+      // Full-text search on product_fts OR B-tree search on variant SKU.
+      // Values are double-quoted (with " and \ escaped) so user input containing
+      // PostgREST filter syntax (commas, parentheses) can't break or inject into
+      // the or() expression — e.g. searching for `Vegetables (Fresh)`.
+      const esc = qClean.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      query = query.or(`sku.ilike."%${esc}%",product_fts.wfts."${esc}"`);
+    }
+  }
+  
   if (!opts.isAllUnits && opts.activeUnitId) {
-    q = q.or(`unit_id.is.null,unit_id.eq.${opts.activeUnitId}`);
+    query = query.or(`product_unit_id.is.null,product_unit_id.eq.${opts.activeUnitId}`);
   }
 
-  const { data, error } = await q;
+  // Sort logic
+  const sortBy = opts.sortBy || 'name';
+  const sortOrder = opts.sortOrder || 'asc';
+  const ascending = sortOrder === 'asc';
+
+  if (sortBy === 'name') {
+    query = query
+      .order('product_name', { ascending })
+      .order('unit_value', { ascending: true });
+  } else if (sortBy === 'sku') {
+    query = query.order('sku', { ascending });
+  } else if (sortBy === 'updated_at') {
+    query = query.order('updated_at', { ascending });
+  } else if (sortBy === 'unit_value') {
+    query = query.order('unit_value', { ascending });
+  } else {
+    // Default sorting
+    query = query
+      .order('product_name', { ascending: true })
+      .order('unit_value', { ascending: true });
+  }
+
+  // Pagination logic
+  if (opts.page && opts.pageSize) {
+    const from = (opts.page - 1) * opts.pageSize;
+    const to = from + opts.pageSize - 1;
+    query = query.range(from, to);
+  }
+
+  const { data, error, count } = await query;
   if (error) throw new Error(error.message);
-  return (data ?? []) as MasterRow[];
+
+  const uomMap: Record<string, string> = {
+    'ML': 'ml',
+    'LITRE': 'l',
+    'GRAM': 'g',
+    'KG': 'kg',
+    'PIECE': 'piece'
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (data ?? []).map((v: any) => {
+    const parentName = v.category_parent_id === catId ? null : v.category_name;
+    
+    const packKind = ['ML', 'LITRE'].includes(v.unit_type) ? 'volume' : 'count';
+    
+    let volumeMl: number | null = null;
+    if (v.unit_type === 'ML') {
+      volumeMl = Number(v.unit_value);
+    } else if (v.unit_type === 'LITRE') {
+      volumeMl = Number(v.unit_value) * 1000;
+    }
+    
+    const unitCount = v.unit_type === 'PIECE' ? Number(v.unit_value) : null;
+    
+    const categoryEnumMap: Record<CategorySlug, Category> = {
+      alcohol: 'alcohol',
+      'cold-drinks': 'soft_drink',
+      cigars: 'cigar',
+      snacks: 'grocery',
+      ration: 'ration',
+      grocery: 'grocery'
+    };
+
+    return {
+      id: v.variant_id,
+      unit_id: v.product_unit_id,
+      category: categoryEnumMap[categorySlug] || 'grocery',
+      name: v.product_name,
+      sku: v.sku,
+      uom: uomMap[v.unit_type] || 'piece',
+      is_active: v.is_active,
+      // Rates live on inventory lots since the products/variants refactor;
+      // null signals "no master-level rate" instead of a misleading 0.
+      current_rate: null,
+      current_ration_scale: null,
+      rate_valid_from: v.created_at,
+      version_id: v.variant_id,
+      updated_at: v.updated_at,
+      pack_size_id: null,
+      pack_label: `${v.unit_value} ${v.unit_type} ${v.package_type}`,
+      pack_kind: packKind as 'volume' | 'count',
+      volume_ml: volumeMl,
+      unit_count: unitCount,
+      // Variant-specific fields for UI
+      product_id: v.product_id,
+      product_name: v.product_name,
+      product_description: v.product_description,
+      category_name: v.category_name,
+      subcategory_name: parentName,
+      unit_value: Number(v.unit_value),
+      unit_type: v.unit_type,
+      package_type: v.package_type,
+    } as MasterRow;
+  });
+
+  return {
+    rows,
+    totalCount: count ?? rows.length,
+  };
 }
+
 
 // Per-item ration authorisations. Returns a Map keyed by item_id, each value
 // an array of (scale, rank_class, terrain, qty, uom) entries.
@@ -80,13 +203,3 @@ export async function listMasterAuthorisations(
   return out;
 }
 
-export async function listItemVersions(itemId: string): Promise<VersionRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('item_versions')
-    .select('id, rate, ration_scale, notes, valid_from, valid_to, created_by')
-    .eq('item_id', itemId)
-    .order('valid_from', { ascending: false });
-  if (error) throw new Error(error.message);
-  return (data ?? []) as VersionRow[];
-}

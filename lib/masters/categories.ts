@@ -2,21 +2,22 @@ import type { Database } from '@/lib/supabase/database.types';
 
 export type Category = Database['public']['Enums']['item_category'];
 
-export const CATEGORY_SLUGS = ['ration','soft-drinks','alcohol','cigar','grocery'] as const;
+export const CATEGORY_SLUGS = ['ration', 'cold-drinks', 'alcohol', 'cigars', 'grocery', 'snacks'] as const;
 export type CategorySlug = typeof CATEGORY_SLUGS[number];
 
 const SLUG_TO_DB: Record<CategorySlug, Category> = {
   ration: 'ration',
-  'soft-drinks': 'soft_drink',
+  'cold-drinks': 'soft_drink',
   alcohol: 'alcohol',
-  cigar: 'cigar',
+  cigars: 'cigar',
   grocery: 'grocery',
+  snacks: 'grocery',
 };
 const DB_TO_SLUG: Record<Category, CategorySlug> = {
   ration: 'ration',
-  soft_drink: 'soft-drinks',
+  soft_drink: 'cold-drinks',
   alcohol: 'alcohol',
-  cigar: 'cigar',
+  cigar: 'cigars',
   grocery: 'grocery',
   room: 'ration',
 };
@@ -58,11 +59,12 @@ export function isInventoryCategory(v: unknown): v is InventoryCategory {
   );
 }
 
-export const CATEGORY_META: Record<Category, { title: string; description: string; defaultUom: Database['public']['Enums']['uom'] }> = {
-  ration:     { title: 'Ration',        description: 'Issued per ration scale.',          defaultUom: 'kg' },
-  soft_drink: { title: 'Soft Drinks',   description: 'Non-alcoholic beverages.',          defaultUom: 'bottle' },
-  alcohol:    { title: 'Alcohol',       description: 'Wine, spirits, beer.',              defaultUom: 'bottle' },
-  cigar:      { title: 'Cigar',         description: 'Cigars and tobacco.',               defaultUom: 'piece' },
-  grocery:    { title: 'Grocery',       description: 'General grocery items.',            defaultUom: 'piece' },
-  room:       { title: 'Room Types',    description: 'Guest room categories and rates.',  defaultUom: 'piece' },
+export const CATEGORY_META: Record<CategorySlug, { title: string; description: string; defaultUom: Database['public']['Enums']['uom'] }> = {
+  ration:        { title: 'Ration',        description: 'Issued per ration scale.',          defaultUom: 'kg' },
+  'cold-drinks': { title: 'Cold Drinks',   description: 'Non-alcoholic beverages.',          defaultUom: 'bottle' },
+  alcohol:       { title: 'Alcohol',       description: 'Wine, spirits, beer.',              defaultUom: 'bottle' },
+  cigars:        { title: 'Cigars',        description: 'Cigars and tobacco.',               defaultUom: 'piece' },
+  grocery:       { title: 'Grocery',       description: 'General grocery items.',            defaultUom: 'piece' },
+  snacks:        { title: 'Snacks',        description: 'Snacks and quick bites.',           defaultUom: 'piece' },
 };
+

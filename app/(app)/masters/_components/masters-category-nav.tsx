@@ -1,36 +1,25 @@
 import Link from 'next/link';
 import {
   CATEGORY_META,
-  slugFromCategory,
-  type Category,
+  CATEGORY_SLUGS,
+  type CategorySlug,
 } from '@/lib/masters/categories';
 
-// The five operational master categories surfaced at /masters. `room` is
-// guest-room-only and intentionally excluded (it has no admin master UI).
-const MASTERS_CATEGORIES = [
-  'ration',
-  'soft_drink',
-  'alcohol',
-  'cigar',
-  'grocery',
-] as const satisfies readonly Category[];
-
-// Tab strip over the five master categories. Mirrors InventoryCategoryNav
+// Tab strip over the master category slugs. Mirrors InventoryCategoryNav
 // exactly (same shadcn-token strip + active state) but is link/URL driven
 // (`?cat=`) so the single /masters route stays SSR and linkable. Labels are
 // reused from CATEGORY_META so they always match the admin masters console.
-export function MastersCategoryNav({ active }: { active: Category }) {
+export function MastersCategoryNav({ active }: { active: CategorySlug }) {
   return (
     <nav
       aria-label="Master categories"
       className="inline-flex items-center gap-1 rounded-[0.375rem] border border-border bg-muted p-1"
     >
-      {MASTERS_CATEGORIES.map((cat) => {
-        const isActive = cat === active;
-        const slug = slugFromCategory(cat);
+      {CATEGORY_SLUGS.map((slug) => {
+        const isActive = slug === active;
         return (
           <Link
-            key={cat}
+            key={slug}
             href={`/masters?cat=${slug}`}
             scroll={false}
             className={[
@@ -41,10 +30,11 @@ export function MastersCategoryNav({ active }: { active: Category }) {
             ].join(' ')}
             aria-current={isActive ? 'page' : undefined}
           >
-            {CATEGORY_META[cat].title}
+            {CATEGORY_META[slug].title}
           </Link>
         );
       })}
     </nav>
   );
 }
+

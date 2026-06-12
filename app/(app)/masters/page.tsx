@@ -9,6 +9,7 @@ import {
 } from '@/lib/masters/queries';
 import {
   CATEGORY_META,
+  CATEGORY_SLUGS,
   categoryFromSlug,
   type CategorySlug,
 } from '@/lib/masters/categories';
@@ -21,21 +22,8 @@ import type { RationClass, RationTerrain } from '@/lib/schemas/ration';
 import { MasterTable } from './_components/master-table';
 import { MastersCategoryNav } from './_components/masters-category-nav';
 
-// The five operational master categories (room is guest-room-only — no
-// master UI). Mirrors the admin Masters tabs; `?cat=` keeps this single
-// route SSR + linkable like /inventory.
-const MASTER_SLUGS = [
-  'ration',
-  'soft-drinks',
-  'alcohol',
-  'cigar',
-  'grocery',
-] as const satisfies readonly CategorySlug[];
-
-type MasterSlug = (typeof MASTER_SLUGS)[number];
-
-function isMasterSlug(v: string | undefined): v is MasterSlug {
-  return !!v && (MASTER_SLUGS as readonly string[]).includes(v);
+function isMasterSlug(v: string | undefined): v is CategorySlug {
+  return !!v && (CATEGORY_SLUGS as readonly string[]).includes(v);
 }
 
 /**
@@ -49,24 +37,49 @@ function isMasterSlug(v: string | undefined): v is MasterSlug {
 export default async function MastersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ cat?: string; q?: string; inactive?: string }>;
+  searchParams: Promise<{
+    cat?: string;
+    q?: string;
+    inactive?: string;
+    page?: string;
+    sortBy?: string;
+    sortOrder?: string;
+  }>;
 }) {
   const user = await requireUser();
   await requireCapability('masters.read', user.activeUnitId ?? null);
 
-  const { cat, q, inactive } = await searchParams;
-  const slug: MasterSlug = isMasterSlug(cat) ? cat : 'ration';
+  const { cat, q, inactive, page, sortBy, sortOrder } = await searchParams;
+  const slug = isMasterSlug(cat) ? cat : 'ration';
   const category = categoryFromSlug(slug);
 
   const allowGlobal = userHasCapability(user, 'masters.write.global');
   const canWrite = userHasCapability(user, 'masters.write', user.activeUnitId);
 
-  const rows = await listMasterItems(category, {
-    q,
-    activeUnitId: user.activeUnitId,
-    isAllUnits: user.isAllUnits,
-    includeInactive: inactive === '1',
-  });
+  const currentPage = Number(page) || 1;
+  const currentSortBy = sortBy || 'name';
+  const currentSortOrder = (sortOrder === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc';
+  const pageSize = 15;
+
+  const supabase = await createClient();
+  const [{ rows, totalCount }, categoriesRes] = await Promise.all([
+    listMasterItems(slug, {
+      q,
+      activeUnitId: user.activeUnitId,
+      isAllUnits: user.isAllUnits,
+      includeInactive: inactive === '1',
+      page: currentPage,
+      pageSize,
+      sortBy: currentSortBy,
+      sortOrder: currentSortOrder,
+    }),
+    supabase
+      .from('categories')
+      .select('id, name, parent_id')
+      .order('name'),
+  ]);
+
+  const categories = categoriesRes.data ?? [];
 
   // Super admins see the full rank×terrain matrix. Everyone else is scoped to
   // their active unit's configured mess_type (→rank class) and terrain.
@@ -79,7 +92,6 @@ export default async function MastersPage({
 
   if (category === 'ration') {
     if (!isSuperAdmin && user.activeUnitId) {
-      const supabase = await createClient();
       const { data: unitRow } = await supabase
         .from('units')
         .select('mess_type, terrain')
@@ -115,18 +127,18 @@ export default async function MastersPage({
         </h1>
         <p className="text-sm text-muted-foreground">
           The full item catalogue for this unit. Pricing for stock is recorded
-          per purchase lot in Inventory, not here.
+          per purchase lot in Stock, not here.
         </p>
       </div>
 
-      <MastersCategoryNav active={category} />
+      <MastersCategoryNav active={slug} />
 
       <div className="space-y-1">
         <h2 className="font-heading text-base font-semibold leading-[1.3] tracking-[-0.01em] text-foreground">
-          {CATEGORY_META[category].title}
+          {CATEGORY_META[slug].title}
         </h2>
         <p className="text-sm text-muted-foreground">
-          {CATEGORY_META[category].description}
+          {CATEGORY_META[slug].description}
         </p>
       </div>
 
@@ -140,7 +152,14 @@ export default async function MastersPage({
         defaultUnitId={user.activeUnitId}
         isAllUnits={user.isAllUnits}
         canWrite={canWrite}
+        categories={categories}
+        page={currentPage}
+        pageSize={pageSize}
+        totalCount={totalCount}
+        sortBy={currentSortBy}
+        sortOrder={currentSortOrder}
       />
     </section>
   );
 }
+
