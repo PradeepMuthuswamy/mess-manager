@@ -50,7 +50,12 @@ export async function proxy(request: NextRequest) {
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = '/sign-in';
-    url.searchParams.set('next', pathname);
+    // Preserve the full original destination (path + query) so post-login
+    // deep links like /masters?cat=alcohol resolve to the right module.
+    // Reset search first — clone() carried the original query params over.
+    const nextTarget = pathname + request.nextUrl.search;
+    url.search = '';
+    url.searchParams.set('next', nextTarget);
     return NextResponse.redirect(url);
   }
 

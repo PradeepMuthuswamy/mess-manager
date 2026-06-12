@@ -4,22 +4,21 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
-export function RationNav() {
+export function BarNav() {
   const pathname = usePathname();
 
   const tabs = [
-    { href: '/ration', label: 'Authorisations' },
-    { href: '/ration/consumption', label: 'Daily Consumption' },
-    { href: '/ration/ledger', label: 'Stock Ledger' },
-    { href: '/ration/masters', label: 'Masters' },
+    { href: '/bar', label: 'Chits' },
+    { href: '/bar/masters', label: 'Masters' },
   ];
 
   return (
     <nav className="flex items-center gap-6 border-b border-border pb-3">
       {tabs.map((tab) => {
-        // Matches exactly for /ration, or checks prefix for sub-routes
-        const active = tab.href === '/ration'
-          ? pathname === '/ration' || pathname.startsWith('/ration/scales')
+        // Chits is the module index — match exactly so /bar/masters doesn't
+        // also light it up; sub-routes match on prefix.
+        const active = tab.href === '/bar'
+          ? pathname === '/bar'
           : pathname.startsWith(tab.href);
 
         return (

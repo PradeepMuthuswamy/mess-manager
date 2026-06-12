@@ -588,6 +588,7 @@ export function MasterTable({
         <MasterBulkImportDialog
           open
           category={category}
+          slug={slug}
           unitId={defaultUnitId}
           isAllUnits={isAllUnits}
           onClose={closeImport}

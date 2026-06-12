@@ -24,7 +24,12 @@ export type BulkImportResult = {
 };
 
 function revalidateMasters() {
-  revalidatePath('/masters');
+  // Masters now render across split surfaces (/masters is a pure redirect hub
+  // with no data). Revalidate every surface so create/update/import refresh
+  // the visible tables regardless of which category was mutated.
+  revalidatePath('/ration/masters');
+  revalidatePath('/bar/masters');
+  revalidatePath('/grocery');
 }
 
 const CATEGORY_ID_MAP: Record<string, string> = {

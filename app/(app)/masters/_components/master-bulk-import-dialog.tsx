@@ -24,13 +24,14 @@ import {
   type ParsedBulkImport,
 } from '@/lib/masters/bulk-import';
 import { bulkImportMasterItemsAction } from '@/lib/masters/actions';
-import { CATEGORY_META, slugFromCategory } from '@/lib/masters/categories';
-import type { Category } from '@/lib/masters/categories';
+import { CATEGORY_META } from '@/lib/masters/categories';
+import type { Category, CategorySlug } from '@/lib/masters/categories';
 import { FileDown, Upload } from 'lucide-react';
 
 export function MasterBulkImportDialog({
   open,
   category,
+  slug,
   unitId,
   isAllUnits,
   onClose,
@@ -38,6 +39,9 @@ export function MasterBulkImportDialog({
 }: {
   open: boolean;
   category: Category;
+  // The exact user-facing slug (e.g. 'snacks'), used for the dialog title.
+  // Don't derive it from `category` — that roundtrips 'snacks' → 'grocery'.
+  slug: CategorySlug;
   unitId: string | null; // active unit; null = global if isAllUnits
   isAllUnits: boolean;
   onClose: () => void;
@@ -179,7 +183,7 @@ export function MasterBulkImportDialog({
     <AdaptiveModal
       open={open}
       onClose={onClose}
-      title={`Bulk import — ${CATEGORY_META[slugFromCategory(category)].title}`}
+      title={`Bulk import — ${CATEGORY_META[slug].title}`}
       contentClassName="sm:max-w-2xl max-h-[85vh]"
       footer={
         <>
