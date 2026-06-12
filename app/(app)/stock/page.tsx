@@ -1,3 +1,4 @@
+import { redirect } from 'next/navigation';
 import { requireUser } from '@/lib/auth/require-role';
 import {
   requireCapability,
@@ -33,9 +34,6 @@ export default async function InventoryPage({
 }: {
   searchParams: Promise<{ cat?: string }>;
 }) {
-  const user = await requireUser();
-  await requireCapability(INVENTORY_READ, user.activeUnitId ?? null);
-
   // Normalize the active tab from `?cat=`. Handles both slugs (e.g. cold-drinks)
   // and database category names (e.g. soft_drink). Anything not one of the four
   // stockable categories falls back to the default.
@@ -48,7 +46,11 @@ export default async function InventoryPage({
     } else {
       const isSlug = (v: string | undefined): v is CategorySlug =>
         !!v && (CATEGORY_SLUGS as readonly string[]).includes(v);
-      if (isSlug(cat)) {
+      // 'snacks' is a UI-only alias of the 'grocery' db category, but it never
+      // had its own tab on this strip — resolving it here would silently forward
+      // such links into the Grocery module. Exclude it so only true grocery
+      // links redirect; an unknown `cat` falls through to the default tab.
+      if (isSlug(cat) && cat !== 'snacks') {
         const dbCat = categoryFromSlug(cat);
         if (isInventoryCategory(dbCat)) {
           category = dbCat;
@@ -56,6 +58,19 @@ export default async function InventoryPage({
       }
     }
   }
+
+  // Grocery stock now lives in its own Grocery module. The grocery tab was
+  // removed from this strip, but keep old URLs and deep links working by
+  // redirecting before the capability gate and any data fetch, so a
+  // Grocery-module-only user following an old /stock?cat=grocery link is
+  // transparently forwarded rather than bounced to /dashboard. Covers
+  // ?cat=grocery and the db name.
+  if (category === 'grocery') {
+    redirect('/grocery/stock');
+  }
+
+  const user = await requireUser();
+  await requireCapability(INVENTORY_READ, user.activeUnitId ?? null);
 
   if (!user.activeUnitId) {
     return (

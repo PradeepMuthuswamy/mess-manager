@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import {
-  INVENTORY_CATEGORIES,
+  STOCK_PAGE_CATEGORIES,
   CATEGORY_META,
   slugFromCategory,
   type InventoryCategory,
@@ -21,7 +21,7 @@ export function InventoryCategoryNav({
       aria-label="Inventory categories"
       className="inline-flex items-center gap-1 rounded-[0.375rem] border border-border bg-muted p-1"
     >
-      {INVENTORY_CATEGORIES.map((cat) => {
+      {STOCK_PAGE_CATEGORIES.map((cat) => {
         const isActive = cat === active;
         return (
           <Link

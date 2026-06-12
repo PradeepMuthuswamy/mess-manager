@@ -59,6 +59,12 @@ export function isInventoryCategory(v: unknown): v is InventoryCategory {
   );
 }
 
+// Categories shown in the shared /stock tab strip. Grocery is a valid
+// stockable category (still in INVENTORY_CATEGORIES + isInventoryCategory)
+// but now lives in its own Grocery module, so it's excluded from /stock.
+export const STOCK_PAGE_CATEGORIES: readonly InventoryCategory[] =
+  INVENTORY_CATEGORIES.filter((cat) => cat !== 'grocery');
+
 export const CATEGORY_META: Record<CategorySlug, { title: string; description: string; defaultUom: Database['public']['Enums']['uom'] }> = {
   ration:        { title: 'Ration',        description: 'Issued per ration scale.',          defaultUom: 'kg' },
   'cold-drinks': { title: 'Cold Drinks',   description: 'Non-alcoholic beverages.',          defaultUom: 'bottle' },

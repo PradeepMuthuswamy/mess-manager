@@ -32,7 +32,7 @@ export default async function GroceryPage({
       basePath="/grocery"
       allowedSlugs={['grocery']}
       searchParams={sp}
-      heading="Grocery"
+      heading="Grocery masters"
       description="The unit grocery catalogue — general grocery items and their current rates."
     />
   );
