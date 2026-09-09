@@ -15,12 +15,14 @@ export type AuthorisationChip = {
 
 export type MasterRow = {
   id: string;
-  unit_id: string | null;
+  /** Always null — products are global. Adoption lives on unit_catalog. */
+  unit_id: null;
   category: Category;
   name: string;
   sku: string | null;
   uom: string;
   is_active: boolean;
+  /** Mirrors `menu_rate` for older consumers. Prefer `menu_rate`. */
   current_rate: number | null;
   current_ration_scale: number | null;
   rate_valid_from: string | null;
@@ -40,6 +42,32 @@ export type MasterRow = {
   unit_value?: number;
   unit_type?: string;
   package_type?: string;
+  // Phase 0 — unit adoption + committee menu rate
+  is_adopted: boolean;
+  is_enabled: boolean;
+  local_sku: string | null;
+  menu_rate: number | null;
+};
+
+/** Adopted, enabled variants for bar / ration pickers. */
+export type AdoptedVariantRow = {
+  variant_id: string;
+  product_id: string;
+  name: string;
+  sku: string | null;
+  local_sku: string | null;
+  category: Category;
+  category_name: string | null;
+  uom: string;
+  pack_label: string;
+  pack_kind: 'volume' | 'count';
+  volume_ml: number | null;
+  unit_count: number | null;
+  unit_value: number;
+  unit_type: string;
+  package_type: string;
+  menu_rate: number | null;
+  is_enabled: boolean;
 };
 
 export type VersionRow = {

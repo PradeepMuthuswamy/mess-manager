@@ -25,7 +25,7 @@ import {
   GlassWater, 
   Users 
 } from 'lucide-react';
-import { type BarChitRow } from '@/lib/bar/queries';
+import type { BarChitRow } from '@/lib/bar/types';
 import { cn } from '@/lib/utils';
 
 type InventoryItem = {

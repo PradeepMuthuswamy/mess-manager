@@ -13,7 +13,9 @@ import {
   createFurnitureItemSchema,
   CreateBookingInput,
   UpdateBookingInput,
-  CreateBillItemInput
+  CreateBillItemInput,
+  checkOutBookingSchema,
+  CheckOutBookingInput,
 } from '@/lib/schemas/guest-rooms';
 import { Database } from '@/lib/supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -202,6 +204,10 @@ export async function createBookingAction(input: CreateBookingInput) {
   const parsed = createBookingSchema.safeParse(input);
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
+  if (parsed.data.settlement_type === 'CHARGE_TO_HOST' && !parsed.data.host_profile_id) {
+    return { error: 'A sponsoring host officer is required when charging to mess bill.' };
+  }
+
   await requireCapability('rooms.booking.write', parsed.data.unit_id);
 
   const supabase = await createClient();
@@ -242,6 +248,15 @@ export async function checkInAction(bookingId: string) {
   await requireCapability('rooms.booking.write', booking.unit_id);
 
   if (booking.status !== 'confirmed') return { error: 'Only confirmed bookings can be checked in' };
+  if (!booking.room) return { error: 'Room not found for this booking' };
+
+  const { data: unit, error: unitErr } = await supabase
+    .from('units')
+    .select('guest_food_per_night')
+    .eq('id', booking.unit_id)
+    .single();
+
+  if (unitErr || !unit) return { error: unitErr?.message ?? 'Unit not found' };
 
   // 1. Update booking status
   const { error: updErr } = await supabase
@@ -267,31 +282,31 @@ export async function checkInAction(bookingId: string) {
 
   if (billErr) return { error: billErr.message };
 
-  // 3. Add room rent item
-  if (booking.room) {
-    // Calculate nights
-    const nights = Math.max(1, Math.ceil((new Date(booking.check_out_date).getTime() - new Date(booking.check_in_date).getTime()) / (1000 * 60 * 60 * 24)));
-    
-    await supabase.from('room_bill_items').insert({
+  // 3. Tariff lines — rent + food. Fail the check-in if either insert fails.
+  const nights = Math.max(1, Math.ceil((new Date(booking.check_out_date).getTime() - new Date(booking.check_in_date).getTime()) / (1000 * 60 * 60 * 24)));
+  const foodRate = Number(unit.guest_food_per_night);
+
+  const { error: itemsErr } = await supabase.from('room_bill_items').insert([
+    {
       bill_id: bill.id,
       category: 'room_rent',
       description: `Room Rent - ${booking.room.room_type} (${nights} nights)`,
       amount: Number(booking.room.nightly_rate),
       quantity: nights,
-      variant_id: null
-    });
-
-    // Add default food bill item (900 per day)
-    await supabase.from('room_bill_items').insert({
+      variant_id: null,
+    },
+    {
       bill_id: bill.id,
       category: 'food',
       description: `Food Bill (all meals) (${nights} days)`,
-      amount: 900,
+      amount: foodRate,
       quantity: nights,
       variant_id: null,
-      meal_type: null
-    });
-  }
+      meal_type: null,
+    },
+  ]);
+
+  if (itemsErr) return { error: itemsErr.message };
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(bookingId, [booking.room_id]);
@@ -415,21 +430,98 @@ export async function deleteBillOrderAction(orderId: string) {
   return { ok: true, bookingId: row.bill.booking_id };
 }
 
-type BookingWithBillItems = Database['public']['Tables']['bookings']['Row'] & {
-  bill: { id: string, items: { amount: number, quantity: number }[] }[];
+type CheckoutBookingRow = Database['public']['Tables']['bookings']['Row'] & {
+  bill: { id: string }[];
 };
 
-export async function checkOutAction(bookingId: string) {
+type BarChitForSync = {
+  id: string;
+  date: string;
+  guest_name: string | null;
+  total_amount: number;
+  items: { variant_id: string }[] | null;
+};
+
+export async function syncBarChitsToRoomBillAction(bookingId: string) {
+  const supabase = await createClient();
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('unit_id')
+    .eq('id', bookingId)
+    .maybeSingle();
+  if (!booking) return { error: 'Booking not found' };
+
+  await requireCapability('rooms.booking.write', booking.unit_id);
+
+  const { data: bill, error: billErr } = await supabase
+    .from('room_bills')
+    .select('id, status')
+    .eq('booking_id', bookingId)
+    .maybeSingle();
+  if (billErr) return { error: billErr.message };
+  if (!bill) return { error: 'Bill not found' };
+  if (bill.status !== 'draft') return { error: 'Cannot sync bar chits to a finalized bill' };
+
+  const { data: chits, error: chitsErr } = await supabase
+    .from('bar_chits')
+    .select('id, date, guest_name, total_amount, items:bar_chit_items(variant_id)')
+    .eq('booking_id', bookingId);
+  if (chitsErr) return { error: chitsErr.message };
+
+  const { data: existing, error: existingErr } = await supabase
+    .from('room_bill_items')
+    .select('bar_chit_id')
+    .eq('bill_id', bill.id)
+    .not('bar_chit_id', 'is', null);
+  if (existingErr) return { error: existingErr.message };
+
+  const alreadySynced = new Set(
+    (existing ?? []).map((row) => row.bar_chit_id).filter((id): id is string => Boolean(id)),
+  );
+
+  const rows = ((chits ?? []) as unknown as BarChitForSync[])
+    .filter((chit) => !alreadySynced.has(chit.id))
+    .map((chit) => ({
+      bill_id: bill.id,
+      category: 'bar',
+      description: `Bar — ${chit.guest_name ?? 'Guest'} (${chit.date})`,
+      amount: Number(chit.total_amount),
+      quantity: 1,
+      variant_id: chit.items?.[0]?.variant_id ?? null,
+      bar_chit_id: chit.id,
+    }));
+
+  if (rows.length > 0) {
+    const { error: insertErr } = await supabase.from('room_bill_items').insert(rows);
+    if (insertErr && insertErr.code !== UNIQUE_VIOLATION) {
+      return { error: insertErr.message };
+    }
+  }
+
+  revalidatePath(GUEST_ROOMS_PATH);
+  return { ok: true, bookingId, inserted: rows.length };
+}
+
+export async function checkOutAction(input: string | CheckOutBookingInput) {
+  const raw = typeof input === 'string' ? { booking_id: input } : input;
+  const parsed = checkOutBookingSchema.safeParse(raw);
+  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
+
+  const options = parsed.data;
+  const bookingId = options.booking_id;
+  const settlementExplicit =
+    typeof input !== 'string' && input.settlement_type != null;
+
   const supabase = await createClient();
   const { data } = await supabase
     .from('bookings')
-    .select('*, bill:room_bills(id, items:room_bill_items(amount, quantity))')
+    .select('*, bill:room_bills(id)')
     .eq('id', bookingId)
     .single();
 
   if (!data) return { error: 'Booking not found' };
-  
-  const booking = data as unknown as BookingWithBillItems;
+
+  const booking = data as unknown as CheckoutBookingRow;
   await requireCapability('rooms.booking.write', booking.unit_id);
 
   if (booking.status !== 'checked_in') return { error: 'Only checked-in bookings can be checked out' };
@@ -437,21 +529,80 @@ export async function checkOutAction(bookingId: string) {
   const bill = booking.bill?.[0];
   if (!bill) return { error: 'Bill not found' };
 
-  // Calculate total
-  const total = bill.items.reduce((sum: number, item: { amount: number; quantity: number }) => sum + (Number(item.amount) * Number(item.quantity)), 0);
+  const settlementType = settlementExplicit
+    ? options.settlement_type
+    : (booking.settlement_type ?? options.settlement_type);
 
-  // 1. Update booking status
-  await supabase.from('bookings').update({
-    status: 'checked_out',
-    actual_check_out: new Date().toISOString()
-  }).eq('id', bookingId);
+  if (settlementType === 'CHARGE_TO_HOST' && !booking.host_profile_id) {
+    return {
+      error:
+        'Cannot transfer bill to mess account: No sponsoring host officer is assigned to this booking.',
+    };
+  }
 
-  // 2. Finalize bill
-  await supabase.from('room_bills').update({
-    status: 'finalized',
-    total_amount: total,
-    updated_at: new Date().toISOString()
-  }).eq('id', bill.id);
+  const syncResult = await syncBarChitsToRoomBillAction(bookingId);
+  if ('error' in syncResult) return { error: syncResult.error };
+
+  const { data: items, error: itemsErr } = await supabase
+    .from('room_bill_items')
+    .select('amount, quantity')
+    .eq('bill_id', bill.id);
+  if (itemsErr) return { error: itemsErr.message };
+
+  const total = (items ?? []).reduce(
+    (sum, item) => sum + Number(item.amount) * Number(item.quantity),
+    0,
+  );
+
+  const now = new Date();
+  const yearMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const folioSuffix = bill.id.replace(/-/g, '').slice(0, 6).toUpperCase();
+  const folioNumber = `FOLIO-${yearMonth}-${folioSuffix}`;
+
+  const isDirect = settlementType === 'DIRECT_SETTLEMENT';
+  const outcomeStatus = isDirect ? 'paid' : 'transferred_to_mess_bill';
+  const paidAmount = isDirect ? (options.paid_amount ?? total) : 0;
+  const paidAt = isDirect ? now.toISOString() : null;
+  const paymentMethod = isDirect ? (options.payment_method ?? 'cash') : null;
+  const paymentReference = isDirect ? (options.payment_reference ?? null) : null;
+
+  const { data: updatedBooking, error: bookingUpdErr } = await supabase
+    .from('bookings')
+    .update({
+      status: 'checked_out',
+      settlement_type: settlementType,
+      actual_check_out: now.toISOString(),
+      updated_at: now.toISOString(),
+    })
+    .eq('id', bookingId)
+    .select('id')
+    .single();
+
+  if (bookingUpdErr || !updatedBooking) {
+    return { error: bookingUpdErr?.message ?? 'Failed to update booking' };
+  }
+
+  const { data: updatedBill, error: billUpdErr } = await supabase
+    .from('room_bills')
+    .update({
+      status: outcomeStatus,
+      total_amount: total,
+      settlement_type: settlementType,
+      payment_status: outcomeStatus,
+      paid_amount: paidAmount,
+      paid_at: paidAt,
+      payment_method: paymentMethod,
+      payment_reference: paymentReference,
+      folio_number: folioNumber,
+      updated_at: now.toISOString(),
+    })
+    .eq('id', bill.id)
+    .select('id')
+    .single();
+
+  if (billUpdErr || !updatedBill) {
+    return { error: billUpdErr?.message ?? 'Failed to update bill' };
+  }
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(bookingId, [booking.room_id]);
@@ -542,7 +693,13 @@ export async function undoCheckOutAction(bookingId: string) {
     .update({
       status: 'draft',
       total_amount: 0,
-      updated_at: new Date().toISOString()
+      payment_status: 'draft',
+      folio_number: null,
+      paid_amount: 0,
+      paid_at: null,
+      payment_method: null,
+      payment_reference: null,
+      updated_at: new Date().toISOString(),
     })
     .eq('booking_id', bookingId);
 
@@ -873,4 +1030,15 @@ export async function updateBillItemAction(
 
   revalidatePath(GUEST_ROOMS_PATH);
   return { ok: true, bookingId: row.bill.booking_id };
+}
+
+export async function fetchHostProfilesAction(unitId: string) {
+  await requireCapability('rooms.read', unitId);
+  const { listHostProfiles } = await import('./queries');
+  try {
+    const profiles = await listHostProfiles(unitId);
+    return { data: profiles };
+  } catch (error: unknown) {
+    return { error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 }

@@ -1,5 +1,10 @@
 // Shared CSV / XLSX parsing + row validation for the masters bulk-import feature.
 // Used by the client preview and the server action.
+//
+// Columns stay name, sku, uom, rate, ration_scale, notes.
+// `rate` is NOT a product/variant field. The import action persists it as a
+// unit_inventory lot cost (bar / grocery) or alongside a ration scale — this
+// module only validates the number so the action can write it.
 
 import { z } from 'zod';
 import * as XLSX from 'xlsx';
@@ -15,12 +20,33 @@ export const BULK_IMPORT_COLUMNS = [
 ] as const;
 export type BulkImportColumn = (typeof BULK_IMPORT_COLUMNS)[number];
 
+const requiredAmount = (label: string) =>
+  z.preprocess(
+    (v) => (v === '' || v === null || v === undefined ? undefined : v),
+    z.coerce
+      .number({ error: `${label} is required` })
+      .finite({ error: `${label} must be a number` })
+      .nonnegative({ error: `${label} must be ≥ 0` })
+      .max(9_999_999.99, `${label} is too large`),
+  );
+
+const optionalAmount = (label: string) =>
+  z.preprocess(
+    (v) => (v === '' || v === null || v === undefined ? null : v),
+    z.coerce
+      .number()
+      .finite({ error: `${label} must be a number` })
+      .nonnegative({ error: `${label} must be ≥ 0` })
+      .max(9_999_999.99, `${label} is too large`)
+      .nullable(),
+  );
+
 export const bulkImportRowSchema = z.object({
   name:         z.string().trim().min(1).max(200),
   sku:          z.string().trim().max(50).optional().nullable(),
   uom:          uomSchema,
-  rate:         z.coerce.number().nonnegative(),
-  ration_scale: z.coerce.number().nonnegative().optional().nullable(),
+  rate:         requiredAmount('rate'),
+  ration_scale: optionalAmount('ration_scale'),
   notes:        z.string().trim().max(500).optional().nullable(),
 });
 export type BulkImportRow = z.infer<typeof bulkImportRowSchema>;

@@ -34,6 +34,7 @@ export function MasterBulkImportDialog({
   slug,
   unitId,
   isAllUnits,
+  allowGlobal = false,
   onClose,
   onImported,
 }: {
@@ -44,6 +45,7 @@ export function MasterBulkImportDialog({
   slug: CategorySlug;
   unitId: string | null; // active unit; null = global if isAllUnits
   isAllUnits: boolean;
+  allowGlobal?: boolean;
   onClose: () => void;
   onImported: () => void;
 }) {
@@ -66,6 +68,10 @@ export function MasterBulkImportDialog({
   const invalidRows = parsed.rows.filter((r) => r.error != null);
   const hasFatal = parsed.missingColumns.length > 0;
   const showRationScale = category === 'ration';
+  const rateDestination =
+    category === 'ration'
+      ? 'the ration scale'
+      : 'an inventory lot (bar / grocery)';
 
   // Choose target unit_id for the import.
   const targetUnitId: string | null = isAllUnits
@@ -73,6 +79,7 @@ export function MasterBulkImportDialog({
       ? null
       : unitId
     : unitId;
+  const isUnitImport = Boolean(targetUnitId);
 
   function copyTemplate() {
     navigator.clipboard.writeText(BULK_IMPORT_CSV_TEMPLATE).then(
@@ -224,7 +231,12 @@ export function MasterBulkImportDialog({
           <code className="font-mono text-foreground/80">ration_scale</code>,{' '}
           <code className="font-mono text-foreground/80">notes</code>.
         </p>
-          {isAllUnits ? (
+        <p className="text-sm text-muted-foreground">
+          {isUnitImport || !allowGlobal
+            ? `Each row matches or adopts a global catalog variant. The rate is written to ${rateDestination} — it is not discarded. This unit does not create new products.`
+            : 'Creates global catalog products. To persist rate, import into a unit so the value is written to an inventory lot or ration scale.'}
+        </p>
+          {isAllUnits && allowGlobal ? (
             <div className="space-y-1.5">
               <Label className="text-sm font-medium text-foreground">Import as</Label>
               <div className="flex gap-2">
@@ -237,7 +249,7 @@ export function MasterBulkImportDialog({
                   title={!unitId ? 'Pick a unit in the navbar first' : undefined}
                   className="transition-ds"
                 >
-                  Unit-scoped {unitId ? '' : '(pick a unit first)'}
+                  Adopt into unit {unitId ? '' : '(pick a unit first)'}
                 </Button>
                 <Button
                   type="button"
@@ -246,7 +258,7 @@ export function MasterBulkImportDialog({
                   onClick={() => setScope('global')}
                   className="transition-ds"
                 >
-                  Global catalog
+                  Create global products
                 </Button>
               </div>
             </div>

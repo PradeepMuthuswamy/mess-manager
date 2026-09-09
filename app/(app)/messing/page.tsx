@@ -1,68 +1,127 @@
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
+import { userHasCapability } from '@/lib/auth/capabilities';
+import { createClient } from '@/lib/supabase/server';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Coffee, Utensils, Check, X, Calendar, Flame, AlertCircle } from 'lucide-react';
+import { Coffee, Utensils, Flame, Users, Calendar, AlertCircle, CheckCircle2 } from 'lucide-react';
+import {
+  getDinerTodayStatus,
+  getDailyExpenditure,
+  getMemberMealCuts,
+  listGuestMeals,
+} from '@/lib/messing/queries';
+import { getAttendanceDay } from '@/lib/attendance/queries';
+import { MealCutToggle } from './_components/meal-cut-toggle';
+import { KitchenExpenditureDialog } from './_components/kitchen-expenditure-dialog';
+import { CasualGuestDialog } from './_components/casual-guest-dialog';
+import { format, subDays, addDays } from 'date-fns';
+import { EmptyState } from '@/components/shared/empty-state';
 
-export default async function MessingPage() {
-  await requireCapability('attendance.read');
-  const user = await requireUser();
+export const dynamic = 'force-dynamic';
 
-  // Mock data for the premium officer experience
-  const todayMeals = [
-    {
-      id: 'breakfast',
-      name: 'Breakfast',
-      time: '07:30 - 09:30',
-      icon: Coffee,
-      menu: 'Poached Eggs, Grilled Tomatoes, Toast, Fresh Juice, Tea/Coffee',
-      status: 'attended',
-      statusLabel: 'Attended',
-      badgeColor: 'success' as const,
-    },
-    {
-      id: 'lunch',
-      name: 'Lunch',
-      time: '12:30 - 14:30',
-      icon: Utensils,
-      menu: 'Roasted Herb Chicken, Quinoa Salad, Sautéed Asparagus, Fruit Tart',
-      status: 'pending',
-      statusLabel: 'Registered (Auto)',
-      badgeColor: 'info' as const,
-    },
-    {
-      id: 'dinner',
-      name: 'Dinner',
-      time: '19:30 - 21:30',
-      icon: Flame,
-      menu: 'Grilled Salmon Fillet, Roasted Fingerling Potatoes, Soufflé',
-      status: 'cut',
-      statusLabel: 'Meal Cut Requested',
-      badgeColor: 'destructive' as const,
-    },
-  ];
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
 
-  const recentCuts = [
-    { date: '2026-05-28', meal: 'Dinner', status: 'Approved', savings: '₹350.00' },
-    { date: '2026-05-29', meal: 'Lunch & Dinner', status: 'Approved', savings: '₹600.00' },
-    { date: '2026-05-30', meal: 'Dinner', status: 'Pending', savings: '₹350.00' },
-  ];
+const MEAL_ICONS = {
+  breakfast: Coffee,
+  lunch: Utensils,
+  dinner: Flame,
+  morning_tea: Coffee,
+  evening_tea: Coffee,
+  packed_breakfast: Coffee,
+  packed_lunch: Utensils,
+  packed_dinner: Flame,
+};
+
+export default async function MessingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ date?: string }>;
+}) {
+  const user = await requireCapability('attendance.read');
+  const unitId = user.activeUnitId ?? user.homeUnitId;
+
+  if (!unitId) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-3xl font-bold font-heading tracking-tight text-foreground">
+          Messing & Dining
+        </h1>
+        <EmptyState
+          icon={<AlertCircle className="size-5" />}
+          title="No active unit"
+          description="Please select an active unit to view messing details."
+        />
+      </div>
+    );
+  }
+
+  const { date: dateParam } = await searchParams;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(dateParam ?? '') ? (dateParam as string) : today();
+
+  const supabase = await createClient();
+  const canWriteAttendance = userHasCapability(user, 'attendance.write', unitId);
+
+  // Fetch real attendance present count for P-rate calculation
+  let presentCount = 0;
+  try {
+    const attendance = await getAttendanceDay(unitId, date, supabase);
+    presentCount = attendance.present_count;
+  } catch {
+    presentCount = 0;
+  }
+
+  const startDate = format(subDays(new Date(date), 30), 'yyyy-MM-dd');
+  const endDate = format(addDays(new Date(date), 30), 'yyyy-MM-dd');
+
+  // Parallel data fetching
+  const [dinerToday, expenditure, recentCuts, guestMeals] = await Promise.all([
+    getDinerTodayStatus(unitId, user.id, date),
+    getDailyExpenditure(unitId, date),
+    getMemberMealCuts(unitId, user.id, startDate, endDate),
+    listGuestMeals(unitId, startDate, endDate, user.id),
+  ]);
+
+  const isPRegister = dinerToday.billingMode === 'P_REGISTER_SPLIT';
 
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-mono uppercase tracking-widest text-primary mb-1">
-            Officer Portal
-          </p>
+          <div className="flex items-center gap-2 mb-1">
+            <p className="text-xs font-mono uppercase tracking-widest text-primary">
+              Officer Dining
+            </p>
+            <Badge variant="outline" className="text-[10px] font-mono">
+              {isPRegister ? 'P-Register (Daily Average)' : 'Flat Rate System'}
+            </Badge>
+          </div>
           <h1 className="text-3xl font-bold font-heading tracking-tight text-foreground">
             Messing & Dining
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Register daily meals, manage mess cuts, and review dining ledgers.
+            Manage daily meals, place advance mess cuts, and review dining charges.
           </p>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <CasualGuestDialog unitId={unitId} hostProfileId={user.id} date={date} />
+          {canWriteAttendance && (
+            <KitchenExpenditureDialog
+              unitId={unitId}
+              date={date}
+              presentCount={presentCount}
+              initialMorning={expenditure ? Number(expenditure.morning_amount) : 0}
+              initialAfternoon={expenditure ? Number(expenditure.afternoon_amount) : 0}
+              initialDinner={expenditure ? Number(expenditure.dinner_amount) : 0}
+              initialVendor={expenditure?.vendor_name}
+              initialNotes={expenditure?.notes}
+            />
+          )}
         </div>
       </div>
 
@@ -73,20 +132,27 @@ export default async function MessingPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="font-heading text-lg font-semibold">Today&apos;s Dining Register</CardTitle>
-                  <CardDescription>May 30, 2026 — Officers Dining Hall</CardDescription>
+                  <CardTitle className="font-heading text-lg font-semibold">
+                    Today&apos;s Dining Register
+                  </CardTitle>
+                  <CardDescription>
+                    {format(new Date(date), 'MMMM dd, yyyy')} — Officers Dining Hall
+                  </CardDescription>
                 </div>
-                <Badge variant="outline" className="border-primary/20 text-primary bg-primary/5">
-                  Regular Diner
+                <Badge
+                  variant={dinerToday.isAttendingDay ? 'outline' : 'destructive'}
+                  className="font-mono text-xs"
+                >
+                  {dinerToday.isAttendingDay ? 'Present on Day Roll' : 'Marked Absent'}
                 </Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              {todayMeals.map((meal) => {
-                const Icon = meal.icon;
+              {dinerToday.meals.map((meal) => {
+                const Icon = MEAL_ICONS[meal.mealType] ?? Utensils;
                 return (
                   <div
-                    key={meal.id}
+                    key={meal.mealType}
                     className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-lg border border-border bg-background/50 hover:bg-background/80 transition-all gap-4"
                   >
                     <div className="flex items-start gap-4">
@@ -95,46 +161,34 @@ export default async function MessingPage() {
                       </div>
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium text-sm text-foreground">{meal.name}</span>
-                          <span className="text-xs text-muted-foreground">({meal.time})</span>
+                          <span className="font-medium text-sm text-foreground capitalize">
+                            {meal.label}
+                          </span>
                           <Badge
-                            variant={
-                              meal.status === 'attended'
-                                ? 'success'
-                                : meal.status === 'cut'
-                                ? 'destructive'
-                                : 'info'
-                            }
+                            variant={meal.isCut ? 'destructive' : 'success'}
                             className="text-[10px] px-1.5 py-0"
                           >
-                            {meal.statusLabel}
+                            {meal.isCut ? 'Meal Cut' : 'Registered'}
                           </Badge>
+                          {!isPRegister && meal.rate > 0 && (
+                            <span className="text-xs font-mono text-muted-foreground">
+                              ₹{meal.rate.toFixed(2)}
+                            </span>
+                          )}
                         </div>
-                        <p className="text-xs text-muted-foreground max-w-md">{meal.menu}</p>
+                        {meal.cutReason && (
+                          <p className="text-xs text-muted-foreground">{meal.cutReason}</p>
+                        )}
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2 sm:self-center">
-                      {meal.status === 'pending' && (
-                        <>
-                          <Button size="xs" variant="outline" className="h-8 gap-1.5 text-xs text-destructive border-destructive/20 hover:bg-destructive/5">
-                            <X className="size-3" /> Request Cut
-                          </Button>
-                          <Button size="xs" variant="default" className="h-8 gap-1.5 text-xs">
-                            <Check className="size-3" /> Confirm Attendance
-                          </Button>
-                        </>
-                      )}
-                      {meal.status === 'attended' && (
-                        <div className="text-xs text-success flex items-center gap-1 font-medium bg-success/5 border border-success/15 rounded-md px-2.5 py-1">
-                          <Check className="size-3.5" /> Checked In
-                        </div>
-                      )}
-                      {meal.status === 'cut' && (
-                        <div className="text-xs text-muted-foreground flex items-center gap-1 font-medium bg-muted border border-border rounded-md px-2.5 py-1">
-                          <X className="size-3.5 text-destructive" /> Cut Registered
-                        </div>
-                      )}
+                      <MealCutToggle
+                        unitId={unitId}
+                        date={date}
+                        mealType={meal.mealType}
+                        isCut={meal.isCut}
+                      />
                     </div>
                   </div>
                 );
@@ -142,92 +196,120 @@ export default async function MessingPage() {
             </CardContent>
           </Card>
 
-          {/* Mess cuts request history */}
+          {/* Recent Meal Cuts */}
           <Card className="border-border">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="font-heading text-lg font-semibold">Active Mess Cuts</CardTitle>
-                <CardDescription>Cuts must be requested 24 hours in advance.</CardDescription>
-              </div>
-              <Button size="sm" variant="outline">
-                <Calendar className="mr-1.5 size-4" /> Request Future Cut
-              </Button>
+            <CardHeader>
+              <CardTitle className="font-heading text-base font-semibold">
+                Your Recent Meal Cuts
+              </CardTitle>
+              <CardDescription>Official cut notices recorded for billing deduction</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="rounded-md border border-border overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-muted/40 border-b border-border text-muted-foreground font-medium">
-                      <th className="px-4 py-2.5 text-left">Date</th>
-                      <th className="px-4 py-2.5 text-left">Meal Session</th>
-                      <th className="px-4 py-2.5 text-left">Status</th>
-                      <th className="px-4 py-2.5 text-right">Savings Credit</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {recentCuts.map((cut, idx) => (
-                      <tr key={idx} className="hover:bg-muted/10 transition-colors">
-                        <td className="px-4 py-3 font-mono font-medium text-foreground">{cut.date}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{cut.meal}</td>
-                        <td className="px-4 py-3">
-                          <Badge variant={cut.status === 'Approved' ? 'success' : 'secondary'} className="text-[10px] px-1.5 py-0">
-                            {cut.status}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3 text-right font-mono font-medium text-foreground">{cut.savings}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              {recentCuts.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">No recent meal cuts on record.</p>
+              ) : (
+                <div className="divide-y divide-border">
+                  {recentCuts.map((cut) => (
+                    <div key={cut.id} className="py-3 flex items-center justify-between text-sm">
+                      <div className="space-y-0.5">
+                        <span className="font-medium text-foreground capitalize">
+                          {cut.meal_type}
+                        </span>
+                        <p className="text-xs text-muted-foreground">
+                          {format(new Date(cut.cut_date), 'dd MMM yyyy')}
+                          {cut.reason ? ` • ${cut.reason}` : ''}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="text-xs capitalize">
+                        {cut.status}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
 
         {/* Sidebar Cards */}
         <div className="space-y-6">
-          <Card className="border-border bg-primary/5">
+          {/* Today's Estimated Messing */}
+          <Card className="border-border bg-gradient-to-br from-primary/5 via-transparent to-transparent">
             <CardHeader>
-              <CardTitle className="font-heading text-base font-semibold">Mess Summary</CardTitle>
-              <CardDescription>Current billing cycle metrics</CardDescription>
+              <CardTitle className="font-heading text-base font-semibold">
+                Today&apos;s Messing Status
+              </CardTitle>
+              <CardDescription>
+                {isPRegister ? 'Calculated via P-Register cost sharing' : 'Accumulated flat meal rates'}
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Total Diner Meals</span>
-                <p className="text-2xl font-bold font-mono tracking-tight text-foreground">78 / 90</p>
+              <div>
+                <span className="text-xs text-muted-foreground uppercase font-mono">
+                  Estimated Today Charge
+                </span>
+                <p className="text-3xl font-bold font-mono text-foreground mt-1">
+                  ₹{dinerToday.estimatedDailyCharge.toFixed(2)}
+                </p>
+                {isPRegister && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {dinerToday.todayPRate != null
+                      ? `Today's P_d is finalized at ₹${dinerToday.todayPRate.toFixed(2)}`
+                      : 'Mess Havildar kitchen log pending for today'}
+                  </p>
+                )}
               </div>
-              <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Total Cuts Approved</span>
-                <p className="text-2xl font-bold font-mono tracking-tight text-success">12 Meals</p>
-              </div>
-              <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Accumulated Rebate Credit</span>
-                <p className="text-2xl font-bold font-mono tracking-tight text-foreground">₹4,200.00</p>
-              </div>
-              <div className="h-px bg-border my-2" />
-              <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Estimated Messing Dues</span>
-                <p className="text-2xl font-bold font-mono tracking-tight text-primary">₹14,850.00</p>
+
+              <div className="h-px bg-border" />
+
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Cycle Day Status:</span>
+                  <span className="font-medium text-foreground">
+                    {dinerToday.isAttendingDay ? 'Attending' : 'Absent'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Diners on Roll:</span>
+                  <span className="font-medium font-mono text-foreground">{presentCount}</span>
+                </div>
               </div>
             </CardContent>
           </Card>
 
+          {/* Casual Guest Meals */}
           <Card className="border-border">
             <CardHeader>
-              <CardTitle className="font-heading text-base font-semibold flex items-center gap-2">
-                <AlertCircle className="size-4 text-primary" /> Mess Protocol
+              <CardTitle className="font-heading text-base font-semibold">
+                Casual Guest Dining
               </CardTitle>
+              <CardDescription>Guests hosted in the dining hall</CardDescription>
             </CardHeader>
-            <CardContent className="text-xs text-muted-foreground space-y-3 leading-relaxed">
-              <p>
-                <strong>Dress Code:</strong> Formal Uniform or Smart Casual is mandatory after 18:30 in the dining and lounge areas.
-              </p>
-              <p>
-                <strong>Meal Cuts:</strong> All breakfast cuts must be requested before 18:00 the prior evening. Lunch and dinner cuts require 24 hours advance request.
-              </p>
-              <p>
-                <strong>Guests:</strong> Officers may host up to 4 guests in the dining room with prior registry entry. Guest meals will be charged at standard guest tariffs.
-              </p>
+            <CardContent>
+              {guestMeals.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-2">
+                  No casual dining guests logged this cycle.
+                </p>
+              ) : (
+                <div className="divide-y divide-border text-xs">
+                  {guestMeals.slice(0, 5).map((gm) => (
+                    <div key={gm.id} className="py-2.5 flex justify-between items-center">
+                      <div>
+                        <span className="font-medium text-foreground capitalize">
+                          {gm.guest_count} guest(s) • {gm.meal_type}
+                        </span>
+                        <p className="text-muted-foreground">
+                          {format(new Date(gm.meal_date), 'dd MMM')}
+                          {gm.guest_names ? ` • ${gm.guest_names}` : ''}
+                        </p>
+                      </div>
+                      <span className="font-mono font-semibold text-foreground">
+                        ₹{Number(gm.total_amount).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

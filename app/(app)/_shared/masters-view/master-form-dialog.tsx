@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState, useState, useTransition } from 'react';
 import { useActionResult } from '@/hooks/use-action-result';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,8 @@ import {
 import {
   createMasterItemAction,
   updateMasterItemAction,
+  adoptVariantAction,
+  setUnitMenuRateAction,
 } from '@/lib/masters/actions';
 import { FormError } from '@/components/shared/form-error';
 import { toast } from 'sonner';
@@ -42,6 +44,8 @@ const CATEGORY_ID_MAP: Record<CategorySlug, string> = {
 const UNIT_TYPES = ['ML', 'LITRE', 'GRAM', 'KG', 'PIECE'] as const;
 const PACKAGE_TYPES = ['BOTTLE', 'CAN', 'PACKET', 'BOX', 'LOOSE'] as const;
 
+export type MasterFormMode = 'create' | 'edit' | 'adopt' | 'menu-rate';
+
 export function MasterFormDialog({
   open,
   mode,
@@ -54,7 +58,7 @@ export function MasterFormDialog({
   categories = [],
 }: {
   open: boolean;
-  mode: 'create' | 'edit';
+  mode: MasterFormMode;
   category: Category;
   slug: CategorySlug;
   item: MasterRow | null;
@@ -63,30 +67,48 @@ export function MasterFormDialog({
   onClose: () => void;
   categories?: Array<{ id: string; name: string; parent_id: string | null }>;
 }) {
+  const titles: Record<MasterFormMode, string> = {
+    create: 'Add catalog product',
+    edit: 'Edit catalog product',
+    adopt: 'Adopt variant',
+    'menu-rate': 'Set menu rate',
+  };
+  const descriptions: Record<MasterFormMode, string | undefined> = {
+    create: `Create a global ${slug} product and first variant.`,
+    edit: item?.name ?? undefined,
+    adopt: item
+      ? `Add ${item.name} to this unit. Product name stays on the global catalog.`
+      : undefined,
+    'menu-rate': item
+      ? `Committee sale rate for ${item.name}. Distinct from lot cost.`
+      : undefined,
+  };
+
   return (
     <AdaptiveModal
       open={open}
       onClose={onClose}
-      title={mode === 'create' ? 'Add new item' : 'Edit item'}
-      description={
-        mode === 'create'
-          ? `Create a new ${slug} product and first variant.`
-          : (item?.name ?? undefined)
-      }
+      title={titles[mode]}
+      description={descriptions[mode]}
     >
-      {mode === 'create' ? (
+      {mode === 'create' && allowGlobal ? (
         <CreateForm
           slug={slug}
-          allowGlobal={allowGlobal}
-          defaultUnitId={defaultUnitId}
           onSuccess={onClose}
           categories={categories}
         />
-      ) : item ? (
-        <EditForms
+      ) : null}
+      {mode === 'edit' && item && allowGlobal ? (
+        <EditForm item={item} onSuccess={onClose} />
+      ) : null}
+      {mode === 'adopt' && item && defaultUnitId ? (
+        <AdoptForm item={item} unitId={defaultUnitId} onSuccess={onClose} />
+      ) : null}
+      {mode === 'menu-rate' && item && defaultUnitId ? (
+        <MenuRateForm
           item={item}
-          allowGlobal={allowGlobal}
-          defaultUnitId={defaultUnitId}
+          unitId={defaultUnitId}
+          category={category}
           onSuccess={onClose}
         />
       ) : null}
@@ -112,28 +134,32 @@ function FieldLabel({
   );
 }
 
+function packLabel(item: MasterRow): string {
+  if (item.pack_label) return item.pack_label;
+  const val = item.unit_value;
+  const type = item.unit_type;
+  const pkg = item.package_type;
+  if (val !== undefined && type && pkg) return `${val} ${type} ${pkg}`;
+  return item.uom;
+}
+
 function CreateForm({
   slug,
-  allowGlobal,
-  defaultUnitId,
   onSuccess,
   categories,
 }: {
   slug: CategorySlug;
-  allowGlobal: boolean;
-  defaultUnitId: string | null;
   onSuccess: () => void;
   categories: Array<{ id: string; name: string; parent_id: string | null }>;
 }) {
   const parentId = CATEGORY_ID_MAP[slug];
   const subcategories = categories.filter((c) => c.parent_id === parentId);
 
-  const [scope, setScope] = useState<'unit' | 'global'>(
-    defaultUnitId ? 'unit' : 'global',
-  );
   const [categoryId, setCategoryId] = useState<string>(parentId);
-  const [unitType, setUnitType] = useState<typeof UNIT_TYPES[number]>('PIECE');
-  const [packageType, setPackageType] = useState<typeof PACKAGE_TYPES[number]>('LOOSE');
+  const [unitType, setUnitType] = useState<(typeof UNIT_TYPES)[number]>('PIECE');
+  const [packageType, setPackageType] = useState<(typeof PACKAGE_TYPES)[number]>(
+    'LOOSE',
+  );
 
   const [state, formAction, pending] = useActionState<ActionState, FormData>(
     createMasterItemAction,
@@ -153,29 +179,6 @@ function CreateForm({
       <input type="hidden" name="category_id" value={categoryId} />
       <input type="hidden" name="unit_type" value={unitType} />
       <input type="hidden" name="package_type" value={packageType} />
-      {scope === 'unit' && defaultUnitId ? (
-        <input type="hidden" name="unit_id" value={defaultUnitId} />
-      ) : null}
-
-      {allowGlobal && (
-        <FieldGroup>
-          <FieldLabel>Scope</FieldLabel>
-          <Select
-            value={scope}
-            onValueChange={(v) => setScope(v as 'unit' | 'global')}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {defaultUnitId && (
-                <SelectItem value="unit">This unit only</SelectItem>
-              )}
-              <SelectItem value="global">Global (all units)</SelectItem>
-            </SelectContent>
-          </Select>
-        </FieldGroup>
-      )}
 
       {subcategories.length > 0 && (
         <FieldGroup>
@@ -207,9 +210,11 @@ function CreateForm({
       </FieldGroup>
 
       <div className="border-t border-border pt-4">
-        <h3 className="text-sm font-semibold text-foreground mb-3">First Variant Details</h3>
-        
-        <div className="grid grid-cols-2 gap-3 mb-3">
+        <h3 className="mb-3 text-sm font-semibold text-foreground">
+          First Variant Details
+        </h3>
+
+        <div className="mb-3 grid grid-cols-2 gap-3">
           <FieldGroup>
             <FieldLabel htmlFor="unit_value">Unit Value</FieldLabel>
             <Input
@@ -224,7 +229,10 @@ function CreateForm({
 
           <FieldGroup>
             <FieldLabel htmlFor="unit_type">Unit Type</FieldLabel>
-            <Select value={unitType} onValueChange={(v) => setUnitType(v as any)}>
+            <Select
+              value={unitType}
+              onValueChange={(v) => setUnitType(v as (typeof UNIT_TYPES)[number])}
+            >
               <SelectTrigger id="unit_type">
                 <SelectValue />
               </SelectTrigger>
@@ -242,7 +250,12 @@ function CreateForm({
         <div className="grid grid-cols-2 gap-3">
           <FieldGroup>
             <FieldLabel htmlFor="package_type">Package Type</FieldLabel>
-            <Select value={packageType} onValueChange={(v) => setPackageType(v as any)}>
+            <Select
+              value={packageType}
+              onValueChange={(v) =>
+                setPackageType(v as (typeof PACKAGE_TYPES)[number])
+              }
+            >
               <SelectTrigger id="package_type">
                 <SelectValue />
               </SelectTrigger>
@@ -267,32 +280,25 @@ function CreateForm({
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
         <Button type="submit" disabled={pending} className="transition-ds press">
-          {pending ? 'Creating...' : 'Create item'}
+          {pending ? 'Creating...' : 'Create product'}
         </Button>
       </div>
     </form>
   );
 }
 
-function EditForms({
+function EditForm({
   item,
-  allowGlobal,
-  defaultUnitId,
   onSuccess,
 }: {
   item: MasterRow;
-  allowGlobal: boolean;
-  defaultUnitId: string | null;
   onSuccess: () => void;
 }) {
-  const [scope, setScope] = useState<'unit' | 'global'>(
-    item.unit_id ? 'unit' : 'global',
+  const [unitType, setUnitType] = useState<(typeof UNIT_TYPES)[number]>(
+    (item.unit_type as (typeof UNIT_TYPES)[number] | undefined) || 'PIECE',
   );
-  const [unitType, setUnitType] = useState<typeof UNIT_TYPES[number]>(
-    (item as any).unit_type || 'PIECE',
-  );
-  const [packageType, setPackageType] = useState<typeof PACKAGE_TYPES[number]>(
-    (item as any).package_type || 'LOOSE',
+  const [packageType, setPackageType] = useState<(typeof PACKAGE_TYPES)[number]>(
+    (item.package_type as (typeof PACKAGE_TYPES)[number] | undefined) || 'LOOSE',
   );
   const [isActive, setIsActive] = useState<'true' | 'false'>(
     item.is_active ? 'true' : 'false',
@@ -318,38 +324,6 @@ function EditForms({
       <input type="hidden" name="package_type" value={packageType} />
       <input type="hidden" name="is_active" value={isActive} />
 
-      {allowGlobal && (
-        <>
-          <input type="hidden" name="scope_control" value="1" />
-          <input
-            type="hidden"
-            name="unit_id"
-            value={
-              scope === 'global'
-                ? ''
-                : (defaultUnitId ?? item.unit_id ?? '')
-            }
-          />
-          <FieldGroup>
-            <FieldLabel>Scope</FieldLabel>
-            <Select
-              value={scope}
-              onValueChange={(v) => setScope(v as 'unit' | 'global')}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(defaultUnitId || item.unit_id) && (
-                  <SelectItem value="unit">This unit only</SelectItem>
-                )}
-                <SelectItem value="global">Global (all units)</SelectItem>
-              </SelectContent>
-            </Select>
-          </FieldGroup>
-        </>
-      )}
-
       <FieldGroup>
         <FieldLabel htmlFor="edit-name">Product Name</FieldLabel>
         <Input
@@ -366,16 +340,18 @@ function EditForms({
         <Textarea
           id="edit-description"
           name="description"
-          defaultValue={(item as any).product_description ?? (item as any).notes ?? (item as any).version_notes ?? ''}
+          defaultValue={item.product_description ?? ''}
           maxLength={500}
           rows={2}
         />
       </FieldGroup>
 
       <div className="border-t border-border pt-4">
-        <h3 className="text-sm font-semibold text-foreground mb-3">Variant Details</h3>
+        <h3 className="mb-3 text-sm font-semibold text-foreground">
+          Variant Details
+        </h3>
 
-        <div className="grid grid-cols-2 gap-3 mb-3">
+        <div className="mb-3 grid grid-cols-2 gap-3">
           <FieldGroup>
             <FieldLabel htmlFor="edit-unit_value">Unit Value</FieldLabel>
             <Input
@@ -384,13 +360,16 @@ function EditForms({
               type="number"
               step="any"
               required
-              defaultValue={(item as any).unit_value ?? 1}
+              defaultValue={item.unit_value ?? 1}
             />
           </FieldGroup>
 
           <FieldGroup>
             <FieldLabel htmlFor="edit-unit_type">Unit Type</FieldLabel>
-            <Select value={unitType} onValueChange={(v) => setUnitType(v as any)}>
+            <Select
+              value={unitType}
+              onValueChange={(v) => setUnitType(v as (typeof UNIT_TYPES)[number])}
+            >
               <SelectTrigger id="edit-unit_type">
                 <SelectValue />
               </SelectTrigger>
@@ -408,7 +387,12 @@ function EditForms({
         <div className="grid grid-cols-2 gap-3">
           <FieldGroup>
             <FieldLabel htmlFor="edit-package_type">Package Type</FieldLabel>
-            <Select value={packageType} onValueChange={(v) => setPackageType(v as any)}>
+            <Select
+              value={packageType}
+              onValueChange={(v) =>
+                setPackageType(v as (typeof PACKAGE_TYPES)[number])
+              }
+            >
               <SelectTrigger id="edit-package_type">
                 <SelectValue />
               </SelectTrigger>
@@ -454,10 +438,167 @@ function EditForms({
       <FormError message={updateState?.error} />
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-        <Button type="submit" disabled={updatePending} className="transition-ds press">
+        <Button
+          type="submit"
+          disabled={updatePending}
+          className="transition-ds press"
+        >
           {updatePending ? 'Saving...' : 'Save changes'}
         </Button>
       </div>
     </form>
   );
 }
+
+function AdoptForm({
+  item,
+  unitId,
+  onSuccess,
+}: {
+  item: MasterRow;
+  unitId: string;
+  onSuccess: () => void;
+}) {
+  const [localSku, setLocalSku] = useState(item.local_sku ?? '');
+  const [pending, startTransition] = useTransition();
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    startTransition(async () => {
+      const res = await adoptVariantAction({
+        unit_id: unitId,
+        variant_id: item.id,
+        local_sku: localSku.trim() || null,
+      });
+      if (res?.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success(`Adopted ${item.name}`);
+      onSuccess();
+    });
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
+        <p className="text-sm font-medium text-foreground">{item.name}</p>
+        <p className="font-mono text-xs text-muted-foreground">
+          {packLabel(item)}
+          {item.sku ? ` · ${item.sku}` : ''}
+        </p>
+      </div>
+
+      <FieldGroup>
+        <FieldLabel htmlFor="adopt-local-sku">Local SKU</FieldLabel>
+        <Input
+          id="adopt-local-sku"
+          value={localSku}
+          onChange={(e) => setLocalSku(e.currentTarget.value)}
+          maxLength={50}
+          className="font-mono"
+          placeholder="Optional unit SKU"
+        />
+        <p className="text-xs text-muted-foreground">
+          Overrides the catalog SKU for this unit only.
+        </p>
+      </FieldGroup>
+
+      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+        <Button type="submit" disabled={pending} className="transition-ds press">
+          {pending ? 'Adopting...' : 'Adopt variant'}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function MenuRateForm({
+  item,
+  unitId,
+  category,
+  onSuccess,
+}: {
+  item: MasterRow;
+  unitId: string;
+  category: Category;
+  onSuccess: () => void;
+}) {
+  const existing = item.menu_rate ?? item.current_rate;
+  const [rate, setRate] = useState(existing != null ? String(existing) : '');
+  const [effectiveFrom, setEffectiveFrom] = useState(
+    new Date().toISOString().slice(0, 10),
+  );
+  const [pending, startTransition] = useTransition();
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const parsed = Number(rate);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      toast.error('Enter a valid menu rate');
+      return;
+    }
+    startTransition(async () => {
+      const res = await setUnitMenuRateAction({
+        unit_id: unitId,
+        variant_id: item.id,
+        rate: parsed,
+        effective_from: effectiveFrom,
+      });
+      if (res?.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success('Menu rate saved');
+      onSuccess();
+    });
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
+        <p className="text-sm font-medium text-foreground">{item.name}</p>
+        <p className="font-mono text-xs text-muted-foreground">
+          {packLabel(item)}
+        </p>
+      </div>
+
+      <FieldGroup>
+        <FieldLabel htmlFor="menu-rate">Menu rate (₹)</FieldLabel>
+        <Input
+          id="menu-rate"
+          type="number"
+          step="0.01"
+          min="0"
+          required
+          value={rate}
+          onChange={(e) => setRate(e.currentTarget.value)}
+          className="font-mono"
+        />
+        <p className="text-xs text-muted-foreground">
+          {category === 'ration'
+            ? 'Committee rate for this unit. Ration scale qty is separate.'
+            : 'Peg or bottle sale rate for this unit — not the inventory lot cost.'}
+        </p>
+      </FieldGroup>
+
+      <FieldGroup>
+        <FieldLabel htmlFor="menu-rate-from">Effective from</FieldLabel>
+        <Input
+          id="menu-rate-from"
+          type="date"
+          required
+          value={effectiveFrom}
+          onChange={(e) => setEffectiveFrom(e.currentTarget.value)}
+        />
+      </FieldGroup>
+
+      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+        <Button type="submit" disabled={pending} className="transition-ds press">
+          {pending ? 'Saving...' : 'Save menu rate'}
+        </Button>
+      </div>
+    </form>
+  );
+}
+

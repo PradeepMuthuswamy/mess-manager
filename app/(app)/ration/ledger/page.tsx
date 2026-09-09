@@ -22,7 +22,7 @@ export default async function RationLedgerPage() {
             Stock Ledger
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage bulk ration receipts and running stock balances for the unit.
+            Receipts, consumption, returns, and adjustments — with a running net balance per item.
           </p>
         </header>
         <EmptyState
@@ -50,7 +50,7 @@ export default async function RationLedgerPage() {
           Stock Ledger
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Manage bulk ration receipts, adjustments, and running stock balances for this unit.
+          Receipts, consumption, returns, and adjustments — with a running net balance per item.
         </p>
       </header>
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState, useEffect } from 'react';
+import { useCallback, useMemo, useState, useEffect, useTransition } from 'react';
 import { format } from 'date-fns';
 import {
   flexRender,
@@ -23,14 +23,21 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { MoreHorizontal, Pencil, Plus, Upload } from 'lucide-react';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
-import { MasterFormDialog } from './master-form-dialog';
+import {
+  MasterFormDialog,
+  type MasterFormMode,
+} from './master-form-dialog';
 import { MasterBulkImportDialog } from './master-bulk-import-dialog';
 import { MasterMultiEditDialog } from './master-multi-edit-dialog';
-import { deactivateMasterItemAction } from '@/lib/masters/actions';
+import {
+  deactivateMasterItemAction,
+  unadoptVariantAction,
+} from '@/lib/masters/actions';
 import { toast } from 'sonner';
 import { EmptyState } from '@/components/shared/empty-state';
 import type { AuthorisationChip, MasterRow } from '@/lib/masters/types';
@@ -43,6 +50,15 @@ import {
   type RationClass,
   type RationTerrain,
 } from '@/lib/schemas/ration';
+
+type CatalogRow = MasterRow & {
+  is_adopted?: boolean;
+  local_sku?: string | null;
+  menu_rate?: number | null;
+  is_enabled?: boolean;
+};
+
+type AdoptFilter = 'all' | 'adopted' | 'available';
 
 const RANK_SHORT: Record<string, string> = {
   officer: 'Off',
@@ -63,6 +79,18 @@ function formatQty(n: number): string {
   if (!Number.isFinite(n)) return '—';
   const s = n.toFixed(3);
   return s.replace(/\.?0+$/, '');
+}
+
+function formatInr(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '—';
+  return `₹${n.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function isAdopted(row: CatalogRow): boolean {
+  return Boolean(row.is_adopted);
 }
 
 function AuthorisationChips({ chips }: { chips: AuthorisationChip[] }) {
@@ -140,16 +168,29 @@ export function MasterTable({
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
-  
+  const isUnitCatalog = Boolean(defaultUnitId) && !isAllUnits;
+  const canCreateGlobal = allowGlobal;
+  const canMutate = canWrite || allowGlobal;
+
   const initialQ = searchParams.get('q') || '';
   const [filter, setFilter] = useState(initialQ);
-  
+  const [adoptFilter, setAdoptFilter] = useState<AdoptFilter>('all');
+
   const [rankFilter, setRankFilter] = useState<RationClass | 'all'>('all');
   const [terrainFilter, setTerrainFilter] = useState<RationTerrain | 'all'>('all');
-  const [editing, setEditing] = useState<MasterRow | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [formItem, setFormItem] = useState<MasterRow | null>(null);
+  const [formMode, setFormMode] = useState<MasterFormMode | null>(null);
   const [importing, setImporting] = useState(false);
   const [multiEditing, setMultiEditing] = useState(false);
+  const [unadoptPending, startUnadopt] = useTransition();
+
+  const catalogRows = rows as CatalogRow[];
+
+  const visibleRows = useMemo(() => {
+    if (!isUnitCatalog || adoptFilter === 'all') return catalogRows;
+    if (adoptFilter === 'adopted') return catalogRows.filter(isAdopted);
+    return catalogRows.filter((r) => !isAdopted(r));
+  }, [catalogRows, adoptFilter, isUnitCatalog]);
 
   // Debounced search logic. The no-op guard is load-bearing: every
   // router.push yields a NEW searchParams reference, which re-runs this
@@ -165,7 +206,7 @@ export function MasterTable({
       } else {
         params.delete('q');
       }
-      params.delete('page'); // Reset to page 1 on search
+      params.delete('page');
       router.push(`${pathname}?${params.toString()}`);
     }, 300);
 
@@ -181,12 +222,12 @@ export function MasterTable({
       params.set('sortBy', field);
       params.set('sortOrder', 'asc');
     }
-    params.delete('page'); // Reset to page 1 on sort change
+    params.delete('page');
     router.push(`${pathname}?${params.toString()}`);
   };
 
   const renderSortIcon = (field: string) => {
-    if (sortBy !== field) return <span className="text-muted-foreground/30 ml-1 text-xs">↕</span>;
+    if (sortBy !== field) return <span className="ml-1 text-xs text-muted-foreground/30">↕</span>;
     return sortOrder === 'asc' ? ' ↑' : ' ↓';
   };
 
@@ -196,24 +237,59 @@ export function MasterTable({
     router.push(`${pathname}?${params.toString()}`);
   };
 
-  const columns = useMemo<ColumnDef<MasterRow>[]>(() => {
-    const cols: ColumnDef<MasterRow>[] = [
+  const openForm = useCallback((mode: MasterFormMode, item: MasterRow | null = null) => {
+    setFormMode(mode);
+    setFormItem(item);
+  }, []);
+
+  const closeForm = useCallback(() => {
+    setFormMode(null);
+    setFormItem(null);
+  }, []);
+
+  const handleUnadopt = useCallback(
+    (row: CatalogRow) => {
+      if (!defaultUnitId) return;
+      startUnadopt(async () => {
+        const res = await unadoptVariantAction({
+          unit_id: defaultUnitId,
+          variant_id: row.id,
+        });
+        if (res?.error) {
+          toast.error(res.error);
+          return;
+        }
+        toast.success(`Removed ${row.name} from this unit`);
+        router.refresh();
+      });
+    },
+    [defaultUnitId, router],
+  );
+
+  const columns = useMemo<ColumnDef<CatalogRow>[]>(() => {
+    const cols: ColumnDef<CatalogRow>[] = [
       {
         accessorKey: 'name',
         header: () => (
           <button
             onClick={() => handleSort('name')}
-            className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+            className="flex cursor-pointer items-center gap-1 font-semibold hover:text-foreground"
           >
             Product {renderSortIcon('name')}
           </button>
         ),
         cell: ({ row }) => (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-medium">{row.original.name}</span>
-            {row.original.unit_id == null && (
+            {isUnitCatalog && isAdopted(row.original) ? (
+              <Badge variant="success">Adopted</Badge>
+            ) : null}
+            {isUnitCatalog && isAdopted(row.original) && row.original.is_enabled === false ? (
+              <Badge variant="outline">Disabled</Badge>
+            ) : null}
+            {!isUnitCatalog ? (
               <Badge variant="secondary">Global</Badge>
-            )}
+            ) : null}
             {!row.original.is_active && (
               <Badge variant="destructive">Inactive</Badge>
             )}
@@ -225,7 +301,7 @@ export function MasterTable({
         header: () => (
           <button
             onClick={() => handleSort('unit_value')}
-            className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+            className="flex cursor-pointer items-center gap-1 font-semibold hover:text-foreground"
           >
             Size/Packaging {renderSortIcon('unit_value')}
           </button>
@@ -246,7 +322,7 @@ export function MasterTable({
         header: () => (
           <button
             onClick={() => handleSort('sku')}
-            className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+            className="flex cursor-pointer items-center gap-1 font-semibold hover:text-foreground"
           >
             SKU {renderSortIcon('sku')}
           </button>
@@ -257,28 +333,54 @@ export function MasterTable({
           </span>
         ),
       },
-      {
-        id: 'category',
-        header: 'Category',
-        cell: ({ row }) => {
-          const catName = row.original.category_name ?? row.original.category;
-          const subcat = row.original.subcategory_name;
-          return (
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-medium text-foreground">
-                {catName === 'soft_drink' ? 'Cold Drinks' : catName === 'cigar' ? 'Cigars' : catName}
-              </span>
-              {subcat && (
-                <>
-                  <span className="text-muted-foreground/50 text-xs">/</span>
-                  <span className="text-xs text-muted-foreground">{subcat}</span>
-                </>
-              )}
-            </div>
-          );
-        },
-      },
     ];
+
+    if (isUnitCatalog) {
+      cols.push(
+        {
+          id: 'local_sku',
+          header: 'Local SKU',
+          cell: ({ row }) => (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {isAdopted(row.original) ? (row.original.local_sku ?? '—') : '—'}
+            </span>
+          ),
+        },
+        {
+          id: 'menu_rate',
+          header: 'Menu rate',
+          cell: ({ row }) => (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {isAdopted(row.original)
+                ? formatInr(row.original.menu_rate ?? row.original.current_rate)
+                : '—'}
+            </span>
+          ),
+        },
+      );
+    }
+
+    cols.push({
+      id: 'category',
+      header: 'Category',
+      cell: ({ row }) => {
+        const catName = row.original.category_name ?? row.original.category;
+        const subcat = row.original.subcategory_name;
+        return (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium text-foreground">
+              {catName === 'soft_drink' ? 'Cold Drinks' : catName === 'cigar' ? 'Cigars' : catName}
+            </span>
+            {subcat && (
+              <>
+                <span className="text-xs text-muted-foreground/50">/</span>
+                <span className="text-xs text-muted-foreground">{subcat}</span>
+              </>
+            )}
+          </div>
+        );
+      },
+    });
 
     if (category === 'ration') {
       cols.push({
@@ -301,7 +403,7 @@ export function MasterTable({
       header: () => (
         <button
           onClick={() => handleSort('updated_at')}
-          className="flex items-center gap-1 hover:text-foreground font-semibold cursor-pointer"
+          className="flex cursor-pointer items-center gap-1 font-semibold hover:text-foreground"
         >
           Updated {renderSortIcon('updated_at')}
         </button>
@@ -319,75 +421,140 @@ export function MasterTable({
     cols.push({
       id: 'actions',
       header: () => <span className="sr-only">Actions</span>,
-      cell: ({ row }) => (
-        <div className="text-right">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon">
-                <MoreHorizontal className="size-4" />
-                <span className="sr-only">Open menu</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {canWrite ? (
-                <DropdownMenuItem onClick={() => setEditing(row.original)}>
-                  Edit
-                </DropdownMenuItem>
-              ) : null}
-              {canWrite ? (
-                <DropdownMenuItem
-                  onClick={async () => {
-                    const fd = new FormData();
-                    fd.append('id', row.original.id);
-                    const res = await deactivateMasterItemAction(null, fd);
-                    if (res?.ok) {
-                      toast.success('Item deactivated');
-                      router.refresh();
-                    } else {
-                      toast.error(res?.error ?? 'Could not deactivate');
-                    }
-                  }}
-                  className="text-destructive"
-                >
-                  Deactivate
-                </DropdownMenuItem>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const adopted = isAdopted(row.original);
+        const enabled = row.original.is_enabled !== false;
+        const showUnitActions = canWrite && isUnitCatalog;
+        const showGlobalActions = canCreateGlobal;
+        if (!showUnitActions && !showGlobalActions) return null;
+        return (
+          <div className="text-right">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" disabled={unadoptPending}>
+                  <MoreHorizontal className="size-4" />
+                  <span className="sr-only">Open menu</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {showUnitActions && (!adopted || !enabled) ? (
+                  <DropdownMenuItem onClick={() => openForm('adopt', row.original)}>
+                    {adopted ? 'Re-enable' : 'Adopt'}
+                  </DropdownMenuItem>
+                ) : null}
+                {showUnitActions && adopted ? (
+                  <DropdownMenuItem onClick={() => openForm('menu-rate', row.original)}>
+                    Set menu rate
+                  </DropdownMenuItem>
+                ) : null}
+                {showUnitActions && adopted ? (
+                  <DropdownMenuItem
+                    onClick={() => handleUnadopt(row.original)}
+                    className="text-destructive"
+                  >
+                    Unadopt
+                  </DropdownMenuItem>
+                ) : null}
+                {showUnitActions && showGlobalActions ? <DropdownMenuSeparator /> : null}
+                {showGlobalActions ? (
+                  <DropdownMenuItem onClick={() => openForm('edit', row.original)}>
+                    Edit product
+                  </DropdownMenuItem>
+                ) : null}
+                {showGlobalActions ? (
+                  <DropdownMenuItem
+                    onClick={async () => {
+                      const fd = new FormData();
+                      fd.append('id', row.original.id);
+                      const res = await deactivateMasterItemAction(null, fd);
+                      if (res?.ok) {
+                        toast.success('Item deactivated');
+                        router.refresh();
+                      } else {
+                        toast.error(res?.error ?? 'Could not deactivate');
+                      }
+                    }}
+                    className="text-destructive"
+                  >
+                    Deactivate
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        );
+      },
     });
 
     return cols;
-  }, [category, router, authorisations, rankFilter, terrainFilter, canWrite, sortBy, sortOrder]);
+  }, [
+    category,
+    router,
+    authorisations,
+    rankFilter,
+    terrainFilter,
+    canWrite,
+    canCreateGlobal,
+    isUnitCatalog,
+    sortBy,
+    sortOrder,
+    unadoptPending,
+    defaultUnitId,
+    openForm,
+    handleUnadopt,
+  ]);
 
   const table = useReactTable({
-    data: rows,
+    data: visibleRows,
     columns,
     getCoreRowModel: getCoreRowModel(),
   });
 
-  const closeForm = useCallback(() => {
-    setCreating(false);
-    setEditing(null);
-  }, []);
   const closeImport = useCallback(() => setImporting(false), []);
   const closeMultiEdit = useCallback(() => setMultiEditing(false), []);
   const handleImported = useCallback(() => router.refresh(), [router]);
-  const formOpen = creating || editing != null;
+
+  const emptyTitle = isUnitCatalog
+    ? filter
+      ? 'No catalog matches'
+      : 'No variants on this page'
+    : 'No items yet';
+  const emptyDescription = isUnitCatalog
+    ? 'Search the global catalog, then adopt a variant for this unit. Units do not create products.'
+    : 'Add the first item or import via CSV.';
 
   return (
     <div className="space-y-4">
-      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          placeholder="Search by name..."
+          placeholder={
+            isUnitCatalog ? 'Search catalog to adopt…' : 'Search by name...'
+          }
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="max-w-xs"
         />
+        {isUnitCatalog ? (
+          <div className="flex items-center gap-1">
+            {([
+              ['all', 'All'],
+              ['adopted', 'Adopted'],
+              ['available', 'Available'],
+            ] as const).map(([key, label]) => (
+              <Button
+                key={key}
+                size="sm"
+                variant={adoptFilter === key ? 'default' : 'outline'}
+                onClick={() => setAdoptFilter(key)}
+                className="transition-ds"
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+        ) : null}
         <div className="flex-1" />
-        {canWrite ? (
+        {canMutate ? (
           <>
             <Button
               variant="outline"
@@ -395,21 +562,23 @@ export function MasterTable({
               disabled={rows.length === 0}
               className="transition-ds"
             >
-              <Pencil className="size-4 mr-1" /> Edit all
+              <Pencil className="mr-1 size-4" /> Edit all
             </Button>
             <Button variant="outline" onClick={() => setImporting(true)} className="transition-ds">
-              <Upload className="size-4 mr-1" /> Bulk import
+              <Upload className="mr-1 size-4" /> Bulk import
             </Button>
-            <Button onClick={() => setCreating(true)} className="transition-ds press">
-              <Plus className="size-4 mr-1" /> Add
-            </Button>
+            {canCreateGlobal ? (
+              <Button
+                onClick={() => openForm('create')}
+                className="transition-ds press"
+              >
+                <Plus className="mr-1 size-4" /> Add
+              </Button>
+            ) : null}
           </>
         ) : null}
       </div>
 
-      {/* Ration filter pills. A locked dimension (unit-scoped, non-super-admin)
-          renders a read-only label instead of buttons — the server already
-          restricted the data, so "All / other" buttons would be misleading. */}
       {category === 'ration' ? (
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -481,7 +650,6 @@ export function MasterTable({
         </div>
       ) : null}
 
-      {/* Data table */}
       <div className="overflow-hidden rounded-md border border-border shadow-xs">
         <Table>
           <TableHeader>
@@ -505,8 +673,8 @@ export function MasterTable({
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={columns.length} className="p-0">
                   <EmptyState
-                    title="No items yet"
-                    description="Add the first item or import via CSV."
+                    title={emptyTitle}
+                    description={emptyDescription}
                     className="rounded-none border-0"
                   />
                 </TableCell>
@@ -529,10 +697,9 @@ export function MasterTable({
         </Table>
       </div>
 
-      {/* Pagination controls */}
       {totalCount > pageSize ? (
         <div className="flex items-center justify-between py-1">
-          <div className="text-xs text-muted-foreground font-medium">
+          <div className="text-xs font-medium text-muted-foreground">
             Showing {Math.min(totalCount, (page - 1) * pageSize + 1)} to{' '}
             {Math.min(totalCount, page * pageSize)} of {totalCount} items
           </div>
@@ -542,11 +709,11 @@ export function MasterTable({
               size="sm"
               onClick={() => handlePageChange(page - 1)}
               disabled={page <= 1}
-              className="transition-ds select-none cursor-pointer"
+              className="cursor-pointer select-none transition-ds"
             >
               Previous
             </Button>
-            <span className="text-xs text-muted-foreground font-medium">
+            <span className="text-xs font-medium text-muted-foreground">
               Page {page} of {Math.ceil(totalCount / pageSize)}
             </span>
             <Button
@@ -554,7 +721,7 @@ export function MasterTable({
               size="sm"
               onClick={() => handlePageChange(page + 1)}
               disabled={page >= Math.ceil(totalCount / pageSize)}
-              className="transition-ds select-none cursor-pointer"
+              className="cursor-pointer select-none transition-ds"
             >
               Next
             </Button>
@@ -562,35 +729,38 @@ export function MasterTable({
         </div>
       ) : null}
 
-      {canWrite && formOpen ? (
+      {canMutate && formMode ? (
         <MasterFormDialog
           open
-          mode={editing ? 'edit' : 'create'}
+          mode={formMode}
           category={category}
           slug={slug}
-          item={editing}
+          item={formItem}
           allowGlobal={allowGlobal}
           defaultUnitId={defaultUnitId}
           onClose={closeForm}
           categories={categories}
         />
       ) : null}
-      {canWrite && importing ? (
+      {canMutate && importing ? (
         <MasterBulkImportDialog
           open
           category={category}
           slug={slug}
           unitId={defaultUnitId}
           isAllUnits={isAllUnits}
+          allowGlobal={allowGlobal}
           onClose={closeImport}
           onImported={handleImported}
         />
       ) : null}
-      {canWrite && multiEditing ? (
+      {canMutate && multiEditing ? (
         <MasterMultiEditDialog
           open
           category={category}
-          rows={rows}
+          rows={catalogRows}
+          allowGlobal={allowGlobal}
+          defaultUnitId={defaultUnitId}
           onClose={closeMultiEdit}
         />
       ) : null}

@@ -1,5 +1,8 @@
 import 'server-only';
 import { createClient } from '@/lib/supabase/server';
+import { getAttendanceDay } from '@/lib/attendance/queries';
+import type { MessType } from '@/lib/schemas/attendance';
+import { rankClassForMessType } from './mess-type';
 import type {
   RationScaleRow,
   RationScaleItemVersionRow,
@@ -8,18 +11,132 @@ import type {
   AuthorisationMatrixRow,
   RationClass,
   RationTerrain,
+  EligibleItem,
+  ListScalesOpts,
+  DailyRationConsumptionItem,
+  DailyRationConsumptionResult,
+  RationStockReportRow,
+  RationStockTransactionListItem,
+  RationMonthlyNetReportRow,
 } from './types';
 
-export type ListScalesOpts = {
-  unitId: string;
-  q?: string;
-  includeInactive?: boolean;
-  rankClass?: RationClass;
-  terrain?: RationTerrain;
+export type {
+  EligibleItem,
+  ListScalesOpts,
+  DailyRationConsumptionItem,
+  DailyRationConsumptionResult,
+  RationStockReportRow,
+  RationStockTransactionListItem,
+  RationMonthlyNetReportRow,
 };
 
 const SCALE_COLS =
   'id, unit_id, name, description, is_active, rank_class, terrain, created_at, updated_at, created_by, updated_by';
+
+function roundQty(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function calendarMonthRange(year: number, month: number): { from: string; to: string } {
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    from: `${year}-${pad2(month)}-01`,
+    to: `${year}-${pad2(month)}-${pad2(lastDay)}`,
+  };
+}
+
+type LedgerAgg = {
+  receipts: number;
+  issued: number;
+  returned: number;
+  adjustments: number;
+  lastRate: number;
+  lastRateDate: string | null;
+  lastRateAt: string | null;
+};
+
+function emptyAgg(): LedgerAgg {
+  return {
+    receipts: 0,
+    issued: 0,
+    returned: 0,
+    adjustments: 0,
+    lastRate: 0,
+    lastRateDate: null,
+    lastRateAt: null,
+  };
+}
+
+function applyLedgerTx(
+  agg: LedgerAgg,
+  tx: {
+    type: string;
+    quantity: number;
+    rate: number | null;
+    transaction_date: string;
+    created_at?: string | null;
+  },
+) {
+  const qty = Number(tx.quantity);
+  switch (tx.type) {
+    case 'receipt': {
+      agg.receipts += qty;
+      const rate = tx.rate == null ? null : Number(tx.rate);
+      if (rate != null && Number.isFinite(rate)) {
+        const createdAt = tx.created_at ?? '';
+        const newer =
+          agg.lastRateDate == null ||
+          tx.transaction_date > agg.lastRateDate ||
+          (tx.transaction_date === agg.lastRateDate && createdAt >= (agg.lastRateAt ?? ''));
+        if (newer) {
+          agg.lastRate = rate;
+          agg.lastRateDate = tx.transaction_date;
+          agg.lastRateAt = createdAt;
+        }
+      }
+      break;
+    }
+    case 'consumption':
+      agg.issued += qty;
+      break;
+    case 'return_to_source':
+      agg.returned += qty;
+      break;
+    case 'adjustment':
+      agg.adjustments += qty;
+      break;
+    default:
+      // Unknown types are ignored so they cannot inflate receipts.
+      break;
+  }
+}
+
+function netQtyFromAgg(agg: LedgerAgg): number {
+  return roundQty(agg.receipts + agg.adjustments - agg.issued - agg.returned);
+}
+
+function reportFieldsFromAgg(agg: LedgerAgg) {
+  const total_receipts = roundQty(agg.receipts);
+  const total_issued = roundQty(agg.issued);
+  const total_returned = roundQty(agg.returned);
+  const total_adjustments = roundQty(agg.adjustments);
+  const net_issued = roundQty(total_issued - total_returned);
+  const net_qty = netQtyFromAgg(agg);
+  return {
+    total_receipts,
+    total_issued,
+    total_returned,
+    total_adjustments,
+    net_issued,
+    net_qty,
+    current_balance: net_qty,
+    last_rate: agg.lastRate,
+  };
+}
 
 export async function listScales(opts: ListScalesOpts): Promise<RationScaleListItem[]> {
   const supabase = await createClient();
@@ -161,9 +278,6 @@ export async function getAuthorisationMatrix(
   return { scales, rows };
 }
 
-export type { EligibleItem } from './types';
-import type { EligibleItem } from './types';
-
 // Items the user can attach to a scale. Limited to ration + grocery so the
 // list stays meaningful (rice, atta, sugar, tea, onion, etc.). Scoped to
 // the unit OR global items.
@@ -190,37 +304,20 @@ export async function listEligibleItems(unitId: string, q?: string): Promise<Eli
     }));
 }
 
-export type DailyRationConsumptionItem = {
-  variant_id: string;
-  item_name: string;
-  category: string;
-  uom: string;
-  auth_qty: number;
-  present_count: number;
-  computed_qty: number;
-  saved_qty: number | null;
-  is_posted: boolean;
-  consumption_id: string | null;
-};
-
 export async function getDailyRationConsumption(
   unitId: string,
   date: string,
-): Promise<{
-  attendanceStatus: 'draft' | 'finalized' | 'none';
-  presentCount: number;
-  items: DailyRationConsumptionItem[];
-}> {
+): Promise<DailyRationConsumptionResult> {
   const supabase = await createClient();
-  
+
   // 1. Get attendance strength
   let presentCount = 0;
-  let attendanceStatus: 'draft' | 'finalized' | 'none' = 'none';
+  let attendanceStatus: DailyRationConsumptionResult['attendanceStatus'] = 'none';
   try {
     const att = await getAttendanceDay(unitId, date, supabase);
     presentCount = att.present_count;
-    attendanceStatus = att.status;
-  } catch (e) {
+    attendanceStatus = att.status === 'finalized' ? 'finalized' : 'draft';
+  } catch {
     // Default to 0 and 'none' if no attendance recorded
   }
 
@@ -259,13 +356,13 @@ export async function getDailyRationConsumption(
     });
   }
 
-  const items = scaleItems
+  const items: DailyRationConsumptionItem[] = scaleItems
     .filter((si): si is typeof si & { item_id: string } => si.item_id !== null)
     .map((si) => {
       const cons = consMap.get(si.item_id);
       const authQty = Number(si.auth_qty ?? 0);
       const computedQty = presentCount * authQty;
-      
+
       return {
         variant_id: si.item_id,
         item_name: si.item_name ?? '',
@@ -273,7 +370,7 @@ export async function getDailyRationConsumption(
         uom: si.uom ?? '',
         auth_qty: authQty,
         present_count: presentCount,
-        computed_qty: Math.round(computedQty * 10000) / 10000,
+        computed_qty: roundQty(computedQty),
         saved_qty: cons ? Number(cons.quantity) : null,
         is_posted: cons !== undefined,
         consumption_id: cons?.id ?? null,
@@ -283,77 +380,118 @@ export async function getDailyRationConsumption(
   return { attendanceStatus, presentCount, items };
 }
 
-export type RationStockReportRow = {
-  variant_id: string;
-  item_name: string;
-  uom: string;
-  total_receipts: number;
-  total_issued: number;
-  total_returned: number;
-  net_issued: number;
-  current_balance: number;
-  last_rate: number;
-};
-
 export async function getRationStockReport(unitId: string): Promise<RationStockReportRow[]> {
   const supabase = await createClient();
 
   const eligibleItems = await listEligibleItems(unitId);
 
-  const { data: txs } = await supabase
+  const { data: txs, error } = await supabase
     .from('ration_stock_transactions')
-    .select('variant_id, quantity, rate')
+    .select('variant_id, type, quantity, rate, transaction_date, created_at')
     .eq('unit_id', unitId);
+  if (error) throw new Error(error.message);
 
-  const { data: consumptions } = await supabase
-    .from('ration_consumptions')
-    .select('variant_id, quantity')
-    .eq('unit_id', unitId);
-
-  const txMap = new Map<string, { total: number; lastRate: number }>();
+  const txMap = new Map<string, LedgerAgg>();
   for (const tx of txs ?? []) {
-    const cur = txMap.get(tx.variant_id) || { total: 0, lastRate: 0 };
-    cur.total += Number(tx.quantity);
-    if (tx.rate) cur.lastRate = Number(tx.rate);
+    const cur = txMap.get(tx.variant_id) ?? emptyAgg();
+    applyLedgerTx(cur, tx);
     txMap.set(tx.variant_id, cur);
   }
 
-  const consMap = new Map<string, number>();
-  for (const c of consumptions ?? []) {
-    const cur = consMap.get(c.variant_id) || 0;
-    consMap.set(c.variant_id, cur + Number(c.quantity));
-  }
-
   return eligibleItems.map((item) => {
-    const tx = txMap.get(item.id) || { total: 0, lastRate: 0 };
-    const totalCons = consMap.get(item.id) || 0;
-    const balance = tx.total - totalCons;
-
+    const agg = txMap.get(item.id) ?? emptyAgg();
     return {
       variant_id: item.id,
       item_name: item.name,
       uom: item.uom,
-      total_receipts: tx.total,
-      total_issued: totalCons,
-      total_returned: 0,
-      net_issued: totalCons,
-      current_balance: balance >= 0 ? balance : 0,
-      last_rate: tx.lastRate,
+      ...reportFieldsFromAgg(agg),
     };
   });
 }
 
-// Helper imports needed for daily entitlement queries
-import { getAttendanceDay } from '@/lib/attendance/queries';
-import { rankClassForMessType } from './mess-type';
-import type { MessType } from '@/lib/schemas/attendance';
+export async function getRationMonthlyNetReport(
+  unitId: string,
+  year: number,
+  month: number,
+): Promise<RationMonthlyNetReportRow[]> {
+  const { from, to } = calendarMonthRange(year, month);
+  const supabase = await createClient();
+  const eligibleItems = await listEligibleItems(unitId);
 
-export async function listRationStockTransactions(unitId: string) {
+  const { data: txs, error } = await supabase
+    .from('ration_stock_transactions')
+    .select('variant_id, type, quantity, rate, transaction_date, created_at')
+    .eq('unit_id', unitId)
+    .lte('transaction_date', to);
+  if (error) throw new Error(error.message);
+
+  const openingMap = new Map<string, LedgerAgg>();
+  const periodMap = new Map<string, LedgerAgg>();
+
+  for (const tx of txs ?? []) {
+    if (tx.transaction_date < from) {
+      const opening = openingMap.get(tx.variant_id) ?? emptyAgg();
+      applyLedgerTx(opening, tx);
+      openingMap.set(tx.variant_id, opening);
+      continue;
+    }
+    const period = periodMap.get(tx.variant_id) ?? emptyAgg();
+    applyLedgerTx(period, tx);
+    periodMap.set(tx.variant_id, period);
+  }
+
+  return eligibleItems.map((item) => {
+    const openingAgg = openingMap.get(item.id) ?? emptyAgg();
+    const periodAgg = periodMap.get(item.id) ?? emptyAgg();
+    const opening_qty = netQtyFromAgg(openingAgg);
+    const fields = reportFieldsFromAgg(periodAgg);
+    const closing_qty = roundQty(opening_qty + fields.net_qty);
+    return {
+      variant_id: item.id,
+      item_name: item.name,
+      uom: item.uom,
+      opening_qty,
+      total_receipts: fields.total_receipts,
+      total_issued: fields.total_issued,
+      total_returned: fields.total_returned,
+      total_adjustments: fields.total_adjustments,
+      net_qty: fields.net_qty,
+      closing_qty,
+    };
+  });
+}
+
+type StockTxJoin = {
+  id: string;
+  variant_id: string;
+  transaction_date: string;
+  type: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+  source: string | null;
+  notes: string | null;
+  variant:
+    | { product: { name: string } | null }
+    | { product: { name: string } | null }[]
+    | null;
+};
+
+function itemNameFromVariant(variant: StockTxJoin['variant']): string {
+  if (!variant) return 'Unknown';
+  const row = Array.isArray(variant) ? variant[0] : variant;
+  return row?.product?.name ?? 'Unknown';
+}
+
+export async function listRationStockTransactions(
+  unitId: string,
+): Promise<RationStockTransactionListItem[]> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('ration_stock_transactions')
     .select(`
       id,
+      variant_id,
       transaction_date,
       type,
       quantity,
@@ -372,9 +510,10 @@ export async function listRationStockTransactions(unitId: string) {
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
-  
-  return (data ?? []).map((d) => ({
+
+  return ((data ?? []) as unknown as StockTxJoin[]).map((d) => ({
     id: d.id,
+    variant_id: d.variant_id,
     transaction_date: d.transaction_date,
     type: d.type,
     quantity: Number(d.quantity),
@@ -382,8 +521,6 @@ export async function listRationStockTransactions(unitId: string) {
     amount: Number(d.amount),
     source: d.source,
     notes: d.notes,
-    item_name: (d.variant as any)?.product?.name ?? 'Unknown',
+    item_name: itemNameFromVariant(d.variant),
   }));
 }
-
-

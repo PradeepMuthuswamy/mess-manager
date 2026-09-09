@@ -44,6 +44,8 @@ export default async function SettingsPage() {
     mess_type: MessType | null;
     terrain: RationTerrain | null;
     messing_billing_mode: MessingBillingMode;
+    guest_food_per_night: number;
+    auto_ration_post: boolean;
   };
   let unit: UnitCfg | null = null;
   let activeFlatRates: Record<string, number> = {};
@@ -51,7 +53,7 @@ export default async function SettingsPage() {
   if (canManageUnit && unitId) {
     const { data } = await supabase
       .from('units')
-      .select('id, name, mess_type, terrain, messing_billing_mode')
+      .select('id, name, mess_type, terrain, messing_billing_mode, guest_food_per_night, auto_ration_post')
       .eq('id', unitId)
       .single();
     if (data) {
@@ -76,6 +78,8 @@ export default async function SettingsPage() {
           messType={unit.mess_type}
           terrain={unit.terrain}
           messingBillingMode={unit.messing_billing_mode}
+          guestFoodPerNight={Number(unit.guest_food_per_night ?? 900)}
+          autoRationPost={Boolean(unit.auto_ration_post)}
           activeFlatRates={activeFlatRates}
           flatRatesHistory={flatRatesHistory}
         />

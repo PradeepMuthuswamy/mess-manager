@@ -12,10 +12,14 @@ import {
   setDiningInSchema,
 } from '@/lib/schemas/attendance';
 import { applyAttendanceSave, applyFinalize } from './save-core';
+import { postDailyRationConsumptionAction } from '@/lib/ration/actions';
+import { getDailyRationConsumption } from '@/lib/ration/queries';
 
 const ATTENDANCE_PATH = '/attendance';
 
-type ActionResult = { ok: true } | { error: string; details?: unknown };
+type ActionResult =
+  | { ok: true; warning?: string }
+  | { error: string; details?: unknown };
 
 async function authUid(): Promise<string | null> {
   const supabase = await createClient();
@@ -58,7 +62,52 @@ export async function finalizeAttendanceAction(input: unknown): Promise<ActionRe
   if ('error' in res) return res;
 
   revalidatePath(ATTENDANCE_PATH);
-  return { ok: true };
+
+  const warning = await maybeAutoPostRation(
+    parsed.data.unit_id,
+    parsed.data.attendance_date,
+  );
+  return warning ? { ok: true, warning } : { ok: true };
+}
+
+/** Best-effort daily ration post when the unit has auto_ration_post on.
+ *  Failures never roll back finalize — they surface as a warning. */
+async function maybeAutoPostRation(
+  unitId: string,
+  attendanceDate: string,
+): Promise<string | undefined> {
+  try {
+    const supabase = await createClient();
+    const { data: unit, error: unitErr } = await supabase
+      .from('units')
+      .select('auto_ration_post')
+      .eq('id', unitId)
+      .maybeSingle();
+    if (unitErr) return `Ration auto-post skipped: ${unitErr.message}`;
+    if (!unit?.auto_ration_post) return undefined;
+
+    const daily = await getDailyRationConsumption(unitId, attendanceDate);
+    if (daily.presentCount <= 0 || daily.items.length === 0) return undefined;
+
+    const postRes = await postDailyRationConsumptionAction({
+      unit_id: unitId,
+      consumption_date: attendanceDate,
+      items: daily.items.map((item) => ({
+        variant_id: item.variant_id,
+        quantity: item.computed_qty,
+      })),
+    });
+    if (postRes.error) {
+      return `Attendance finalized, but ration auto-post failed: ${postRes.error}`;
+    }
+
+    revalidatePath('/ration/consumption');
+    revalidatePath('/ration/reports/monthly');
+    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return `Attendance finalized, but ration auto-post failed: ${message}`;
+  }
 }
 
 export async function reopenAttendanceAction(input: unknown): Promise<ActionResult> {
@@ -122,7 +171,14 @@ export async function setUnitConfigAction(input: unknown): Promise<ActionResult>
   if (!parsed.success)
     return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const { unit_id, mess_type, terrain, messing_billing_mode } = parsed.data;
+  const {
+    unit_id,
+    mess_type,
+    terrain,
+    messing_billing_mode,
+    guest_food_per_night,
+    auto_ration_post,
+  } = parsed.data;
   const user = await requireRole(['super_admin', 'unit_admin']);
   if (user.role !== 'super_admin' && user.homeUnitId !== unit_id) {
     return { error: 'You can only configure your own unit.' };
@@ -132,11 +188,19 @@ export async function setUnitConfigAction(input: unknown): Promise<ActionResult>
     mess_type?: typeof mess_type;
     terrain?: typeof terrain;
     messing_billing_mode?: Exclude<typeof messing_billing_mode, null>;
+    guest_food_per_night?: number;
+    auto_ration_post?: boolean;
   } = {};
   if (mess_type !== undefined) patch.mess_type = mess_type;
   if (terrain !== undefined) patch.terrain = terrain;
   if (messing_billing_mode !== undefined && messing_billing_mode !== null) {
     patch.messing_billing_mode = messing_billing_mode;
+  }
+  if (guest_food_per_night !== undefined) {
+    patch.guest_food_per_night = guest_food_per_night;
+  }
+  if (auto_ration_post !== undefined) {
+    patch.auto_ration_post = auto_ration_post;
   }
   if (Object.keys(patch).length === 0) return { ok: true };
 

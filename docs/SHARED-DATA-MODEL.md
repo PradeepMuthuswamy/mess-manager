@@ -55,16 +55,46 @@ Alcohol=`…0001`, Cold Drinks=`…0002`, Cigars=`…0003`, Snacks=`…0004`, Ra
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | uuid | PK |
-| `unit_id` | uuid | nullable, FK → `units.id` — **null = global catalog item** |
 | `category_id` | uuid | NOT NULL, FK → `categories.id` |
 | `name` | text | NOT NULL |
+| `name_normalized` | text | **GENERATED** `lower(trim(name))` — never insert/update |
 | `description` | text | nullable |
 | `is_active` | boolean | NOT NULL |
 | `fts` | tsvector | **GENERATED — never insert/update this column** |
 | `created_at`, `updated_at` | timestamptz | NOT NULL |
 | `created_by`, `updated_by` | uuid | nullable |
 
-Unique: `(unit_id, category_id, name)`.
+Unique: `(category_id, name_normalized)`.
+
+**`products.unit_id` dropped** (Phase 0). Products are platform-global. Units enable variants via **`unit_catalog`** and set sale rates via **`unit_menu_rates`**. See [`FOUNDATION.md`](./FOUNDATION.md) §2.
+
+#### `unit_catalog` *(live — Phase 0 applied)*
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | uuid | PK |
+| `unit_id` | uuid | NOT NULL, FK → `units.id` |
+| `variant_id` | uuid | NOT NULL, FK → `product_variants.id` |
+| `is_enabled` | boolean | NOT NULL, default true |
+| `local_sku` | text | nullable |
+| `created_at`, `updated_at` | timestamptz | NOT NULL |
+| `created_by`, `updated_by` | uuid | nullable |
+
+Unique: `(unit_id, variant_id)`.
+
+#### `unit_menu_rates` *(live — Phase 0 applied)*
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | uuid | PK |
+| `unit_id` | uuid | NOT NULL, FK → `units.id` |
+| `variant_id` | uuid | NOT NULL, FK → `product_variants.id` |
+| `rate` | numeric(12,2) | NOT NULL, `>= 0` |
+| `effective_from` | date | NOT NULL |
+| `created_at`, `updated_at` | timestamptz | NOT NULL |
+| `created_by`, `updated_by` | uuid | nullable |
+
+Unique: `(unit_id, variant_id, effective_from)`.
 
 #### `product_variants`
 | Column | Type | Constraints |
@@ -122,7 +152,7 @@ One row per **variant**, presented in the shape of the dropped `items` table. Us
 | Column | Meaning |
 |---|---|
 | `id` | = `product_variants.id` — **a VARIANT id**, not a product id |
-| `unit_id` | = `products.unit_id` (null = global) |
+| `unit_id` | always **null** (`products.unit_id` dropped; catalog is global) |
 | `category` | `item_category` derived from ROOT category name: Alcohol→`alcohol`, Cold Drinks→`soft_drink`, Cigars→`cigar`, Snacks→`grocery`, Ration→`ration`, Grocery→`grocery`, anything else→`grocery` |
 | `name` | = `products.name` |
 | `sku` | = variant sku |
@@ -146,7 +176,7 @@ One row per **variant**, presented in the shape of the dropped `items` table. Us
 ### `v_masters_search` — flat catalog search view
 One row per variant, joined to product and category. The masters list/search screens read this.
 
-Columns: `variant_id`, `sku`, `is_active`, `unit_value`, `unit_type`, `package_type`, `created_at`, `updated_at`, `product_id`, `product_name`, `product_description`, `product_unit_id` (FK → units, null = global), `product_fts` (tsvector — use for full-text search), `category_id`, `category_name`, `category_parent_id`.
+Columns: `variant_id`, `sku`, `is_active`, `unit_value`, `unit_type`, `package_type`, `created_at`, `updated_at`, `product_id`, `product_name`, `product_description`, `product_unit_id` (always **null** — `products.unit_id` dropped), `product_fts` (tsvector — use for full-text search), `category_id`, `category_name`, `category_parent_id`. Filter adoption via `unit_catalog`, not `product_unit_id`.
 `security_invoker = on`.
 
 ### `v_ration_scale_items_current` — current ration authorisations
@@ -210,7 +240,9 @@ Legend: **R** = select, **W** = insert/update/delete (or RPC).
 | Relation | ADMIN app | USER app | Notes |
 |---|---|---|---|
 | `categories` | R | R | Category tree for masters forms. Seed-managed; apps do not write. |
-| `products` | R/W | R/W | Masters CRUD (`lib/masters/actions.ts`). Never touch `fts`. |
+| `products` | R/W | R | Global catalog only (`unit_id` dropped). Admin CRUD; ops adopt via `unit_catalog`. Never touch `fts` / `name_normalized`. |
+| `unit_catalog` | R/W | R/W | Unit adoption (`unit_id`, `variant_id`, `is_enabled`, `local_sku`). |
+| `unit_menu_rates` | R/W | R/W | Committee peg/bottle rate (`rate`, `effective_from`). Distinct from lot cost. |
 | `product_variants` | R/W | R/W | Masters CRUD. |
 | `v_masters_search` | R | R | Masters list/search (`lib/masters/queries.ts`). |
 | `v_items_current` | R | R | Legacy-item-shaped reads: ration eligible-item picker (`lib/ration/queries.ts` `listEligibleItems`), bulk-import name→id lookup (`lib/ration/actions.ts`). |
@@ -233,7 +265,7 @@ Legend: **R** = select, **W** = insert/update/delete (or RPC).
 | `idempotency_keys` | W | W |
 | `audit_log` | R | — |
 
-RLS summary (masters/ration): `products`/`product_variants` readable when global (`unit_id IS NULL`) or own unit; `ration_scales` / `ration_scale_item_versions` readable with `ration.read` **or** `masters.read`, writable with `ration.adjust(unit_id)`.
+RLS summary (masters/ration): `products`/`product_variants` are global (readable to authenticated; writes need `masters.write.global` or admin). `unit_catalog` / `unit_menu_rates` scoped by `masters.read` / `masters.write` on `unit_id`. `ration_scales` / `ration_scale_item_versions` readable with `ration.read` **or** `masters.read`, writable with `ration.adjust(unit_id)`.
 
 ## 9. Sync rules
 

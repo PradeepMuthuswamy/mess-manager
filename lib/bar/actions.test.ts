@@ -63,13 +63,18 @@ describe('createBarChitCore', () => {
         eq: vi.fn().mockReturnThis(),
         in: vi.fn().mockReturnThis(),
         gt: vi.fn().mockReturnThis(),
+        lte: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         single: vi.fn(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null }),
         insert: vi.fn().mockReturnThis(),
         update: vi.fn().mockReturnThis(),
       };
 
-      if (table === 'product_variants') {
+      if (table === 'unit_catalog') {
+        queryObj.maybeSingle.mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null });
+      } else if (table === 'product_variants') {
         queryObj.single.mockResolvedValue({ data: mockVariant, error: null });
       } else if (table === 'unit_inventory') {
         // We have two reads on unit_inventory: stock check and depletion
@@ -163,13 +168,18 @@ describe('createBarChitCore', () => {
         eq: vi.fn().mockReturnThis(),
         in: vi.fn().mockReturnThis(),
         gt: vi.fn().mockReturnThis(),
+        lte: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         single: vi.fn(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null }),
         insert: vi.fn().mockReturnThis(),
         update: vi.fn().mockReturnThis(),
       };
 
-      if (table === 'product_variants') {
+      if (table === 'unit_catalog') {
+        queryObj.maybeSingle.mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null });
+      } else if (table === 'product_variants') {
         queryObj.single.mockResolvedValue({ data: mockVariant, error: null });
       } else if (table === 'unit_inventory') {
         queryObj.select.mockImplementation(() => {
@@ -239,13 +249,18 @@ describe('createBarChitCore', () => {
         eq: vi.fn().mockReturnThis(),
         in: vi.fn().mockReturnThis(),
         gt: vi.fn().mockReturnThis(),
+        lte: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         single: vi.fn(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null }),
         insert: vi.fn().mockReturnThis(),
         update: vi.fn().mockReturnThis(),
       };
 
-      if (table === 'product_variants') {
+      if (table === 'unit_catalog') {
+        queryObj.maybeSingle.mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null });
+      } else if (table === 'product_variants') {
         queryObj.single.mockResolvedValue({ data: mockVariant, error: null });
       } else if (table === 'unit_inventory') {
         queryObj.select.mockImplementation(() => {
@@ -302,4 +317,189 @@ describe('createBarChitCore', () => {
     expect(result.id).toBe('chit-piece-123');
     expect(mockSupabase.from).toHaveBeenCalledWith('bar_chit_items');
   });
+
+  it('defaults a missing sale rate from the latest unit_menu_rates and snapshots it', async () => {
+    const insertedItems: Array<Record<string, unknown>> = [];
+    mockSupabase.from.mockImplementation((table: string) =>
+      catalogAwareQuery(table, {
+        adopted: true,
+        menuRate: 250,
+        lots: [{ id: 'lot-1', qty_packs: 2 }],
+        chitId: 'chit-menu-rate',
+        onInsertItem: (row) => insertedItems.push(row),
+      })
+    );
+
+    const result = await createBarChitCore(
+      mockSupabase as unknown as SupabaseClient,
+      userId,
+      {
+        unit_id: unitId,
+        date: '2026-09-10',
+        consumer_type: 'member',
+        profile_id: 'profile-111',
+        items: [
+          {
+            variant_id: variantId,
+            quantity: 1,
+            rate: 0,
+            name: 'Old Monk',
+            unit: 'bottle',
+          },
+        ],
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.id).toBe('chit-menu-rate');
+    expect(mockSupabase.from).toHaveBeenCalledWith('unit_menu_rates');
+    expect(insertedItems[0]).toMatchObject({
+      variant_id: variantId,
+      quantity: 1,
+      rate: 250,
+      amount: 250,
+    });
+    expect(insertedItems[0]).not.toHaveProperty('name');
+  });
+
+  it('rejects a variant that is not adopted in unit_catalog', async () => {
+    mockSupabase.from.mockImplementation((table: string) =>
+      catalogAwareQuery(table, {
+        adopted: false,
+        menuRate: 250,
+        lots: [{ id: 'lot-1', qty_packs: 2 }],
+        chitId: 'chit-should-not-exist',
+      })
+    );
+
+    const result = await createBarChitCore(
+      mockSupabase as unknown as SupabaseClient,
+      userId,
+      {
+        unit_id: unitId,
+        date: '2026-09-10',
+        consumer_type: 'member',
+        profile_id: 'profile-111',
+        items: [
+          {
+            variant_id: variantId,
+            quantity: 1,
+            rate: 250,
+            name: 'Old Monk',
+            unit: 'bottle',
+          },
+        ],
+      }
+    );
+
+    expect(result.ok).toBeUndefined();
+    expect(result.error).toMatch(/not an adopted catalog item/i);
+    expect(mockSupabase.from).not.toHaveBeenCalledWith('bar_chits');
+  });
+
+  it('rejects a zero rate when no unit_menu_rates row exists', async () => {
+    mockSupabase.from.mockImplementation((table: string) =>
+      catalogAwareQuery(table, {
+        adopted: true,
+        menuRate: null,
+        lots: [{ id: 'lot-1', qty_packs: 2 }],
+        chitId: 'chit-should-not-exist',
+      })
+    );
+
+    const result = await createBarChitCore(
+      mockSupabase as unknown as SupabaseClient,
+      userId,
+      {
+        unit_id: unitId,
+        date: '2026-09-10',
+        consumer_type: 'member',
+        profile_id: 'profile-111',
+        items: [
+          {
+            variant_id: variantId,
+            quantity: 1,
+            rate: 0,
+            name: 'Old Monk',
+            unit: 'bottle',
+          },
+        ],
+      }
+    );
+
+    expect(result.ok).toBeUndefined();
+    expect(result.error).toMatch(/no menu rate/i);
+    expect(mockSupabase.from).not.toHaveBeenCalledWith('bar_chits');
+  });
 });
+
+function catalogAwareQuery(
+  table: string,
+  opts: {
+    adopted: boolean;
+    menuRate: number | null;
+    lots: Array<{ id: string; qty_packs: number }>;
+    chitId: string;
+    onInsertItem?: (row: Record<string, unknown>) => void;
+  }
+) {
+  const queryObj: any = {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    in: vi.fn().mockReturnThis(),
+    gt: vi.fn().mockReturnThis(),
+    lte: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    order: vi.fn().mockReturnThis(),
+    single: vi.fn(),
+    maybeSingle: vi.fn(),
+    insert: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+    delete: vi.fn().mockReturnThis(),
+  };
+
+  if (table === 'unit_catalog') {
+    queryObj.maybeSingle.mockResolvedValue({
+      data: opts.adopted ? { id: 'adopted-1', is_enabled: true } : null,
+      error: null,
+    });
+  } else if (table === 'unit_menu_rates') {
+    queryObj.maybeSingle.mockResolvedValue({
+      data: opts.menuRate == null ? null : { rate: opts.menuRate },
+      error: null,
+    });
+  } else if (table === 'product_variants') {
+    queryObj.single.mockResolvedValue({
+      data: { unit_value: 750, unit_type: 'ML', package_type: 'BOTTLE' },
+      error: null,
+    });
+  } else if (table === 'unit_inventory') {
+    queryObj.select.mockImplementation(() => {
+      return {
+        eq: vi.fn().mockReturnThis(),
+        gt: vi.fn().mockReturnThis(),
+        order: vi.fn().mockImplementation(() => {
+          return {
+            order: vi.fn().mockResolvedValue({ data: opts.lots, error: null }),
+          };
+        }),
+        then: (resolve: (value: unknown) => unknown) =>
+          resolve({ data: opts.lots, error: null }),
+      };
+    });
+    queryObj.update.mockReturnValue({
+      eq: vi.fn().mockResolvedValue({ data: null, error: null }),
+    });
+  } else if (table === 'bar_chits') {
+    queryObj.insert.mockReturnThis();
+    queryObj.select.mockReturnThis();
+    queryObj.single.mockResolvedValue({ data: { id: opts.chitId }, error: null });
+  } else if (table === 'bar_chit_items') {
+    queryObj.insert.mockImplementation((row: Record<string, unknown>) => {
+      opts.onInsertItem?.(row);
+      return Promise.resolve({ data: null, error: null });
+    });
+  }
+
+  return queryObj;
+}

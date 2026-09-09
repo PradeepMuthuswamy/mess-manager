@@ -7,11 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.5"
-  }
   app: {
     Tables: {
       [_ in never]: never
@@ -323,6 +318,7 @@ export type Database = {
         Row: {
           actual_check_in: string | null
           actual_check_out: string | null
+          booking_category: Database["public"]["Enums"]["booking_category"]
           check_in_date: string
           check_out_date: string
           created_at: string
@@ -331,8 +327,11 @@ export type Database = {
           guest_name: string
           guest_phone: string | null
           guest_rank: string | null
+          host_profile_id: string | null
           id: string
           room_id: string
+          settlement_type: Database["public"]["Enums"]["guest_settlement_type"]
+          special_requests: string | null
           status: string
           unit_id: string
           updated_at: string
@@ -340,6 +339,7 @@ export type Database = {
         Insert: {
           actual_check_in?: string | null
           actual_check_out?: string | null
+          booking_category?: Database["public"]["Enums"]["booking_category"]
           check_in_date: string
           check_out_date: string
           created_at?: string
@@ -348,8 +348,11 @@ export type Database = {
           guest_name: string
           guest_phone?: string | null
           guest_rank?: string | null
+          host_profile_id?: string | null
           id?: string
           room_id: string
+          settlement_type?: Database["public"]["Enums"]["guest_settlement_type"]
+          special_requests?: string | null
           status?: string
           unit_id: string
           updated_at?: string
@@ -357,6 +360,7 @@ export type Database = {
         Update: {
           actual_check_in?: string | null
           actual_check_out?: string | null
+          booking_category?: Database["public"]["Enums"]["booking_category"]
           check_in_date?: string
           check_out_date?: string
           created_at?: string
@@ -365,13 +369,23 @@ export type Database = {
           guest_name?: string
           guest_phone?: string | null
           guest_rank?: string | null
+          host_profile_id?: string | null
           id?: string
           room_id?: string
+          settlement_type?: Database["public"]["Enums"]["guest_settlement_type"]
+          special_requests?: string | null
           status?: string
           unit_id?: string
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "bookings_host_profile_id_fkey"
+            columns: ["host_profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "bookings_room_id_fkey"
             columns: ["room_id"]
@@ -539,6 +553,66 @@ export type Database = {
           },
         ]
       }
+      guest_meals: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          guest_count: number
+          guest_names: string | null
+          host_profile_id: string
+          id: string
+          meal_date: string
+          meal_type: Database["public"]["Enums"]["messing_meal_type"]
+          notes: string | null
+          rate_charged: number
+          total_amount: number
+          unit_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          guest_count?: number
+          guest_names?: string | null
+          host_profile_id: string
+          id?: string
+          meal_date: string
+          meal_type: Database["public"]["Enums"]["messing_meal_type"]
+          notes?: string | null
+          rate_charged: number
+          total_amount: number
+          unit_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          guest_count?: number
+          guest_names?: string | null
+          host_profile_id?: string
+          id?: string
+          meal_date?: string
+          meal_type?: Database["public"]["Enums"]["messing_meal_type"]
+          notes?: string | null
+          rate_charged?: number
+          total_amount?: number
+          unit_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "guest_meals_host_profile_id_fkey"
+            columns: ["host_profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "guest_meals_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       idempotency_keys: {
         Row: {
           created_at: string
@@ -565,6 +639,461 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      mess_bill_line_items: {
+        Row: {
+          amount: number
+          bill_id: string
+          category: string
+          created_at: string
+          description: string
+          id: string
+          item_date: string | null
+          quantity: number
+          reference_id: string | null
+          unit_rate: number
+        }
+        Insert: {
+          amount: number
+          bill_id: string
+          category: string
+          created_at?: string
+          description: string
+          id?: string
+          item_date?: string | null
+          quantity?: number
+          reference_id?: string | null
+          unit_rate?: number
+        }
+        Update: {
+          amount?: number
+          bill_id?: string
+          category?: string
+          created_at?: string
+          description?: string
+          id?: string
+          item_date?: string | null
+          quantity?: number
+          reference_id?: string | null
+          unit_rate?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_bill_line_items_bill_id_fkey"
+            columns: ["bill_id"]
+            isOneToOne: false
+            referencedRelation: "mess_bills"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_billing_periods: {
+        Row: {
+          billing_month: number
+          billing_year: number
+          closed_at: string | null
+          closed_by: string | null
+          created_at: string
+          end_date: string
+          id: string
+          name: string
+          published_at: string | null
+          published_by: string | null
+          start_date: string
+          status: string
+          unit_id: string
+          updated_at: string
+        }
+        Insert: {
+          billing_month: number
+          billing_year: number
+          closed_at?: string | null
+          closed_by?: string | null
+          created_at?: string
+          end_date: string
+          id?: string
+          name: string
+          published_at?: string | null
+          published_by?: string | null
+          start_date: string
+          status?: string
+          unit_id: string
+          updated_at?: string
+        }
+        Update: {
+          billing_month?: number
+          billing_year?: number
+          closed_at?: string | null
+          closed_by?: string | null
+          created_at?: string
+          end_date?: string
+          id?: string
+          name?: string
+          published_at?: string | null
+          published_by?: string | null
+          start_date?: string
+          status?: string
+          unit_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_billing_periods_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_bills: {
+        Row: {
+          arrears_amount: number
+          bar_amount: number
+          bill_number: string
+          billing_period_id: string
+          created_at: string
+          due_date: string
+          guest_meal_amount: number
+          id: string
+          messing_amount: number
+          misc_amount: number
+          notes: string | null
+          paid_amount: number
+          paid_at: string | null
+          payment_method: string | null
+          payment_reference: string | null
+          profile_id: string
+          room_amount: number
+          status: string
+          subscriptions_amount: number
+          total_amount: number
+          unit_id: string
+          updated_at: string
+        }
+        Insert: {
+          arrears_amount?: number
+          bar_amount?: number
+          bill_number: string
+          billing_period_id: string
+          created_at?: string
+          due_date: string
+          guest_meal_amount?: number
+          id?: string
+          messing_amount?: number
+          misc_amount?: number
+          notes?: string | null
+          paid_amount?: number
+          paid_at?: string | null
+          payment_method?: string | null
+          payment_reference?: string | null
+          profile_id: string
+          room_amount?: number
+          status?: string
+          subscriptions_amount?: number
+          total_amount: number
+          unit_id: string
+          updated_at?: string
+        }
+        Update: {
+          arrears_amount?: number
+          bar_amount?: number
+          bill_number?: string
+          billing_period_id?: string
+          created_at?: string
+          due_date?: string
+          guest_meal_amount?: number
+          id?: string
+          messing_amount?: number
+          misc_amount?: number
+          notes?: string | null
+          paid_amount?: number
+          paid_at?: string | null
+          payment_method?: string | null
+          payment_reference?: string | null
+          profile_id?: string
+          room_amount?: number
+          status?: string
+          subscriptions_amount?: number
+          total_amount?: number
+          unit_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_bills_billing_period_id_fkey"
+            columns: ["billing_period_id"]
+            isOneToOne: false
+            referencedRelation: "mess_billing_periods"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "mess_bills_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "mess_bills_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_daily_expenditures: {
+        Row: {
+          afternoon_amount: number
+          created_at: string
+          created_by: string | null
+          dinner_amount: number
+          expenditure_date: string
+          id: string
+          morning_amount: number
+          notes: string | null
+          receipt_ref: string | null
+          sourcing_category: string
+          total_amount: number
+          unit_id: string
+          updated_at: string
+          updated_by: string | null
+          vendor_name: string | null
+        }
+        Insert: {
+          afternoon_amount?: number
+          created_at?: string
+          created_by?: string | null
+          dinner_amount?: number
+          expenditure_date: string
+          id?: string
+          morning_amount?: number
+          notes?: string | null
+          receipt_ref?: string | null
+          sourcing_category?: string
+          total_amount: number
+          unit_id: string
+          updated_at?: string
+          updated_by?: string | null
+          vendor_name?: string | null
+        }
+        Update: {
+          afternoon_amount?: number
+          created_at?: string
+          created_by?: string | null
+          dinner_amount?: number
+          expenditure_date?: string
+          id?: string
+          morning_amount?: number
+          notes?: string | null
+          receipt_ref?: string | null
+          sourcing_category?: string
+          total_amount?: number
+          unit_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          vendor_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_daily_expenditures_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_daily_p_rates: {
+        Row: {
+          calculated_at: string
+          calculated_by: string | null
+          id: string
+          present_count: number
+          rate_date: string
+          rate_per_diner: number
+          total_expenditure: number
+          unit_id: string
+        }
+        Insert: {
+          calculated_at?: string
+          calculated_by?: string | null
+          id?: string
+          present_count?: number
+          rate_date: string
+          rate_per_diner?: number
+          total_expenditure?: number
+          unit_id: string
+        }
+        Update: {
+          calculated_at?: string
+          calculated_by?: string | null
+          id?: string
+          present_count?: number
+          rate_date?: string
+          rate_per_diner?: number
+          total_expenditure?: number
+          unit_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_daily_p_rates_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_meal_cuts: {
+        Row: {
+          created_at: string
+          cut_date: string
+          id: string
+          meal_type: Database["public"]["Enums"]["messing_meal_type"]
+          profile_id: string
+          reason: string | null
+          status: string
+          unit_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          cut_date: string
+          id?: string
+          meal_type: Database["public"]["Enums"]["messing_meal_type"]
+          profile_id: string
+          reason?: string | null
+          status?: string
+          unit_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          cut_date?: string
+          id?: string
+          meal_type?: Database["public"]["Enums"]["messing_meal_type"]
+          profile_id?: string
+          reason?: string | null
+          status?: string
+          unit_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_meal_cuts_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "mess_meal_cuts_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_misc_debits: {
+        Row: {
+          amount: number
+          category: string
+          charge_date: string
+          created_at: string
+          created_by: string | null
+          description: string
+          id: string
+          is_billed: boolean
+          profile_id: string
+          receipt_ref: string | null
+          unit_id: string
+        }
+        Insert: {
+          amount: number
+          category: string
+          charge_date: string
+          created_at?: string
+          created_by?: string | null
+          description: string
+          id?: string
+          is_billed?: boolean
+          profile_id: string
+          receipt_ref?: string | null
+          unit_id: string
+        }
+        Update: {
+          amount?: number
+          category?: string
+          charge_date?: string
+          created_at?: string
+          created_by?: string | null
+          description?: string
+          id?: string
+          is_billed?: boolean
+          profile_id?: string
+          receipt_ref?: string | null
+          unit_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_misc_debits_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "mess_misc_debits_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mess_subscriptions: {
+        Row: {
+          amount: number
+          created_at: string
+          description: string | null
+          id: string
+          is_active: boolean
+          name: string
+          unit_id: string
+          updated_at: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name: string
+          unit_id: string
+          updated_at?: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          unit_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_subscriptions_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       messing_flat_rates: {
         Row: {
@@ -680,7 +1209,7 @@ export type Database = {
           id: string
           is_active: boolean
           name: string
-          unit_id: string | null
+          name_normalized: string | null
           updated_at: string
           updated_by: string | null
         }
@@ -693,7 +1222,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           name: string
-          unit_id?: string | null
+          name_normalized?: string | null
           updated_at?: string
           updated_by?: string | null
         }
@@ -706,7 +1235,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           name?: string
-          unit_id?: string | null
+          name_normalized?: string | null
           updated_at?: string
           updated_by?: string | null
         }
@@ -724,13 +1253,6 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "v_masters_search"
             referencedColumns: ["category_id"]
-          },
-          {
-            foreignKeyName: "products_unit_id_fkey"
-            columns: ["unit_id"]
-            isOneToOne: false
-            referencedRelation: "units"
-            referencedColumns: ["id"]
           },
         ]
       }
@@ -1080,6 +1602,7 @@ export type Database = {
       room_bill_items: {
         Row: {
           amount: number
+          bar_chit_id: string | null
           bill_id: string
           category: string
           created_at: string
@@ -1092,6 +1615,7 @@ export type Database = {
         }
         Insert: {
           amount: number
+          bar_chit_id?: string | null
           bill_id: string
           category: string
           created_at?: string
@@ -1104,6 +1628,7 @@ export type Database = {
         }
         Update: {
           amount?: number
+          bar_chit_id?: string | null
           bill_id?: string
           category?: string
           created_at?: string
@@ -1115,6 +1640,13 @@ export type Database = {
           variant_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "room_bill_items_bar_chit_id_fkey"
+            columns: ["bar_chit_id"]
+            isOneToOne: false
+            referencedRelation: "bar_chits"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "room_bill_items_bill_id_fkey"
             columns: ["bill_id"]
@@ -1201,7 +1733,14 @@ export type Database = {
         Row: {
           booking_id: string
           created_at: string
+          folio_number: string | null
           id: string
+          paid_amount: number
+          paid_at: string | null
+          payment_method: string | null
+          payment_reference: string | null
+          payment_status: Database["public"]["Enums"]["room_bill_payment_status"]
+          settlement_type: Database["public"]["Enums"]["guest_settlement_type"]
           status: string
           total_amount: number
           unit_id: string
@@ -1210,7 +1749,14 @@ export type Database = {
         Insert: {
           booking_id: string
           created_at?: string
+          folio_number?: string | null
           id?: string
+          paid_amount?: number
+          paid_at?: string | null
+          payment_method?: string | null
+          payment_reference?: string | null
+          payment_status?: Database["public"]["Enums"]["room_bill_payment_status"]
+          settlement_type?: Database["public"]["Enums"]["guest_settlement_type"]
           status?: string
           total_amount?: number
           unit_id: string
@@ -1219,7 +1765,14 @@ export type Database = {
         Update: {
           booking_id?: string
           created_at?: string
+          folio_number?: string | null
           id?: string
+          paid_amount?: number
+          paid_at?: string | null
+          payment_method?: string | null
+          payment_reference?: string | null
+          payment_status?: Database["public"]["Enums"]["room_bill_payment_status"]
+          settlement_type?: Database["public"]["Enums"]["guest_settlement_type"]
           status?: string
           total_amount?: number
           unit_id?: string
@@ -1229,7 +1782,7 @@ export type Database = {
           {
             foreignKeyName: "room_bills_booking_id_fkey"
             columns: ["booking_id"]
-            isOneToOne: false
+            isOneToOne: true
             referencedRelation: "bookings"
             referencedColumns: ["id"]
           },
@@ -1335,6 +1888,78 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "units"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      unit_catalog: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          is_enabled: boolean
+          local_sku: string | null
+          unit_id: string
+          updated_at: string
+          updated_by: string | null
+          variant_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_enabled?: boolean
+          local_sku?: string | null
+          unit_id: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_enabled?: boolean
+          local_sku?: string | null
+          unit_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "unit_catalog_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_catalog_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_catalog_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_catalog_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "unit_catalog_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
           },
         ]
       }
@@ -1454,12 +2079,86 @@ export type Database = {
           },
         ]
       }
+      unit_menu_rates: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          effective_from: string
+          id: string
+          rate: number
+          unit_id: string
+          updated_at: string
+          updated_by: string | null
+          variant_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          effective_from: string
+          id?: string
+          rate: number
+          unit_id: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          effective_from?: string
+          id?: string
+          rate?: number
+          unit_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          variant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "unit_menu_rates_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_menu_rates_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "product_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_menu_rates_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "unit_menu_rates_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_items_current"
+            referencedColumns: ["version_id"]
+          },
+          {
+            foreignKeyName: "unit_menu_rates_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "v_masters_search"
+            referencedColumns: ["variant_id"]
+          },
+        ]
+      }
       units: {
         Row: {
+          auto_ration_post: boolean
           code: string
           created_at: string
           created_by: string | null
           description: string | null
+          guest_food_per_night: number
           id: string
           is_active: boolean
           mess_type: Database["public"]["Enums"]["mess_type"] | null
@@ -1470,10 +2169,12 @@ export type Database = {
           updated_by: string | null
         }
         Insert: {
+          auto_ration_post?: boolean
           code: string
           created_at?: string
           created_by?: string | null
           description?: string | null
+          guest_food_per_night?: number
           id?: string
           is_active?: boolean
           mess_type?: Database["public"]["Enums"]["mess_type"] | null
@@ -1484,10 +2185,12 @@ export type Database = {
           updated_by?: string | null
         }
         Update: {
+          auto_ration_post?: boolean
           code?: string
           created_at?: string
           created_by?: string | null
           description?: string | null
+          guest_food_per_night?: number
           id?: string
           is_active?: boolean
           mess_type?: Database["public"]["Enums"]["mess_type"] | null
@@ -1564,15 +2267,7 @@ export type Database = {
           version_notes: string | null
           volume_ml: number | null
         }
-        Relationships: [
-          {
-            foreignKeyName: "products_unit_id_fkey"
-            columns: ["unit_id"]
-            isOneToOne: false
-            referencedRelation: "units"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
       v_masters_search: {
         Row: {
@@ -1607,13 +2302,6 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "v_masters_search"
             referencedColumns: ["category_id"]
-          },
-          {
-            foreignKeyName: "products_unit_id_fkey"
-            columns: ["product_unit_id"]
-            isOneToOne: false
-            referencedRelation: "units"
-            referencedColumns: ["id"]
           },
         ]
       }
@@ -1813,6 +2501,11 @@ export type Database = {
     }
     Enums: {
       attendance_status: "draft" | "finalized"
+      booking_category:
+        | "MEMBER_GUEST"
+        | "TRANSIT_OFFICER"
+        | "OFFICIAL_DELEGATION"
+        | "OUTSIDE_CIVILIAN"
       capability:
         | "masters.read"
         | "masters.write"
@@ -1842,6 +2535,7 @@ export type Database = {
         | "billing.finalize"
         | "inventory.read"
         | "inventory.write"
+      guest_settlement_type: "DIRECT_SETTLEMENT" | "CHARGE_TO_HOST"
       item_category:
         | "ration"
         | "soft_drink"
@@ -1864,6 +2558,7 @@ export type Database = {
       ration_class: "officer" | "jco" | "or" | "civilian"
       ration_terrain: "plains" | "desert" | "high_altitude" | "field" | "sea"
       relation_type: "spouse" | "child" | "parent"
+      room_bill_payment_status: "draft" | "paid" | "transferred_to_mess_bill"
       unit_type: "ML" | "LITRE" | "GRAM" | "KG" | "PIECE"
       uom: "kg" | "g" | "l" | "ml" | "piece" | "pack" | "bottle"
       user_role:
@@ -1890,12 +2585,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1919,11 +2614,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1944,11 +2639,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1969,11 +2664,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1986,11 +2681,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -2006,6 +2701,12 @@ export const Constants = {
   public: {
     Enums: {
       attendance_status: ["draft", "finalized"],
+      booking_category: [
+        "MEMBER_GUEST",
+        "TRANSIT_OFFICER",
+        "OFFICIAL_DELEGATION",
+        "OUTSIDE_CIVILIAN",
+      ],
       capability: [
         "masters.read",
         "masters.write",
@@ -2036,6 +2737,7 @@ export const Constants = {
         "inventory.read",
         "inventory.write",
       ],
+      guest_settlement_type: ["DIRECT_SETTLEMENT", "CHARGE_TO_HOST"],
       item_category: [
         "ration",
         "soft_drink",
@@ -2060,6 +2762,7 @@ export const Constants = {
       ration_class: ["officer", "jco", "or", "civilian"],
       ration_terrain: ["plains", "desert", "high_altitude", "field", "sea"],
       relation_type: ["spouse", "child", "parent"],
+      room_bill_payment_status: ["draft", "paid", "transferred_to_mess_bill"],
       unit_type: ["ML", "LITRE", "GRAM", "KG", "PIECE"],
       uom: ["kg", "g", "l", "ml", "piece", "pack", "bottle"],
       user_role: [
@@ -2075,3 +2778,4 @@ export const Constants = {
     },
   },
 } as const
+

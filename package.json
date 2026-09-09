@@ -13,7 +13,7 @@
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:diff": "supabase db diff",
-    "db:types": "supabase gen types typescript --local --schema public,app 2>/dev/null > lib/supabase/database.types.ts",
+    "db:types": "npx supabase gen types typescript --local --schema public,app > lib/supabase/database.types.ts",
     "bootstrap-admin": "dotenv -e .env.local -- tsx scripts/bootstrap-admin.ts"
   },
   "dependencies": {

@@ -43,5 +43,39 @@ export const updateUnitFlatRatesSchema = z.object({
   rates: z.array(flatRateInputSchema).min(1),
 }).openapi('UpdateUnitFlatRatesInput');
 
+export const dailyKitchenExpenditureSchema = z.object({
+  unit_id: z.string().uuid(),
+  expenditure_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  morning_amount: z.coerce.number().min(0).default(0),
+  afternoon_amount: z.coerce.number().min(0).default(0),
+  dinner_amount: z.coerce.number().min(0).default(0),
+  notes: z.string().trim().optional().nullable(),
+  receipt_ref: z.string().trim().optional().nullable(),
+  vendor_name: z.string().trim().optional().nullable(),
+  sourcing_category: z.enum(['LOCAL_PURCHASE', 'CANTEEN', 'OTHER']).default('LOCAL_PURCHASE'),
+}).openapi('DailyKitchenExpenditureInput');
+
+export const mealCutInputSchema = z.object({
+  unit_id: z.string().uuid(),
+  cut_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  meal_type: messingMealTypeSchema,
+  profile_id: z.string().uuid().optional(),
+  reason: z.string().trim().max(300).optional().nullable(),
+}).openapi('MealCutInput');
+
+export const guestMealInputSchema = z.object({
+  unit_id: z.string().uuid(),
+  host_profile_id: z.string().uuid(),
+  meal_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  meal_type: messingMealTypeSchema,
+  guest_count: z.coerce.number().int().min(1).default(1),
+  guest_names: z.string().trim().optional().nullable(),
+  rate_charged: z.coerce.number().min(0),
+  notes: z.string().trim().optional().nullable(),
+}).openapi('GuestMealInput');
+
 export type FlatRateInput = z.infer<typeof flatRateInputSchema>;
 export type UpdateUnitFlatRatesInput = z.infer<typeof updateUnitFlatRatesSchema>;
+export type DailyKitchenExpenditureInput = z.infer<typeof dailyKitchenExpenditureSchema>;
+export type MealCutInput = z.infer<typeof mealCutInputSchema>;
+export type GuestMealInput = z.infer<typeof guestMealInputSchema>;

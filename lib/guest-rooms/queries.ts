@@ -1,9 +1,119 @@
 import 'server-only';
 import { createClient } from '@/lib/supabase/server';
-import { Database } from '@/lib/supabase/database.types';
 
-export type { Room, Booking, BookingWithBill, UnitFurniture, RoomFurniture } from './types';
-import type { Room, Booking, BookingWithBill, UnitFurniture, RoomFurniture } from './types';
+export type {
+  Room,
+  Booking,
+  BookingWithBill,
+  UnitFurniture,
+  RoomFurniture,
+  HostProfile,
+  RoomBill,
+  RoomBillItem,
+  RoomBillSummary,
+  RoomBillWithLines,
+  RoomBillDetail,
+  BillOrder,
+  UnitGuestTariff,
+} from './types';
+import type {
+  Room,
+  Booking,
+  BookingWithBill,
+  UnitFurniture,
+  RoomFurniture,
+  HostProfile,
+  RoomBillItem,
+  RoomBillSummary,
+  RoomBillWithLines,
+  RoomBillDetail,
+  BillOrder,
+  UnitGuestTariff,
+} from './types';
+
+const BOOKING_LIST_SELECT = `
+  *,
+  room:room_id (name),
+  host_profile:profiles!bookings_host_profile_id_fkey (id, full_name, rank, service_no),
+  unit:unit_id (guest_food_per_night),
+  bill:room_bills (id, status, payment_status, folio_number, settlement_type, total_amount)
+`;
+
+const BILL_ITEM_SELECT =
+  'id, bill_id, category, description, amount, quantity, meal_type, order_id, variant_id, bar_chit_id, created_at';
+
+const BOOKING_BILL_SELECT = `
+  *,
+  room:room_id (name),
+  host_profile:profiles!bookings_host_profile_id_fkey (id, full_name, rank, service_no),
+  unit:unit_id (guest_food_per_night),
+  bill:room_bills (
+    *,
+    items:room_bill_items (${BILL_ITEM_SELECT}),
+    orders:room_bill_orders (
+      *,
+      items:room_bill_items (${BILL_ITEM_SELECT})
+    )
+  )
+`;
+
+const ROOM_BILL_DETAIL_SELECT = `
+  *,
+  items:room_bill_items (${BILL_ITEM_SELECT}),
+  orders:room_bill_orders (
+    *,
+    items:room_bill_items (${BILL_ITEM_SELECT})
+  ),
+  booking:bookings (
+    id,
+    host_profile_id,
+    settlement_type,
+    unit_id,
+    unit:unit_id (guest_food_per_night)
+  )
+`;
+
+function asOne<T>(value: T | T[] | null | undefined): T | null {
+  if (value == null) return null;
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+type RawBillLines = {
+  items?: RoomBillItem[] | null;
+  orders?: (Omit<BillOrder, 'items'> & { items?: RoomBillItem[] | null })[] | null;
+};
+
+/**
+ * One consistent folio shape: each line appears once, including bar.
+ * PostgREST embeds the same rows at bill root and under orders — keep
+ * standalone lines (`order_id` is null) on `items` and order lines nested.
+ */
+export function normalizeRoomBillLines<T extends RawBillLines>(
+  raw: T,
+): Omit<T, 'items' | 'orders'> & { items: RoomBillItem[]; orders: BillOrder[] } {
+  const orders: BillOrder[] = (raw.orders ?? []).map((order) => ({
+    ...order,
+    items: (order.items ?? []).filter((item) => item.order_id === order.id),
+  }));
+  const nestedIds = new Set(
+    orders.flatMap((order) => order.items.map((item) => item.id)),
+  );
+  const items = (raw.items ?? []).filter(
+    (item) => item.order_id == null && !nestedIds.has(item.id),
+  );
+
+  return { ...raw, items, orders };
+}
+
+function toBillSummary(raw: RoomBillSummary | RoomBillSummary[] | null | undefined): RoomBillSummary | null {
+  return asOne(raw);
+}
+
+function toUnitTariff(
+  raw: UnitGuestTariff | UnitGuestTariff[] | null | undefined,
+): UnitGuestTariff | null {
+  return asOne(raw);
+}
 
 export async function getRooms(unitId: string) {
   const supabase = await createClient();
@@ -24,32 +134,47 @@ export async function getBookings(unitId: string, from: string, to: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('bookings')
-    .select(`
-      *,
-      room:room_id (name)
-    `)
+    .select(BOOKING_LIST_SELECT)
     .eq('unit_id', unitId)
+    .neq('status', 'cancelled')
     .gte('check_out_date', from)
     .lte('check_in_date', to)
     .order('check_in_date');
 
   if (error) throw new Error(error.message);
-  return data as Booking[];
+
+  return (data ?? []).map((row) => {
+    const raw = row as unknown as Booking & {
+      bill?: RoomBillSummary | RoomBillSummary[] | null;
+      unit?: UnitGuestTariff | UnitGuestTariff[] | null;
+    };
+    return {
+      ...raw,
+      unit: toUnitTariff(raw.unit),
+      bill: toBillSummary(raw.bill),
+    } satisfies Booking;
+  });
 }
 
 export async function getBookingSummaryById(id: string): Promise<Booking> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('bookings')
-    .select(`
-      *,
-      room:room_id (name)
-    `)
+    .select(BOOKING_LIST_SELECT)
     .eq('id', id)
     .single();
 
   if (error) throw new Error(error.message);
-  return data as Booking;
+
+  const raw = data as unknown as Booking & {
+    bill?: RoomBillSummary | RoomBillSummary[] | null;
+    unit?: UnitGuestTariff | UnitGuestTariff[] | null;
+  };
+  return {
+    ...raw,
+    unit: toUnitTariff(raw.unit),
+    bill: toBillSummary(raw.bill),
+  };
 }
 
 export async function getRoomsByIds(unitId: string, ids: string[]) {
@@ -67,51 +192,75 @@ export async function getRoomsByIds(unitId: string, ids: string[]) {
   return data as Room[];
 }
 
-type RawBookingWithBill = Database['public']['Tables']['bookings']['Row'] & {
-  room: { name: string };
-  bill: (Database['public']['Tables']['room_bills']['Row'] & {
-    items: Database['public']['Tables']['room_bill_items']['Row'][];
-    orders: (Database['public']['Tables']['room_bill_orders']['Row'] & {
-      items: Database['public']['Tables']['room_bill_items']['Row'][];
-    })[];
-  })[];
+type RawBookingWithBill = Omit<Booking, 'bill' | 'unit'> & {
+  unit?: UnitGuestTariff | UnitGuestTariff[] | null;
+  bill:
+    | (RoomBillWithLines & RawBillLines)
+    | (RoomBillWithLines & RawBillLines)[]
+    | null;
 };
 
 export async function getBookingById(id: string): Promise<BookingWithBill> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('bookings')
-    .select(`
-      *,
-      room:room_id (name),
-      bill:room_bills (
-        *,
-        items:room_bill_items (*),
-        orders:room_bill_orders (
-          *,
-          items:room_bill_items (*)
-        )
-      )
-    `)
+    .select(BOOKING_BILL_SELECT)
     .eq('id', id)
     .single();
 
   if (error) throw new Error(error.message);
-  
-  const rawData = data as unknown as RawBookingWithBill;
-  const bill = rawData.bill?.[0] ? {
-    ...rawData.bill[0],
-    items: rawData.bill[0].items ?? [],
-    orders: (rawData.bill[0].orders ?? []).map(order => ({
-      ...order,
-      items: order.items ?? []
-    }))
-  } : null;
+
+  const raw = data as unknown as RawBookingWithBill;
+  const rawBill = asOne(raw.bill);
 
   return {
-    ...rawData,
-    bill
-  } as BookingWithBill;
+    ...raw,
+    unit: toUnitTariff(raw.unit),
+    bill: rawBill ? normalizeRoomBillLines(rawBill) : null,
+  };
+}
+
+export async function getRoomBillById(id: string): Promise<RoomBillDetail> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('room_bills')
+    .select(ROOM_BILL_DETAIL_SELECT)
+    .eq('id', id)
+    .single();
+
+  if (error) throw new Error(error.message);
+
+  const raw = data as unknown as RoomBillWithLines &
+    RawBillLines & {
+      booking:
+        | RoomBillDetail['booking']
+        | RoomBillDetail['booking'][]
+        | null;
+    };
+
+  const booking = asOne(raw.booking);
+  if (!booking) throw new Error('Room bill is missing its booking');
+
+  const { booking: _ignored, ...bill } = raw;
+  return {
+    ...normalizeRoomBillLines(bill),
+    booking: {
+      ...booking,
+      unit: toUnitTariff(booking.unit),
+    },
+  };
+}
+
+export async function getGuestFoodPerNight(unitId: string): Promise<number> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('units')
+    .select('guest_food_per_night')
+    .eq('id', unitId)
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data.guest_food_per_night;
 }
 
 export async function getAvailableRooms(unitId: string, checkIn: string, checkOut: string) {
@@ -139,7 +288,7 @@ export async function getAvailableRooms(unitId: string, checkIn: string, checkOu
   if (bookingsError) throw new Error(bookingsError.message);
 
   const bookedIds = new Set(bookedRooms.map(b => b.room_id));
-  
+
   return rawRooms.filter(room => !bookedIds.has(room.id)) as Room[];
 }
 
@@ -196,4 +345,16 @@ export async function getDailyBookingStats(unitId: string, from: string, to: str
   });
 
   return stats;
+}
+
+export async function listHostProfiles(unitId: string): Promise<HostProfile[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, rank, service_no')
+    .eq('unit_id', unitId)
+    .order('full_name', { ascending: true });
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as HostProfile[];
 }

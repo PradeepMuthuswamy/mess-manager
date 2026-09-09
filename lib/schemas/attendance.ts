@@ -55,6 +55,8 @@ export const setUnitConfigSchema = z
     mess_type: messTypeSchema.nullable().optional(),
     terrain: rationTerrainSchema.nullable().optional(),
     messing_billing_mode: messingBillingModeSchema.nullable().optional(),
+    guest_food_per_night: z.coerce.number().min(0).optional(),
+    auto_ration_post: z.boolean().optional(),
   })
   .openapi('SetUnitConfigInput');
 

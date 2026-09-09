@@ -8,10 +8,27 @@ extendZodWithOpenApi(z);
 export const roomStatusSchema = z.enum(['available', 'maintenance', 'out_of_service']);
 export const bookingStatusSchema = z.enum(['confirmed', 'checked_in', 'checked_out', 'cancelled']);
 export const billStatusSchema = z.enum(['draft', 'finalized', 'paid']);
-export const billItemCategorySchema = z.enum(['room_rent', 'food', 'adhoc', 'misc']);
+export const billItemCategorySchema = z.enum(['room_rent', 'food', 'adhoc', 'misc', 'bar']);
 export const mealTypeSchema = z.enum(['breakfast', 'lunch', 'dinner']);
 export const furnitureKindSchema = z.enum(['furniture', 'fixture', 'equipment', 'other']);
 export const furnitureConditionSchema = z.enum(['good', 'fair', 'poor']);
+
+export const bookingCategoryEnum = [
+  'MEMBER_GUEST',
+  'TRANSIT_OFFICER',
+  'OFFICIAL_DELEGATION',
+  'OUTSIDE_CIVILIAN',
+] as const;
+export const bookingCategorySchema = z.enum(bookingCategoryEnum);
+export type BookingCategory = (typeof bookingCategoryEnum)[number];
+
+export const settlementTypeEnum = ['DIRECT_SETTLEMENT', 'CHARGE_TO_HOST'] as const;
+export const settlementTypeSchema = z.enum(settlementTypeEnum);
+export type SettlementType = (typeof settlementTypeEnum)[number];
+
+export const roomBillPaymentStatusEnum = ['draft', 'paid', 'transferred_to_mess_bill'] as const;
+export const roomBillPaymentStatusSchema = z.enum(roomBillPaymentStatusEnum);
+export type RoomBillPaymentStatus = (typeof roomBillPaymentStatusEnum)[number];
 
 export const createFurnitureItemSchema = z.object({
   unit_id: z.string().uuid(),
@@ -53,6 +70,10 @@ export const createBookingSchema = z.object({
   check_in_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   check_out_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   status: bookingStatusSchema.default('confirmed'),
+  booking_category: bookingCategorySchema.default('MEMBER_GUEST'),
+  host_profile_id: z.string().uuid().nullable().optional(),
+  settlement_type: settlementTypeSchema.default('DIRECT_SETTLEMENT'),
+  special_requests: z.string().trim().max(500).nullable().optional(),
 }).openapi('CreateBookingInput').refine(data => {
   return new Date(data.check_out_date) > new Date(data.check_in_date);
 }, {
@@ -71,7 +92,19 @@ export const updateBookingSchema = z.object({
   actual_check_in: z.string().datetime().nullable().optional(),
   actual_check_out: z.string().datetime().nullable().optional(),
   status: bookingStatusSchema.optional(),
+  booking_category: bookingCategorySchema.optional(),
+  host_profile_id: z.string().uuid().nullable().optional(),
+  settlement_type: settlementTypeSchema.optional(),
+  special_requests: z.string().trim().max(500).nullable().optional(),
 }).openapi('UpdateBookingInput');
+
+export const checkOutBookingSchema = z.object({
+  booking_id: z.string().uuid(),
+  settlement_type: settlementTypeSchema.default('DIRECT_SETTLEMENT'),
+  payment_method: z.string().trim().optional().nullable(),
+  payment_reference: z.string().trim().optional().nullable(),
+  paid_amount: z.coerce.number().min(0).optional(),
+}).openapi('CheckOutBookingInput');
 
 export const createBillItemSchema = z.object({
   category: billItemCategorySchema,
@@ -98,15 +131,21 @@ export const roomTypeSchema = z.object({
   unit_id: z.string().uuid(),
   name: z.string().trim().min(1).max(100),
   rate: z.coerce.number().nonnegative(),
-}).openapi('RoomTypeInput');
+});
 
+export type CreateFurnitureItemInput = z.infer<typeof createFurnitureItemSchema>;
+export type RoomInventoryRow = z.infer<typeof roomInventoryRowSchema>;
 export type CreateRoomInput = z.infer<typeof createRoomSchema>;
 export type UpdateRoomInput = z.infer<typeof updateRoomSchema>;
 export type CreateBookingInput = z.infer<typeof createBookingSchema>;
 export type UpdateBookingInput = z.infer<typeof updateBookingSchema>;
+export type CheckOutBookingInput = z.infer<typeof checkOutBookingSchema>;
 export type CreateBillItemInput = z.infer<typeof createBillItemSchema>;
 export type CreateBillOrderInput = z.infer<typeof createBillOrderSchema>;
 export type FinalizeBillInput = z.infer<typeof finalizeBillSchema>;
-export type CreateFurnitureItemInput = z.infer<typeof createFurnitureItemSchema>;
-export type RoomInventoryRow = z.infer<typeof roomInventoryRowSchema>;
 export type RoomTypeInput = z.infer<typeof roomTypeSchema>;
+
+/** Folio food total from unit tariff (`units.guest_food_per_night`), not a hardcoded 900. */
+export function guestFoodAmount(nights: number, ratePerNight: number): number {
+  return nights * ratePerNight;
+}

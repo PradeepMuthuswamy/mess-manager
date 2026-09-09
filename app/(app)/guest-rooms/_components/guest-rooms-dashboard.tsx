@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   endOfMonth,
@@ -71,6 +71,8 @@ import { BookingForm } from './booking-form';
 import { BillingDialog } from './billing-dialog';
 import { RoomsTable } from './rooms-table';
 import { RoomForm } from './room-form';
+import { CheckoutDialog } from './checkout-dialog';
+import { formatHost, resolveGuestFoodPerNight, settlementLabel } from './folio-helpers';
 
 function monthDate(month: string) {
   const [year, monthIndex] = month.split('-').map(Number);
@@ -92,9 +94,11 @@ function displayUpdatedAt(value: string | null) {
 export function GuestRoomsDashboard({
   unitId,
   initialSnapshot,
+  guestFoodPerNight,
 }: {
   unitId: string;
   initialSnapshot: GuestRoomsSnapshot;
+  guestFoodPerNight?: number;
 }) {
   const dispatch = useAppDispatch();
   const hydratedKey = useRef<string | null>(null);
@@ -104,6 +108,7 @@ export function GuestRoomsDashboard({
     initialSnapshot.range.to,
   );
 
+  const [checkoutBooking, setCheckoutBooking] = useState<Booking | null>(null);
   const ui = useAppSelector(selectGuestRoomsUi);
   const cursor = useMemo(() => monthDate(ui.calendarMonth), [ui.calendarMonth]);
   const gridStart = useMemo(
@@ -151,6 +156,20 @@ export function GuestRoomsDashboard({
   const bookingWithBill = useAppSelector((state) =>
     selectBookingDetail(state, ui.billBookingId),
   );
+  const snapshotTariff =
+    'guestFoodPerNight' in initialSnapshot
+      ? (initialSnapshot as GuestRoomsSnapshot & { guestFoodPerNight?: number })
+          .guestFoodPerNight
+      : undefined;
+  const foodTariff =
+    guestFoodPerNight ??
+    snapshotTariff ??
+    resolveGuestFoodPerNight(undefined, bookingWithBill?.unit) ??
+    resolveGuestFoodPerNight(undefined, selectedBooking?.unit) ??
+    resolveGuestFoodPerNight(undefined, checkoutBooking?.unit) ??
+    bookings
+      .map((booking) => resolveGuestFoodPerNight(undefined, booking.unit))
+      .find((rate) => rate != null);
 
   useEffect(() => {
     const key = `${initialSnapshot.unitId}:${initialSnapshot.range.from}:${initialSnapshot.range.to}:${initialSnapshot.fetchedAt}`;
@@ -196,11 +215,14 @@ export function GuestRoomsDashboard({
       'Checked in',
     );
 
-  const handleCheckOut = (bookingId: string) =>
-    runBookingAction(
-      () => dispatch(checkOutBooking(unitId, bookingId)),
-      'Checked out',
-    );
+  const handleCheckOut = (bookingId: string) => {
+    const b =
+      bookings.find((item) => item.id === bookingId) ??
+      (selectedBooking?.id === bookingId ? selectedBooking : null);
+    if (b) {
+      setCheckoutBooking(b);
+    }
+  };
 
   const handleCancel = (bookingId: string) => {
     if (!confirm('Cancel this booking?')) return;
@@ -390,6 +412,7 @@ export function GuestRoomsDashboard({
         onClose={() => dispatch(closeBookingForm())}
         booking={ui.formBooking}
         unitId={unitId}
+        guestFoodPerNight={foodTariff}
       />
 
       <BillingDialog
@@ -397,6 +420,7 @@ export function GuestRoomsDashboard({
         onClose={() => dispatch(closeBillDialog())}
         booking={bookingWithBill}
         bookingId={ui.billBookingId}
+        guestFoodPerNight={foodTariff}
       />
 
       <RoomForm
@@ -410,6 +434,18 @@ export function GuestRoomsDashboard({
         room={selectedRoom}
         furnitureCatalogue={furnitureCatalogue}
         unitId={unitId}
+      />
+
+      <CheckoutDialog
+        open={!!checkoutBooking}
+        onClose={() => setCheckoutBooking(null)}
+        booking={checkoutBooking}
+        unitId={unitId}
+        guestFoodPerNight={foodTariff}
+        onSuccess={() => {
+          setCheckoutBooking(null);
+          dispatch(closeBookingDetails());
+        }}
       />
     </div>
   );
@@ -581,7 +617,10 @@ function WorklistGroup({
                   {booking.guest_name}
                 </span>
                 <span className="block truncate text-xs text-muted-foreground">
-                  {booking.room?.name ?? 'Room'} · {booking.status.replace('_', ' ')}
+                  {booking.room?.name ?? 'Room'} · {settlementLabel(booking.settlement_type)}
+                  {formatHost(booking.host_profile)
+                    ? ` · ${formatHost(booking.host_profile)}`
+                    : ''}
                 </span>
               </button>
               {pending ? (

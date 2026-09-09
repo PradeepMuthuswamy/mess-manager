@@ -138,6 +138,12 @@ export async function MastersView({
           {heading}
         </h1>
         <p className="text-sm text-muted-foreground">{description}</p>
+        {user.activeUnitId && !allowGlobal ? (
+          <p className="text-sm text-muted-foreground">
+            Search the global catalog and adopt variants. This unit does not
+            create products — local SKU and menu rate stay on the unit.
+          </p>
+        ) : null}
       </div>
 
       <MastersCategoryNav active={slug} basePath={basePath} slugs={allowedSlugs} />

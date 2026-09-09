@@ -38,6 +38,7 @@ import type {
   CreateRoomInput,
   UpdateBookingInput,
   UpdateRoomInput,
+  CheckOutBookingInput,
 } from '@/lib/schemas/guest-rooms';
 import {
   cancelBookingAction,
@@ -299,8 +300,31 @@ export function checkInBooking(unitId: string, bookingId: string): AppThunk<Prom
   return bookingStatusThunk('check-in', unitId, bookingId, checkInAction);
 }
 
-export function checkOutBooking(unitId: string, bookingId: string): AppThunk<Promise<Booking>> {
-  return bookingStatusThunk('check-out', unitId, bookingId, checkOutAction);
+export function checkOutBooking(
+  unitId: string,
+  input: string | CheckOutBookingInput,
+): AppThunk<Promise<Booking>> {
+  const bookingId = typeof input === 'string' ? input : input.booking_id;
+  return async (dispatch) => {
+    const key = bookingActionKey('check-out', bookingId);
+    dispatch(pendingActionStarted(key));
+    try {
+      const result = await checkOutAction(input);
+      const booking = await commitBookingMutation(dispatch, unitId, result);
+      dispatch(requestSucceeded(key));
+      return booking;
+    } catch (error) {
+      dispatch(
+        requestFailed({
+          key,
+          error: error instanceof Error ? error.message : 'Failed to check-out',
+        }),
+      );
+      throw error;
+    } finally {
+      dispatch(pendingActionFinished(key));
+    }
+  };
 }
 
 export function cancelBooking(unitId: string, bookingId: string): AppThunk<Promise<Booking>> {

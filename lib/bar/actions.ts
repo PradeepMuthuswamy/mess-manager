@@ -35,8 +35,21 @@ export async function createBarChitCore(
   // Normalize peg quantities/rates to bottle units
   const normalizedItems = [];
   for (const item of items) {
+    const adopted = await isAdoptedVariant(supabase, unit_id, item.variant_id);
+    if (!adopted) {
+      return { error: `${item.name} is not an adopted catalog item for this unit` };
+    }
+
     let quantity = item.quantity;
     let rate = item.rate;
+
+    if (rate == null || rate === 0) {
+      const menuRate = await getLatestMenuRate(supabase, unit_id, item.variant_id, date);
+      if (menuRate == null || menuRate === 0) {
+        return { error: `No menu rate set for ${item.name}` };
+      }
+      rate = menuRate;
+    }
 
     if (item.unit === 'peg') {
       const { data: variant, error: varErr } = await supabase
@@ -65,11 +78,13 @@ export async function createBarChitCore(
 
       const pegsPerBottle = volumeMl / 30;
       quantity = item.quantity / pegsPerBottle;
-      rate = item.rate * pegsPerBottle;
+      rate = rate * pegsPerBottle;
     }
 
     normalizedItems.push({
-      ...item,
+      variant_id: item.variant_id,
+      lot_id: item.lot_id,
+      name: item.name,
       quantity,
       rate,
     });
@@ -161,10 +176,10 @@ export async function createBarChitCore(
     }
 
     // Prioritize depletion of the explicitly selected lot
-    if ((item as any).lot_id) {
+    if (item.lot_id) {
       lots.sort((a, b) => {
-        if (a.id === (item as any).lot_id) return -1;
-        if (b.id === (item as any).lot_id) return 1;
+        if (a.id === item.lot_id) return -1;
+        if (b.id === item.lot_id) return 1;
         return 0;
       });
     }
@@ -212,6 +227,43 @@ export async function createBarChitCore(
   }
 
   return { ok: true, id: chitId };
+}
+
+async function isAdoptedVariant(
+  supabase: SupabaseClient<Database>,
+  unitId: string,
+  variantId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('unit_catalog')
+    .select('id')
+    .eq('unit_id', unitId)
+    .eq('variant_id', variantId)
+    .eq('is_enabled', true)
+    .maybeSingle();
+
+  return !error && data != null;
+}
+
+/** Latest committee sale rate as of the chit date. Snapshot this onto bar_chit_items — never rewrite later. */
+async function getLatestMenuRate(
+  supabase: SupabaseClient<Database>,
+  unitId: string,
+  variantId: string,
+  asOfDate: string,
+): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('unit_menu_rates')
+    .select('rate')
+    .eq('unit_id', unitId)
+    .eq('variant_id', variantId)
+    .lte('effective_from', asOfDate)
+    .order('effective_from', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || data == null) return null;
+  return Number(data.rate);
 }
 
 export async function createBarChitAction(

@@ -27,7 +27,8 @@ export default async function DailyConsumptionPage({
             Daily Consumption
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Track and commit daily unit ration consumption based on dining strength.
+            Post daily ration consumption from finalized dining strength. A
+            successful post updates the stock ledger.
           </p>
         </header>
         <EmptyState
@@ -60,7 +61,8 @@ export default async function DailyConsumptionPage({
             Daily Consumption
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Track and commit daily unit ration consumption based on dining strength.
+            Post daily ration consumption from finalized dining strength. A
+            successful post updates the stock ledger.
           </p>
         </div>
         <DateSelector date={date} />

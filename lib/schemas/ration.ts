@@ -34,6 +34,40 @@ export const RATION_TERRAIN_LABEL: Record<RationTerrain, string> = {
   sea: 'Sea',
 };
 
+export const rationStockTxTypeEnum = [
+  'receipt',
+  'adjustment',
+  'return_to_source',
+  'consumption',
+] as const;
+
+export const rationStockSourceEnum = [
+  'canteen',
+  'local',
+  'govt_issue',
+  'other',
+] as const;
+
+export type RationStockTxType = (typeof rationStockTxTypeEnum)[number];
+export type RationStockSource = (typeof rationStockSourceEnum)[number];
+
+export const rationStockTxTypeSchema = z.enum(rationStockTxTypeEnum);
+export const rationStockSourceSchema = z.enum(rationStockSourceEnum);
+
+export const RATION_STOCK_TX_TYPE_LABEL: Record<RationStockTxType, string> = {
+  receipt: 'Receipt',
+  adjustment: 'Adjustment',
+  return_to_source: 'Return to Source',
+  consumption: 'Consumption',
+};
+
+export const RATION_STOCK_SOURCE_LABEL: Record<RationStockSource, string> = {
+  canteen: 'Canteen',
+  local: 'Local',
+  govt_issue: 'Govt Issue',
+  other: 'Other',
+};
+
 export const createScaleSchema = z
   .object({
     unit_id: z.string().uuid(),
@@ -100,19 +134,54 @@ export const saveDailyConsumptionSchema = z.object({
   items: z.array(dailyConsumptionInputSchema),
 });
 
-export const createRationStockTransactionSchema = z.object({
-  unit_id: z.string().uuid(),
-  variant_id: z.string().uuid(),
-  transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  type: z.enum(['receipt', 'adjustment', 'return_to_source']),
-  quantity: z.coerce.number().positive(),
-  rate: z.coerce.number().nonnegative(),
-  amount: z.coerce.number().nonnegative(),
-  source: z.string().trim().max(100).optional(),
-  notes: z.string().trim().max(300).optional(),
-});
+const optionalStockSourceSchema = z.preprocess(
+  (val) => (val === '' || val == null ? undefined : val),
+  rationStockSourceSchema.optional(),
+);
+
+export const createRationStockTransactionSchema = z
+  .object({
+    unit_id: z.string().uuid(),
+    variant_id: z.string().uuid(),
+    transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    type: rationStockTxTypeSchema,
+    quantity: z.coerce.number().refine((n) => Number.isFinite(n), 'Quantity must be a finite number'),
+    rate: z.coerce.number().nonnegative(),
+    amount: z.coerce.number().nonnegative(),
+    // Zod enum; persisted on the text `source` column.
+    source: optionalStockSourceSchema,
+    notes: z.string().trim().max(300).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.type === 'adjustment') {
+      if (val.quantity === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['quantity'],
+          message: 'Adjustment quantity must be a non-zero signed number',
+        });
+      }
+      return;
+    }
+    if (val.quantity <= 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['quantity'],
+        message: 'Quantity must be positive',
+      });
+    }
+  })
+  .openapi('CreateRationStockTransactionInput');
+
+export const rationMonthlyNetReportQuerySchema = z
+  .object({
+    unit_id: z.string().uuid(),
+    year: z.coerce.number().int().min(2000).max(2100),
+    month: z.coerce.number().int().min(1).max(12),
+  })
+  .openapi('RationMonthlyNetReportQuery');
 
 export type DailyConsumptionInput = z.infer<typeof dailyConsumptionInputSchema>;
 export type SaveDailyConsumptionInput = z.infer<typeof saveDailyConsumptionSchema>;
 export type CreateRationStockTransactionInput = z.infer<typeof createRationStockTransactionSchema>;
-
+export type RationMonthlyNetReportQuery = z.infer<typeof rationMonthlyNetReportQuerySchema>;

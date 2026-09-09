@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -69,6 +70,8 @@ export function UnitSettingsCard({
   messType,
   terrain,
   messingBillingMode,
+  guestFoodPerNight,
+  autoRationPost,
   activeFlatRates,
   flatRatesHistory,
 }: {
@@ -77,6 +80,8 @@ export function UnitSettingsCard({
   messType: MessType | null;
   terrain: RationTerrain | null;
   messingBillingMode: MessingBillingMode;
+  guestFoodPerNight: number;
+  autoRationPost: boolean;
   activeFlatRates: Record<MessingMealType, number>;
   flatRatesHistory: Array<{
     id: string;
@@ -94,14 +99,22 @@ export function UnitSettingsCard({
   const [billingMode, setBillingMode] = useState<MessingBillingMode>(
     messingBillingMode,
   );
+  const [guestFood, setGuestFood] = useState(String(guestFoodPerNight));
+  const [autoRation, setAutoRation] = useState(autoRationPost);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isUpdatingRates, setIsUpdatingRates] = useState(false);
   const [pending, startTransition] = useTransition();
 
+  const guestFoodValue = Number(guestFood);
+  const guestFoodDirty =
+    Number.isFinite(guestFoodValue) && guestFoodValue !== guestFoodPerNight;
+
   const dirty =
     mess !== (messType ?? undefined) ||
     terr !== (terrain ?? undefined) ||
-    billingMode !== messingBillingMode;
+    billingMode !== messingBillingMode ||
+    guestFoodDirty ||
+    autoRation !== autoRationPost;
 
   function save() {
     startTransition(async () => {
@@ -110,6 +123,10 @@ export function UnitSettingsCard({
         mess_type: mess,
         terrain: terr,
         messing_billing_mode: billingMode,
+        guest_food_per_night: Number.isFinite(guestFoodValue)
+          ? guestFoodValue
+          : guestFoodPerNight,
+        auto_ration_post: autoRation,
       });
       if ('ok' in res) {
         toast.success('Unit settings saved');
@@ -159,8 +176,7 @@ export function UnitSettingsCard({
       <CardHeader className="border-b">
         <CardTitle>Unit settings</CardTitle>
         <CardDescription>
-          Mess type, terrain, and messing billing mode for {unitName}. Together these determine the
-          unit&apos;s configuration and rate settings.
+          Mess type, terrain, billing mode, guest-food tariff, and ration auto-post for {unitName}.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -218,6 +234,44 @@ export function UnitSettingsCard({
                 <SelectItem value="P_REGISTER_SPLIT">P Register Split</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label htmlFor="guest-food" className="text-sm font-medium">
+              Guest food / night
+            </Label>
+            <Input
+              id="guest-food"
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={guestFood}
+              disabled={pending}
+              onChange={(e) => setGuestFood(e.target.value)}
+              className="transition-ds"
+            />
+            <p className="text-xs text-muted-foreground">
+              Tariff charged on guest-room folios. Default ₹900.
+            </p>
+          </div>
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-border bg-muted/40 p-3">
+            <div className="space-y-1">
+              <Label htmlFor="auto-ration-post" className="text-sm font-medium">
+                Auto-post ration
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                When on, finalized attendance may post daily ration consumption.
+              </p>
+            </div>
+            <Switch
+              id="auto-ration-post"
+              checked={autoRation}
+              disabled={pending}
+              onCheckedChange={setAutoRation}
+            />
           </div>
         </div>
 

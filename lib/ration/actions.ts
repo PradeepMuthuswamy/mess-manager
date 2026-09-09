@@ -2,16 +2,21 @@
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import { requireCapability } from '@/lib/auth/require-capability';
+import { requireUser } from '@/lib/auth/require-role';
+import { requireCapability, userHasCapability } from '@/lib/auth/require-capability';
 import {
   createScaleSchema,
   updateScaleSchema,
   upsertScaleItemSchema,
   bulkUpdateScaleItemsSchema,
+  saveDailyConsumptionSchema,
+  createRationStockTransactionSchema,
 } from '@/lib/schemas/ration';
 import { bulkImportScaleRowSchema, type BulkImportScaleRow } from './bulk-import';
 import type { Database } from '@/lib/supabase/database.types';
 import type { RationScaleItemVersionRow } from './types';
+
+type Sb = Awaited<ReturnType<typeof createClient>>;
 
 type RationScaleUpdate = Database['public']['Tables']['ration_scales']['Update'];
 
@@ -25,6 +30,84 @@ export type BulkImportScaleResult = {
 function revalidateRation(scaleId?: string) {
   revalidatePath('/ration');
   if (scaleId) revalidatePath(`/ration/scales/${scaleId}`);
+}
+
+function revalidateRationLedger() {
+  revalidatePath('/ration');
+  revalidatePath('/ration/consumption');
+  revalidatePath('/ration/ledger');
+}
+
+/** Post/rollback accept either issue (Mess Havildar) or adjust. requireCapability redirects, it does not throw. */
+async function requireRationIssueOrAdjust(unitId: string) {
+  const user = await requireUser();
+  const cap = userHasCapability(user, 'ration.issue', unitId)
+    ? 'ration.issue'
+    : 'ration.adjust';
+  await requireCapability(cap, unitId);
+}
+
+async function assertAttendanceFinalized(
+  supabase: Sb,
+  unitId: string,
+  date: string,
+): Promise<{ error: string } | null> {
+  const { data: day, error } = await supabase
+    .from('attendance_days')
+    .select('status')
+    .eq('unit_id', unitId)
+    .eq('attendance_date', date)
+    .maybeSingle();
+  if (error) return { error: error.message };
+  if (!day) {
+    return {
+      error:
+        'Attendance for this date is missing. Finalize attendance before posting ration consumption.',
+    };
+  }
+  if (day.status !== 'finalized') {
+    return {
+      error:
+        'Attendance for this date is still draft. Finalize attendance before posting ration consumption.',
+    };
+  }
+  return null;
+}
+
+async function lastReceiptRateByVariant(
+  supabase: Sb,
+  unitId: string,
+  variantIds: string[],
+): Promise<Map<string, number>> {
+  const rates = new Map<string, number>();
+  if (variantIds.length === 0) return rates;
+  const { data } = await supabase
+    .from('ration_stock_transactions')
+    .select('variant_id, rate')
+    .eq('unit_id', unitId)
+    .eq('type', 'receipt')
+    .in('variant_id', variantIds)
+    .order('transaction_date', { ascending: false })
+    .order('created_at', { ascending: false });
+  for (const row of data ?? []) {
+    if (rates.has(row.variant_id)) continue;
+    const rate = Number(row.rate);
+    rates.set(row.variant_id, Number.isFinite(rate) ? rate : 0);
+  }
+  return rates;
+}
+
+async function deleteConsumptionStockTxs(
+  supabase: Sb,
+  unitId: string,
+  transactionDate: string,
+) {
+  return supabase
+    .from('ration_stock_transactions')
+    .delete()
+    .eq('unit_id', unitId)
+    .eq('transaction_date', transactionDate)
+    .eq('type', 'consumption');
 }
 
 export async function createScaleAction(_prev: unknown, formData: FormData) {
@@ -411,16 +494,15 @@ export async function postDailyRationConsumptionAction(input: {
 
   const { unit_id, consumption_date, items } = parsed.data;
 
+  await requireRationIssueOrAdjust(unit_id);
+
   const supabase = await createClient();
-  try {
-    await requireCapability('ration.issue', unit_id);
-  } catch (e) {
-    try {
-      await requireCapability('ration.adjust', unit_id);
-    } catch (err) {
-      return { error: 'Unauthorized' };
-    }
-  }
+  const attendanceErr = await assertAttendanceFinalized(
+    supabase,
+    unit_id,
+    consumption_date,
+  );
+  if (attendanceErr) return attendanceErr;
 
   const { error } = await supabase
     .from('ration_consumptions')
@@ -431,12 +513,41 @@ export async function postDailyRationConsumptionAction(input: {
         variant_id: i.variant_id,
         quantity: i.quantity,
       })),
-      { onConflict: 'unit_id,consumption_date,variant_id' }
+      { onConflict: 'unit_id,consumption_date,variant_id' },
     );
 
   if (error) return { error: error.message };
 
-  revalidatePath('/ration');
+  if (items.length > 0) {
+    const { error: delTxErr } = await deleteConsumptionStockTxs(
+      supabase,
+      unit_id,
+      consumption_date,
+    );
+    if (delTxErr) return { error: delTxErr.message };
+
+    const rates = await lastReceiptRateByVariant(
+      supabase,
+      unit_id,
+      items.map((i) => i.variant_id),
+    );
+    const { error: insTxErr } = await supabase
+      .from('ration_stock_transactions')
+      .insert(
+        items.map((i) => ({
+          unit_id,
+          variant_id: i.variant_id,
+          transaction_date: consumption_date,
+          type: 'consumption',
+          quantity: Number(i.quantity),
+          rate: rates.get(i.variant_id) ?? 0,
+          amount: 0,
+        })),
+      );
+    if (insTxErr) return { error: insTxErr.message };
+  }
+
+  revalidateRationLedger();
   return { ok: true };
 }
 
@@ -446,17 +557,9 @@ export async function rollbackDailyRationConsumptionAction(input: {
 }): Promise<{ ok?: boolean; error?: string }> {
   if (!input.unit_id || !input.consumption_date) return { error: 'Missing input' };
 
-  const supabase = await createClient();
-  try {
-    await requireCapability('ration.issue', input.unit_id);
-  } catch (e) {
-    try {
-      await requireCapability('ration.adjust', input.unit_id);
-    } catch (err) {
-      return { error: 'Unauthorized' };
-    }
-  }
+  await requireRationIssueOrAdjust(input.unit_id);
 
+  const supabase = await createClient();
   const { error } = await supabase
     .from('ration_consumptions')
     .delete()
@@ -465,7 +568,14 @@ export async function rollbackDailyRationConsumptionAction(input: {
 
   if (error) return { error: error.message };
 
-  revalidatePath('/ration');
+  const { error: txErr } = await deleteConsumptionStockTxs(
+    supabase,
+    input.unit_id,
+    input.consumption_date,
+  );
+  if (txErr) return { error: txErr.message };
+
+  revalidateRationLedger();
   return { ok: true };
 }
 
@@ -480,34 +590,49 @@ export async function createRationStockTransactionAction(input: {
   source?: string;
   notes?: string;
 }): Promise<{ ok?: boolean; error?: string }> {
-  const parsed = createRationStockTransactionSchema.safeParse(input);
+  const quantity = Number(input.quantity);
+  const rate = Number(input.rate);
+  const amount = Number(input.amount);
+  if (!Number.isFinite(quantity) || !Number.isFinite(rate) || !Number.isFinite(amount)) {
+    return { error: 'Invalid input' };
+  }
+  if (input.type === 'adjustment') {
+    if (quantity === 0) return { error: 'Invalid input' };
+  } else if (quantity <= 0) {
+    return { error: 'Invalid input' };
+  }
+
+  // Sibling schema may allow signed adjustment qty, or still require positive().
+  const coerced = { ...input, quantity, rate, amount: Math.abs(amount) };
+  let parsed = createRationStockTransactionSchema.safeParse(coerced);
+  if (!parsed.success && input.type === 'adjustment') {
+    parsed = createRationStockTransactionSchema.safeParse({
+      ...coerced,
+      quantity: Math.abs(quantity),
+    });
+  }
   if (!parsed.success) return { error: 'Invalid input' };
 
-  // Gate capability: require ration.adjust for unit_id
   const { unit_id } = parsed.data;
   await requireCapability('ration.adjust', unit_id);
 
   const supabase = await createClient();
-  const { error } = await supabase
-    .from('ration_stock_transactions')
-    .insert({
-      unit_id,
-      variant_id: parsed.data.variant_id,
-      transaction_date: parsed.data.transaction_date,
-      type: parsed.data.type,
-      quantity: parsed.data.quantity,
-      rate: parsed.data.rate,
-      amount: parsed.data.amount,
-      source: parsed.data.source || null,
-      notes: parsed.data.notes || null,
-    });
+  const { error } = await supabase.from('ration_stock_transactions').insert({
+    unit_id,
+    variant_id: parsed.data.variant_id,
+    transaction_date: parsed.data.transaction_date,
+    type: parsed.data.type,
+    quantity: input.type === 'adjustment' ? quantity : parsed.data.quantity,
+    rate: parsed.data.rate,
+    amount: parsed.data.amount,
+    source: parsed.data.source || null,
+    notes: parsed.data.notes || null,
+  });
 
   if (error) return { error: error.message };
 
-  revalidatePath('/ration');
+  revalidateRationLedger();
   return { ok: true };
 }
-
-import { saveDailyConsumptionSchema, createRationStockTransactionSchema } from '@/lib/schemas/ration';
 
 

@@ -12,6 +12,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { Booking } from '@/lib/guest-rooms/types';
+import { formatHost, settlementLabel } from './folio-helpers';
 
 interface BookingDetailsDialogProps {
   open: boolean;
@@ -86,20 +87,25 @@ export function BookingDetailsDialog({
               </p>
             )}
           </div>
-          <Badge
-            variant={
-              booking.status === 'confirmed'
-                ? 'secondary'
-                : booking.status === 'checked_in'
-                  ? 'default'
-                  : booking.status === 'checked_out'
-                    ? 'outline'
-                    : 'destructive'
-            }
-            className="capitalize text-xs font-semibold px-2 py-0.5"
-          >
-            {booking.status.replace('_', ' ')}
-          </Badge>
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <Badge
+              variant={
+                booking.status === 'confirmed'
+                  ? 'secondary'
+                  : booking.status === 'checked_in'
+                    ? 'default'
+                    : booking.status === 'checked_out'
+                      ? 'outline'
+                      : 'destructive'
+              }
+              className="capitalize text-xs font-semibold px-2 py-0.5"
+            >
+              {booking.status.replace('_', ' ')}
+            </Badge>
+            <Badge variant="outline" className="text-xs font-semibold px-2 py-0.5">
+              {settlementLabel(booking.settlement_type)}
+            </Badge>
+          </div>
         </div>
 
         {/* Clean, simple grid layout for booking metadata */}
@@ -125,6 +131,43 @@ export function BookingDetailsDialog({
             </span>
           </div>
 
+          <div>
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-0.5">
+              Guest Category
+            </span>
+            <span className="font-medium text-foreground">
+              {booking.booking_category === 'MEMBER_GUEST'
+                ? "Member's Personal Guest"
+                : booking.booking_category === 'TRANSIT_OFFICER'
+                  ? 'Transit Officer (Official / TD)'
+                  : booking.booking_category === 'OFFICIAL_DELEGATION'
+                    ? 'Official Delegation / VIP'
+                    : booking.booking_category === 'OUTSIDE_CIVILIAN'
+                      ? 'Outside Civilian / Reciprocal'
+                      : (booking.booking_category ?? 'Standard Guest')}
+            </span>
+          </div>
+
+          <div>
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-0.5">
+              Settlement Preference
+            </span>
+            <span className="font-medium text-foreground">
+              {booking.settlement_type === 'CHARGE_TO_HOST'
+                ? 'Charge to Host Mess Bill'
+                : 'Direct Payment at Departure'}
+            </span>
+          </div>
+
+          <div className="col-span-2 rounded bg-muted/40 p-2.5">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-0.5">
+              Sponsoring Host Officer
+            </span>
+            <span className="font-semibold text-foreground text-xs">
+              {formatHost(booking.host_profile) ?? '—'}
+            </span>
+          </div>
+
           {booking.guest_phone && (
             <div>
               <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-0.5">
@@ -143,6 +186,17 @@ export function BookingDetailsDialog({
               </span>
               <span className="font-medium text-foreground truncate block">
                 {booking.guest_email}
+              </span>
+            </div>
+          )}
+
+          {booking.special_requests && (
+            <div className="col-span-2 rounded bg-accent/30 p-2.5 text-xs">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-0.5">
+                Special Requests / Instructions
+              </span>
+              <span className="text-foreground">
+                {booking.special_requests}
               </span>
             </div>
           )}

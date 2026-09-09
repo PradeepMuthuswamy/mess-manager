@@ -1,37 +1,39 @@
 'use client';
 
-import { useState, useTransition } from 'react';
-import { AdaptiveModal } from "@/components/shared/adaptive-modal"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Separator } from "@/components/ui/separator"
-import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2 } from "lucide-react"
-import { toast } from "sonner"
+import { useEffect, useRef, useState, useTransition } from 'react';
+import { AdaptiveModal } from '@/components/shared/adaptive-modal';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Separator } from '@/components/ui/separator';
+import { Badge } from '@/components/ui/badge';
+import { Plus, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   addBillItemAction,
   deleteBillItemAction,
+  syncBarChitsToRoomBillAction,
   updateBillItemAction,
-} from "@/lib/guest-rooms/actions"
-import type { BookingWithBill } from "@/lib/guest-rooms/types"
+} from '@/lib/guest-rooms/actions';
+import type { BookingWithBill } from '@/lib/guest-rooms/types';
 import { useAppDispatch } from '@/lib/redux/hooks';
 import { fetchBookingDetail } from '@/lib/redux/guest-rooms';
+import {
+  categoryLabel,
+  formatHost,
+  inr,
+  lineTotal,
+  partitionFolioItems,
+  folioTotal,
+  resolveGuestFoodPerNight,
+  settlementLabel,
+} from './folio-helpers';
 
 interface BillingDialogProps {
-  open: boolean
-  onClose: () => void
-  booking: BookingWithBill | null
-  bookingId: string | null
-}
-
-const inr = (n: number) =>
-  `₹${n.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`
-
-function lineTotal(i: { amount: number | string; quantity: number | string }) {
-  return Number(i.amount) * Number(i.quantity)
+  open: boolean;
+  onClose: () => void;
+  booking: BookingWithBill | null;
+  bookingId: string | null;
+  guestFoodPerNight?: number;
 }
 
 export function BillingDialog({
@@ -39,24 +41,68 @@ export function BillingDialog({
   onClose,
   booking,
   bookingId,
+  guestFoodPerNight,
 }: BillingDialogProps) {
+  const dispatch = useAppDispatch();
+  const syncedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      syncedFor.current = null;
+      return;
+    }
+    const id = booking?.id ?? bookingId;
+    if (!id || syncedFor.current === id) return;
+    if (booking?.bill && booking.bill.status !== 'draft') {
+      syncedFor.current = id;
+      return;
+    }
+    if (!booking?.bill) return;
+    syncedFor.current = id;
+
+    let cancelled = false;
+    (async () => {
+      const syncResult = await syncBarChitsToRoomBillAction(id);
+      if (cancelled) return;
+      if (syncResult?.error) {
+        toast.error(syncResult.error);
+        return;
+      }
+      try {
+        await dispatch(fetchBookingDetail(id));
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Failed to refresh folio',
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, booking?.id, booking?.bill, bookingId, dispatch]);
+
   if (!booking) {
-    if (!open) return null
+    if (!open) return null;
 
     return (
       <AdaptiveModal
         open={open}
         onClose={onClose}
         title="Guest Bill"
-        description={bookingId ? "Loading booking bill..." : "No booking selected"}
+        description={bookingId ? 'Loading booking bill...' : 'No booking selected'}
         contentClassName="sm:max-w-4xl max-h-[90vh]"
-        footer={<Button variant="outline" onClick={onClose}>Close</Button>}
+        footer={
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        }
       >
         <p className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
           Loading bill details...
         </p>
       </AdaptiveModal>
-    )
+    );
   }
 
   return (
@@ -65,117 +111,128 @@ export function BillingDialog({
       open={open}
       onClose={onClose}
       booking={booking}
+      guestFoodPerNight={guestFoodPerNight}
     />
-  )
+  );
 }
 
 function billVersionKey(booking: BookingWithBill) {
-  const bill = booking.bill
-  if (!bill) return `${booking.id}:no-bill`
+  const bill = booking.bill;
+  if (!bill) return `${booking.id}:no-bill`;
   const itemVersion = (bill.items ?? [])
-    .map((item) => `${item.id}:${item.amount}:${item.quantity}:${item.description}`)
-    .join('|')
+    .map(
+      (item) =>
+        `${item.id}:${item.category}:${item.amount}:${item.quantity}:${item.description}`,
+    )
+    .join('|');
   const orderVersion = (bill.orders ?? [])
     .map((order) => `${order.id}:${order.items?.length ?? 0}`)
-    .join('|')
-  return `${booking.id}:${bill.status}:${itemVersion}:${orderVersion}`
+    .join('|');
+  return `${booking.id}:${bill.status}:${itemVersion}:${orderVersion}`;
 }
 
 function BillingDialogContent({
   open,
   onClose,
   booking,
+  guestFoodPerNight,
 }: {
-  open: boolean
-  onClose: () => void
-  booking: BookingWithBill
+  open: boolean;
+  onClose: () => void;
+  booking: BookingWithBill;
+  guestFoodPerNight?: number;
 }) {
-  const dispatch = useAppDispatch()
-  const [pending, startTransition] = useTransition()
+  const dispatch = useAppDispatch();
+  const [pending, startTransition] = useTransition();
 
-  const bill = booking.bill ?? null
-  const isDraft = bill?.status === "draft"
-  const flat = bill?.items ?? []
-  const orders = bill?.orders ?? []
+  const bill = booking.bill ?? null;
+  const isDraft = bill?.status === 'draft';
+  const { rent, food, bar, other } = partitionFolioItems(bill?.items ?? []);
+  const orders = bill?.orders ?? [];
+  const hostName = formatHost(booking.host_profile);
+  const foodTariff = resolveGuestFoodPerNight(
+    guestFoodPerNight,
+    booking.unit,
+  );
+  const defaultFoodRate =
+    foodTariff != null ? String(foodTariff) : food ? String(food.amount) : '';
 
-  const rentItem = flat.find((i) => i.category === "room_rent")
-  const baseFoodItem = flat.find((i) => i.category === "food" && i.meal_type === null)
-
-  // Form states for permanent entries
   const [roomRentAmount, setRoomRentAmount] = useState(
-    rentItem ? String(rentItem.amount) : "0",
-  )
+    rent ? String(rent.amount) : '0',
+  );
   const [roomRentQty, setRoomRentQty] = useState(
-    rentItem ? String(rentItem.quantity) : "0",
-  )
-  const [foodAmount, setFoodAmount] = useState(
-    baseFoodItem ? String(baseFoodItem.amount) : "900",
-  )
-  const [foodQty, setFoodQty] = useState(
-    baseFoodItem ? String(baseFoodItem.quantity) : "0",
-  )
+    rent ? String(rent.quantity) : '0',
+  );
+  const [foodAmount, setFoodAmount] = useState(defaultFoodRate);
+  const [foodQty, setFoodQty] = useState(food ? String(food.quantity) : '0');
+  const [extra_, setExtra] = useState({
+    description: '',
+    amount: '',
+    quantity: '1',
+  });
 
-  // Form state for dynamic misc entries
-  const [extra_, setExtra] = useState({ description: "", amount: "", quantity: "1" })
-
-  // Miscellaneous extra items: anything that isn't the primary rent item or the primary base food item
-  const miscItems = flat.filter(
-    (i) => i.id !== rentItem?.id && i.id !== baseFoodItem?.id
-  )
-
-  const total =
-    flat.reduce((s, i) => s + lineTotal(i), 0) +
-    orders.reduce(
-      (s, o) => s + (o.items ?? []).reduce((t, i) => t + lineTotal(i), 0),
-      0,
-    )
+  const total = folioTotal(bill?.items ?? [], orders);
 
   async function refreshCurrent() {
-    await dispatch(fetchBookingDetail(booking.id))
+    await dispatch(fetchBookingDetail(booking.id));
   }
 
   function run(fn: () => Promise<{ ok?: boolean; error?: string }>, ok: string) {
     startTransition(async () => {
-      const res = await fn()
+      const res = await fn();
       if (res.error) {
-        toast.error(res.error)
-        return
+        toast.error(res.error);
+        return;
       }
-      toast.success(ok)
+      toast.success(ok);
       try {
-        await refreshCurrent()
+        await refreshCurrent();
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to refresh bill")
+        toast.error(
+          error instanceof Error ? error.message : 'Failed to refresh bill',
+        );
       }
-    })
+    });
   }
 
   const handleUpdatePermanentItems = async () => {
-    if (!bill) return
+    if (!bill) return;
     startTransition(async () => {
       try {
-        if (rentItem) {
-          await updateBillItemAction(rentItem.id, Number(roomRentAmount) || 0, Number(roomRentQty) || 0)
+        if (rent) {
+          await updateBillItemAction(
+            rent.id,
+            Number(roomRentAmount) || 0,
+            Number(roomRentQty) || 0,
+          );
         }
-        if (baseFoodItem) {
-          await updateBillItemAction(baseFoodItem.id, Number(foodAmount) || 0, Number(foodQty) || 0)
+        if (food) {
+          await updateBillItemAction(
+            food.id,
+            Number(foodAmount) || 0,
+            Number(foodQty) || 0,
+          );
         }
-        toast.success("Rates and quantities updated successfully")
-        await refreshCurrent()
+        toast.success('Rates and quantities updated successfully');
+        await refreshCurrent();
       } catch {
-        toast.error("Failed to update rates")
+        toast.error('Failed to update rates');
       }
-    })
-  }
+    });
+  };
 
   return (
     <AdaptiveModal
       open={open}
       onClose={onClose}
       title="Guest Bill"
-      description={`${booking.guest_name} · Room ${booking.room?.name ?? ""}`}
+      description={`${booking.guest_name} · Room ${booking.room?.name ?? ''}`}
       contentClassName="sm:max-w-4xl max-h-[90vh]"
-      footer={<Button variant="outline" onClick={onClose}>Close</Button>}
+      footer={
+        <Button variant="outline" onClick={onClose}>
+          Close
+        </Button>
+      }
     >
       <div className="space-y-6 py-4">
         {!bill ? (
@@ -184,10 +241,28 @@ function BillingDialogContent({
           </p>
         ) : (
           <>
-            <div className="flex items-center justify-between">
-              <Badge variant={isDraft ? "secondary" : "default"} className="capitalize">
-                {bill.status}
-              </Badge>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant={isDraft ? 'secondary' : 'default'}
+                    className="capitalize"
+                  >
+                    {bill.status}
+                  </Badge>
+                  <Badge variant="outline">
+                    {settlementLabel(
+                      bill.settlement_type ?? booking.settlement_type,
+                    )}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Host:{' '}
+                  <span className="font-medium text-foreground">
+                    {hostName ?? '—'}
+                  </span>
+                </p>
+              </div>
               <div className="text-right">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">
                   Total
@@ -198,12 +273,11 @@ function BillingDialogContent({
               </div>
             </div>
 
-            {/* Permanent entries: Accommodation & Food */}
             <section className="space-y-4">
               <h4 className="text-sm font-semibold text-foreground font-heading">
                 Accommodation & Food Rates
               </h4>
-              
+
               <div className="rounded-lg border border-border overflow-hidden bg-background">
                 <div className="grid grid-cols-12 gap-3 bg-muted/50 px-4 py-2.5 text-xs font-semibold text-muted-foreground border-b uppercase tracking-wider">
                   <div className="col-span-5">Item Description</div>
@@ -213,7 +287,6 @@ function BillingDialogContent({
                 </div>
 
                 <div className="divide-y divide-border">
-                  {/* Accommodation Row */}
                   <div className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
                     <div className="col-span-5 text-sm font-medium text-foreground">
                       Accommodation (Room Rent)
@@ -237,14 +310,22 @@ function BillingDialogContent({
                       />
                     </div>
                     <div className="col-span-3 text-right font-mono text-sm font-semibold text-foreground">
-                      {inr(Number(roomRentAmount || 0) * Number(roomRentQty || 0))}
+                      {inr(
+                        Number(roomRentAmount || 0) * Number(roomRentQty || 0),
+                      )}
                     </div>
                   </div>
 
-                  {/* Food Row */}
                   <div className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
-                    <div className="col-span-5 text-sm font-medium text-foreground">
-                      Food (All Meals Included)
+                    <div className="col-span-5">
+                      <p className="text-sm font-medium text-foreground">
+                        Food (All Meals Included)
+                      </p>
+                      {foodTariff != null ? (
+                        <p className="text-[11px] text-muted-foreground">
+                          Unit guest food tariff: {inr(foodTariff)} / night
+                        </p>
+                      ) : null}
                     </div>
                     <div className="col-span-2">
                       <Input
@@ -278,7 +359,7 @@ function BillingDialogContent({
                     disabled={pending}
                     onClick={handleUpdatePermanentItems}
                   >
-                    {pending ? "Updating..." : "Save Rates & Stay"}
+                    {pending ? 'Updating...' : 'Save Rates & Stay'}
                   </Button>
                 </div>
               )}
@@ -286,29 +367,55 @@ function BillingDialogContent({
 
             <Separator />
 
-            {/* Extra charges (key/value dynamic form) */}
+            <section className="space-y-4">
+              <h4 className="text-sm font-semibold text-foreground font-heading">
+                Bar
+              </h4>
+              {bar.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic py-2">
+                  No bar charges posted to this folio.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {bar.map((item) => (
+                    <Row
+                      key={item.id}
+                      label={item.description}
+                      meta={`${categoryLabel(item.category)} · ${item.quantity} × ${inr(Number(item.amount))}`}
+                      value={inr(lineTotal(item))}
+                      pending={pending}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <Separator />
+
             <section className="space-y-4">
               <h4 className="text-sm font-semibold text-foreground font-heading">
                 Additional Charges
               </h4>
-              
+
               <div className="space-y-2">
-                {miscItems.length === 0 ? (
-                  <p className="text-xs text-muted-foreground italic py-2">No additional charges recorded.</p>
+                {other.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic py-2">
+                    No additional charges recorded.
+                  </p>
                 ) : (
                   <div className="space-y-2">
-                    {miscItems.map((i) => (
+                    {other.map((item) => (
                       <Row
-                        key={i.id}
-                        label={i.description}
-                        meta={`${i.quantity} × ${inr(Number(i.amount))}`}
-                        value={inr(lineTotal(i))}
+                        key={item.id}
+                        label={item.description}
+                        meta={`${categoryLabel(item.category)} · ${item.quantity} × ${inr(Number(item.amount))}`}
+                        value={inr(lineTotal(item))}
                         onDelete={
                           isDraft
                             ? () =>
                                 run(
-                                  () => deleteBillItemAction(i.id),
-                                  "Item removed",
+                                  () => deleteBillItemAction(item.id),
+                                  'Item removed',
                                 )
                             : undefined
                         }
@@ -346,24 +453,26 @@ function BillingDialogContent({
                     <Button
                       size="sm"
                       className="w-full h-9"
-                      disabled={pending || !extra_.description.trim() || !extra_.amount}
+                      disabled={
+                        pending || !extra_.description.trim() || !extra_.amount
+                      }
                       onClick={() =>
                         run(async () => {
                           const r = await addBillItemAction(bill.id, {
-                            category: "misc",
+                            category: 'misc',
                             description: extra_.description,
                             amount: Number(extra_.amount),
                             quantity: 1,
-                          })
+                          });
                           if (r.ok) {
                             setExtra({
-                              description: "",
-                              amount: "",
-                              quantity: "1",
-                            })
+                              description: '',
+                              amount: '',
+                              quantity: '1',
+                            });
                           }
-                          return r
-                        }, "Charge added")
+                          return r;
+                        }, 'Charge added')
                       }
                     >
                       <Plus className="mr-1.5 h-4 w-4 shrink-0" />
@@ -388,7 +497,7 @@ function BillingDialogContent({
         )}
       </div>
     </AdaptiveModal>
-  )
+  );
 }
 
 function Row({
@@ -398,11 +507,11 @@ function Row({
   onDelete,
   pending,
 }: {
-  label: string
-  meta: string
-  value: string
-  onDelete?: () => void
-  pending: boolean
+  label: string;
+  meta: string;
+  value: string;
+  onDelete?: () => void;
+  pending: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-md bg-muted/30 px-3 py-2">
@@ -428,5 +537,5 @@ function Row({
         )}
       </div>
     </div>
-  )
+  );
 }
