@@ -54,7 +54,6 @@ export const POST = withRoute(async (req: NextRequest) => {
   const bodyText = await req.text();
   const rawBody = JSON.parse(bodyText || 'null');
 
-  let unit_id: string | null = null;
   let category_id = '';
   let name = '';
   let description: string | null = null;
@@ -67,7 +66,6 @@ export const POST = withRoute(async (req: NextRequest) => {
     const parsed = createItemApiSchema.safeParse(rawBody);
     if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-    unit_id = parsed.data.unit_id ?? null;
     category_id = parsed.data.category_id;
     name = parsed.data.name;
     description = parsed.data.description ?? null;
@@ -100,7 +98,6 @@ export const POST = withRoute(async (req: NextRequest) => {
       throw Errors.validation({ formErrors: ['Missing name, category or uom in payload'] });
     }
 
-    unit_id = rawBody.unit_id ?? null;
     category_id = CATEGORY_ID_MAP[rawBody.category] ?? '00000000-0000-0000-0000-000000000006';
     name = String(rawBody.name);
     description = rawBody.notes ? String(rawBody.notes) : null;
@@ -123,7 +120,6 @@ export const POST = withRoute(async (req: NextRequest) => {
   const { data: productRow, error: prodErr } = await ctx.admin
     .from('products')
     .insert({
-      unit_id: unit_id ?? null,
       category_id,
       name,
       description,
@@ -153,7 +149,7 @@ export const POST = withRoute(async (req: NextRequest) => {
 
   const resData = {
     id: variantRow.id,
-    unit_id: productRow.unit_id,
+    unit_id: null,
     category_id: productRow.category_id,
     name: productRow.name,
     sku: variantRow.sku,

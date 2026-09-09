@@ -31,7 +31,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
   const { data: productRow } = await ctx.supabase
     .from('products')
-    .select('id, unit_id, category_id, name, description')
+    .select('id, category_id, name, description')
     .eq('id', variantRow.product_id)
     .maybeSingle();
   if (!productRow) throw Errors.notFound();
@@ -114,7 +114,7 @@ export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
   const { data: productRow } = await ctx.supabase
     .from('products')
-    .select('unit_id')
+    .select('id')
     .eq('id', variantRow.product_id)
     .maybeSingle();
   if (!productRow) throw Errors.notFound();
