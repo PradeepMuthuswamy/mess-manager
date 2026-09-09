@@ -14,6 +14,9 @@ Multi-tenant SaaS for Indian Officers' Messes. One **unit** = one mess. Two apps
 | **Ops** (this repo) | Daily operations — bar, rooms, ration, messing, billing |
 | **Admin** (companion) | Platform catalog, multi-unit admin, global ration scales |
 
+**Hosted database (CommandHQ):** project **Mess**, ref `nwrjhxzlnvtubwjuzsxr`, region `ap-northeast-1`, API `https://nwrjhxzlnvtubwjuzsxr.supabase.co`.  
+Retired (do not use for this app): personal project `lscphcinsukrdaoytbsx`.
+
 **Tenant isolation:** RLS on `unit_id` + `requireCapability()` on every server action.
 
 ---
@@ -189,16 +192,20 @@ Details: phase gap registers in [`phases/`](./phases/).
 
 ---
 
-## 6. Pending migrations (remote)
+## 6. Hosted project & migrations
 
-Apply before phase work (backup first):
+| Field | Value |
+|-------|-------|
+| Organization | CommandHQ (`emelkfhaakjjsylxdyai`) |
+| Project name | Mess |
+| Project ref | `nwrjhxzlnvtubwjuzsxr` |
+| Region | `ap-northeast-1` |
+| API URL | `https://nwrjhxzlnvtubwjuzsxr.supabase.co` |
+| Postgres | `db.nwrjhxzlnvtubwjuzsxr.supabase.co` |
 
-| Migration | Adds |
-|-----------|------|
-| `20260613000000_messing_billing_flat_rates.sql` | Flat rates, billing mode |
-| `20260614000000_messing_kitchen_and_monthly_billing.sql` | Kitchen, P-rates, mess bills |
-| `20260615000000_guest_rooms_saas_enhancements.sql` | Host, settlement on room bills |
-| ✅ `20260909183414_catalog_foundation_reset.sql` | Phase 0 applied — `unit_catalog`, `unit_menu_rates`, `name_normalized`; `products.unit_id` dropped |
+This project starts **empty**. Apply every file in `supabase/migrations/` in filename order (through `20260909183421_ration_ledger_foundation.sql`). Local Docker remains for offline work (`npm run db:start`).
+
+`.env.local` for hosted: `NEXT_PUBLIC_SUPABASE_URL=https://nwrjhxzlnvtubwjuzsxr.supabase.co` plus the project's anon and service-role keys from the CommandHQ dashboard.
 
 ---
 

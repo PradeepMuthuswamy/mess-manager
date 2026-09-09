@@ -22,7 +22,7 @@ If you finish or change scope, update the memory **and** the task list before en
 
 This is the client application (`officers-mess-user`) focused on per-unit, officer-facing operations (Messing, Attendance, Ration issuing, Bar consumption, Guest rooms, Parties, Billing, local Inventory lots, and Settings).
 
-Administrative controls (multi-unit management, capability templates, global audits, global catalog setup) reside in the companion `officer-mess-admin` project. Both applications share the same remote Supabase database (`lscphcinsukrdaoytbsx`). Database migrations, TypeScript database types (`database.types.ts`), Zod schemas, and core masters actions/queries must be kept synchronized across both codebases.
+Administrative controls (multi-unit management, capability templates, global audits, global catalog setup) reside in the companion `officer-mess-admin` project. Both applications share the same remote Supabase database — **CommandHQ / Mess** (`nwrjhxzlnvtubwjuzsxr`, `https://nwrjhxzlnvtubwjuzsxr.supabase.co`). Database migrations, TypeScript database types (`database.types.ts`), Zod schemas, and core masters actions/queries must be kept synchronized across both codebases.
 
 **Stack:** Next.js 16.2 (App Router, React 19) · Supabase (Postgres + Auth + RLS) · shadcn/ui · Tailwind v4 · TypeScript · zod · Upstash rate limit.
 
@@ -41,10 +41,9 @@ Administrative controls (multi-unit management, capability templates, global aud
 - **Ops pages:** route stubs only — capability-gated landing screens that list what the role unlocks. Real workflows still TODO.
 - **Marketing:** `/` shows "Dashboard" CTA to signed-in users, "Sign in" otherwise.
 
-Migrations applied to remote (`lscphcinsukrdaoytbsx`, 15 total):
-`20260512080001_init` → `20260512080002_units` → `_profiles` → `_items` → `_capabilities` → `_audit` → `_auth_token_hook` → `_rls` → `_views` → `_idempotency` → `0011_app_schema_grants` → `0012_role_templates` → `0013_item_category_room` → `0014_role_lookup_fallback` → `0015_helpers_security_definer`.
+**Hosted database:** CommandHQ org, project **Mess**, ref `nwrjhxzlnvtubwjuzsxr` (ap-northeast-1). See [`docs/FOUNDATION.md`](docs/FOUNDATION.md) §1.
 
-**On disk but NOT applied:** `20260512080013_guest_rooms.sql` (Gemini-written; creates `rooms` / `bookings` / `room_bills` / `room_bill_items` with INSERT/UPDATE policies but no DELETE policies). Patch the policies before applying.
+Local `supabase/migrations/` is the schema source of truth. Apply the full chain to this project (it starts empty). The previous personal project `lscphcinsukrdaoytbsx` is retired for this app.
 
 ## Conventions
 

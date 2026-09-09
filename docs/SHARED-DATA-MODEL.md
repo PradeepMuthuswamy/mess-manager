@@ -9,7 +9,7 @@
 
 ## 1. Ground rules
 
-Both Next.js apps point at **one hosted Supabase project**: `Mess Manager` (ref `lscphcinsukrdaoytbsx`), schema `public`.
+Both Next.js apps point at **one hosted Supabase project**: CommandHQ **Mess** (ref `nwrjhxzlnvtubwjuzsxr`, `https://nwrjhxzlnvtubwjuzsxr.supabase.co`), schema `public`.
 
 1. **The live database is the source of truth. Code adapts to the DB, never the other way round** (no app may "fix" itself by changing the schema unilaterally).
 2. **Migrations live in BOTH repos, byte-identical**, under `supabase/migrations/`. The same 42 files (`20260512080001_init.sql` … `20260605000000_bar_chits.sql`) must exist in both. A migration added in one repo is copied verbatim into the other.
@@ -269,7 +269,7 @@ RLS summary (masters/ration): `products`/`product_variants` are global (readable
 
 ## 9. Sync rules
 
-1. **DB is authoritative.** When code and DB disagree, the DB wins; fix the code. Introspect the live schema read-only via PostgREST OpenAPI (`GET https://lscphcinsukrdaoytbsx.supabase.co/rest/v1/` with the service-role key) when in doubt.
+1. **DB is authoritative.** When code and DB disagree, the DB wins; fix the code. Introspect the live schema read-only via PostgREST OpenAPI (`GET https://nwrjhxzlnvtubwjuzsxr.supabase.co/rest/v1/` with the service-role key) when in doubt.
 2. **Migrations are mirrored.** `supabase/migrations/` must be file-identical in both repos at all times. Sync by file copy, never by re-authoring.
 3. **Reads of the legacy item shape → `v_items_current`. Masters listing → `v_masters_search`. Current ration items → `v_ration_scale_items_current`.**
 4. **Writes never target views.** Masters mutations hit `products` / `product_variants`; ration mutations call `set_ration_scale_item` (or guarded updates on `ration_scale_item_versions`).

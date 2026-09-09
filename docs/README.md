@@ -10,3 +10,5 @@
 
 **Start here:** [`FOUNDATION.md`](./FOUNDATION.md) for “what we’re building and why.”  
 **Implementing a module:** requirements § + matching phase doc in `phases/`.
+
+**Hosted database:** CommandHQ project **Mess**, ref `nwrjhxzlnvtubwjuzsxr` — [`FOUNDATION.md`](./FOUNDATION.md) §6.
