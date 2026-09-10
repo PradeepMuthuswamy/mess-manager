@@ -1,8 +1,11 @@
 'use server';
 
+import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { requireCapability } from '@/lib/auth/require-capability';
+import { requireUser } from '@/lib/auth/require-role';
+import { userHasCapability } from '@/lib/auth/capabilities';
 import {
   createBillingPeriodSchema,
   runBillingSchema,
@@ -11,15 +14,103 @@ import {
   createSubscriptionSchema,
   createMiscDebitSchema,
 } from '@/lib/schemas/billing';
-import { format, addDays, parseISO } from 'date-fns';
 import type { MessingMealType, MessingBillingMode } from '@/lib/schemas/messing';
 import { getActiveFlatRates } from '@/lib/messing/queries';
 import {
   getBillableBarChitsForPeriod,
+  getBillableGuestMealsForPeriod,
+  getBillableMiscDebitsForPeriod,
+  getBillablePartyChargesForPeriod,
   getHostChargeRoomBillsForPeriod,
   getMessBillDetails,
+  getPriorArrearSourceBills,
+  getRegisterStatusByDate,
 } from './queries';
-import { groupHostChargeRoomBills, groupMemberBarChits } from './compute';
+import {
+  calculateCycleDates,
+  calculateMemberMessingCycle,
+  deriveStandardBillingCycle,
+  filterApprovedPRates,
+  groupHostChargeRoomBills,
+  groupMemberArrears,
+  groupMemberBarChits,
+  isChargeBillableForPeriod,
+  totalMessBillAmount,
+} from './compute';
+import { notifyBillsPublished } from './notify';
+import type { Database } from '@/lib/supabase/database.types';
+
+type MessBillInsert = Database['public']['Tables']['mess_bills']['Insert'];
+type MessBillLineInsert = Database['public']['Tables']['mess_bill_line_items']['Insert'];
+type BillingMark = { is_billed: boolean; billed_period_id: string | null };
+
+const EMPTY_FLAT_RATES: Record<MessingMealType, number> = {
+  breakfast: 0,
+  lunch: 0,
+  dinner: 0,
+  morning_tea: 0,
+  evening_tea: 0,
+  packed_breakfast: 0,
+  packed_lunch: 0,
+  packed_dinner: 0,
+};
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+async function resetChargesForPeriod(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  periodId: string
+): Promise<string | null> {
+  const tables = [
+    'guest_meals',
+    'mess_misc_debits',
+    'mess_party_charges',
+    'room_bills',
+  ] as const;
+  const reset: BillingMark = { is_billed: false, billed_period_id: null };
+
+  for (const table of tables) {
+    const { error } = await (
+      supabase.from(table) as unknown as {
+        update: (values: BillingMark) => {
+          eq: (
+            column: 'billed_period_id',
+            value: string
+          ) => PromiseLike<{ error: { message: string } | null }>;
+        };
+      }
+    )
+      .update(reset)
+      .eq('billed_period_id', periodId);
+    if (error) {
+      return `Failed to unmark ${table} for re-run: ${error.message}`;
+    }
+  }
+  return null;
+}
+
+async function markChargesBilled(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  table: 'guest_meals' | 'mess_misc_debits' | 'mess_party_charges' | 'room_bills',
+  ids: string[],
+  periodId: string
+): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await (
+    supabase.from(table) as unknown as {
+      update: (values: BillingMark) => {
+        in: (column: 'id', values: string[]) => PromiseLike<{ error: { message: string } | null }>;
+      };
+    }
+  )
+    .update({ is_billed: true, billed_period_id: periodId })
+    .in('id', ids);
+  if (error) {
+    console.error(`Failed to mark ${table} billed:`, error.message);
+  }
+}
 
 type ActionResult = { ok: true; data?: unknown } | { error: string; details?: unknown };
 
@@ -70,10 +161,9 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
   }
 
   const { unit_id, billing_period_id } = parsed.data;
-  const user = await requireCapability('billing.draft', unit_id);
+  await requireCapability('billing.draft', unit_id);
   const supabase = await createClient();
 
-  // 1. Fetch the billing period
   const { data: period, error: periodErr } = await supabase
     .from('mess_billing_periods')
     .select('*')
@@ -84,9 +174,19 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     return { error: 'Billing period not found' };
   }
 
-  const { start_date, end_date, billing_year, billing_month } = period;
+  if (period.status === 'published' || period.status === 'closed') {
+    return { error: 'Cannot recalculate a published or closed billing period' };
+  }
 
-  // 2. Fetch Unit config (billing mode)
+  const unmarkError = await resetChargesForPeriod(supabase, billing_period_id);
+  if (unmarkError) {
+    return { error: unmarkError };
+  }
+
+  const { start_date, end_date, billing_year, billing_month } = period;
+  const { dueDate } = deriveStandardBillingCycle(billing_year, billing_month);
+  const cycleDates = calculateCycleDates(start_date, end_date);
+
   const { data: unitData } = await supabase
     .from('units')
     .select('messing_billing_mode')
@@ -96,7 +196,6 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
   const billingMode: MessingBillingMode =
     (unitData?.messing_billing_mode as MessingBillingMode) ?? 'P_REGISTER_SPLIT';
 
-  // 3. Fetch dining members in the unit
   const { data: members, error: memErr } = await supabase
     .from('profiles')
     .select('id, full_name, service_no, rank, dining_in')
@@ -106,7 +205,6 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     return { error: 'No members found in this unit to bill.' };
   }
 
-  // 4. Fetch daily P-rates in the period
   const { data: pRates } = await supabase
     .from('mess_daily_p_rates')
     .select('*')
@@ -119,7 +217,16 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     pRateMap.set(r.rate_date, Number(r.rate_per_diner));
   }
 
-  // 5. Fetch attendance headers and absences in date range
+  let registerStatusByDate: Map<string, string | null>;
+  try {
+    registerStatusByDate = await getRegisterStatusByDate(unit_id, start_date, end_date);
+  } catch (err) {
+    return {
+      error: `Failed to load kitchen register: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const approvedPRates = filterApprovedPRates(pRateMap, registerStatusByDate);
+
   const { data: attendanceDays } = await supabase
     .from('attendance_days')
     .select('id, attendance_date')
@@ -127,25 +234,24 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     .gte('attendance_date', start_date)
     .lte('attendance_date', end_date);
 
-  const dayIds = (attendanceDays ?? []).map((d) => d.id);
-  const dayIdToDate = new Map<string, string>();
+  const attendanceByDate = new Map<string, { id: string; attendance_date: string }>();
   for (const d of attendanceDays ?? []) {
-    dayIdToDate.set(d.id, d.attendance_date);
+    attendanceByDate.set(d.attendance_date, d);
   }
 
-  const { data: absences } = await supabase
-    .from('attendance_absences')
-    .select('day_id, profile_id')
-    .in('day_id', dayIds);
+  const dayIds = (attendanceDays ?? []).map((d) => d.id);
+  const { data: absences } =
+    dayIds.length > 0
+      ? await supabase.from('attendance_absences').select('day_id, profile_id').in('day_id', dayIds)
+      : { data: [] as Array<{ day_id: string; profile_id: string | null }> };
 
-  const absenteeSet = new Set<string>(); // "day_id:profile_id"
+  const absenteeSet = new Set<string>();
   for (const a of absences ?? []) {
     if (a.profile_id) {
       absenteeSet.add(`${a.day_id}:${a.profile_id}`);
     }
   }
 
-  // 6. Fetch meal cuts in date range
   const { data: mealCuts } = await supabase
     .from('mess_meal_cuts')
     .select('*')
@@ -154,12 +260,11 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     .lte('cut_date', end_date)
     .eq('status', 'approved');
 
-  const cutSet = new Set<string>(); // "profile_id:date:meal_type"
+  const cutSet = new Set<string>();
   for (const c of mealCuts ?? []) {
     cutSet.add(`${c.profile_id}:${c.cut_date}:${c.meal_type}`);
   }
 
-  // 7. Member bar chits (finalized, profile_id set, booking_id null — guest chits stay on the folio)
   let barChits;
   try {
     barChits = await getBillableBarChitsForPeriod(unit_id, start_date, end_date);
@@ -168,7 +273,6 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
   }
   const memberBarChits = groupMemberBarChits(barChits);
 
-  // 8. Host room folios (CHARGE_TO_HOST + transferred_to_mess_bill, keyed by host_profile_id)
   let roomBills;
   try {
     roomBills = await getHostChargeRoomBillsForPeriod(unit_id, start_date, end_date);
@@ -176,58 +280,59 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     return { error: `Failed to load room bills: ${err instanceof Error ? err.message : String(err)}` };
   }
   const memberRoomBills = groupHostChargeRoomBills(roomBills, start_date, end_date);
+  const roomBillFlags = new Map(
+    roomBills.map((bill) => [
+      bill.id,
+      { is_billed: bill.is_billed, billed_period_id: bill.billed_period_id },
+    ])
+  );
 
-  // 9. Fetch casual guest meals in date range
-  const { data: guestMeals } = await supabase
-    .from('guest_meals')
-    .select('*')
-    .eq('unit_id', unit_id)
-    .gte('meal_date', start_date)
-    .lte('meal_date', end_date);
+  let guestMeals;
+  let miscDebits;
+  let partyCharges;
+  let arrearSources;
+  try {
+    [guestMeals, miscDebits, partyCharges, arrearSources] = await Promise.all([
+      getBillableGuestMealsForPeriod(unit_id, billing_period_id, start_date, end_date),
+      getBillableMiscDebitsForPeriod(unit_id, billing_period_id, end_date),
+      getBillablePartyChargesForPeriod(unit_id, billing_period_id, end_date),
+      getPriorArrearSourceBills(unit_id, start_date),
+    ]);
+  } catch (err) {
+    return {
+      error: `Failed to load billable charges: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 
   const memberGuestMeals = new Map<string, typeof guestMeals>();
-  for (const gm of guestMeals ?? []) {
+  for (const gm of guestMeals) {
     const list = memberGuestMeals.get(gm.host_profile_id) ?? [];
     list.push(gm);
     memberGuestMeals.set(gm.host_profile_id, list);
   }
 
-  // 10. Fetch recurring unit subscriptions
   const { data: subscriptions } = await supabase
     .from('mess_subscriptions')
     .select('*')
     .eq('unit_id', unit_id)
     .eq('is_active', true);
 
-  // 11. Fetch unbilled misc debits up to end_date
-  const { data: miscDebits } = await supabase
-    .from('mess_misc_debits')
-    .select('*')
-    .eq('unit_id', unit_id)
-    .eq('is_billed', false)
-    .lte('charge_date', end_date);
-
   const memberMiscDebits = new Map<string, typeof miscDebits>();
-  for (const md of miscDebits ?? []) {
+  for (const md of miscDebits) {
     const list = memberMiscDebits.get(md.profile_id) ?? [];
     list.push(md);
     memberMiscDebits.set(md.profile_id, list);
   }
 
-  // Due date is standard 10th of following month
-  const dueDate = format(addDays(parseISO(end_date), 16), 'yyyy-MM-10');
-
-  // Build calendar dates in cycle
-  const curDate = parseISO(start_date);
-  const stopDate = parseISO(end_date);
-  const cycleDates: string[] = [];
-  let dIter = curDate;
-  while (dIter <= stopDate) {
-    cycleDates.push(format(dIter, 'yyyy-MM-dd'));
-    dIter = addDays(dIter, 1);
+  const memberPartyCharges = new Map<string, typeof partyCharges>();
+  for (const pc of partyCharges) {
+    const list = memberPartyCharges.get(pc.profile_id) ?? [];
+    list.push(pc);
+    memberPartyCharges.set(pc.profile_id, list);
   }
 
-  // Cache flat rates per day if in flat rate mode
+  const memberArrears = groupMemberArrears(arrearSources, start_date);
+
   const flatRateCache = new Map<string, Record<MessingMealType, number>>();
   if (billingMode === 'FLAT_RATE') {
     for (const d of cycleDates) {
@@ -235,10 +340,12 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     }
   }
 
-  // 12. Compile each officer's bill
-  const billsToInsert: any[] = [];
-  const lineItemsToInsert: any[] = [];
-  const miscDebitsToMarkBilled: string[] = [];
+  const billsToInsert: MessBillInsert[] = [];
+  const lineItemsToInsert: MessBillLineInsert[] = [];
+  const guestMealsToMark: string[] = [];
+  const miscDebitsToMark: string[] = [];
+  const partyChargesToMark: string[] = [];
+  const roomBillsToMark: string[] = [];
 
   let memberSeq = 1;
   for (const member of members) {
@@ -248,65 +355,37 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     let guestMealAmount = 0;
     let subscriptionsAmount = 0;
     let miscAmount = 0;
+    let partyAmount = 0;
 
     const currentBillId = crypto.randomUUID();
     const billNumber = `MB-${billing_year}-${String(billing_month).padStart(2, '0')}-${String(memberSeq++).padStart(3, '0')}`;
 
-    // A. Messing Calculation
-    if (billingMode === 'P_REGISTER_SPLIT') {
-      for (const dateStr of cycleDates) {
-        // Find attendance day
-        const attDay = (attendanceDays ?? []).find((ad) => ad.attendance_date === dateStr);
-        const isAbsent = attDay ? absenteeSet.has(`${attDay.id}:${member.id}`) : !member.dining_in;
-
-        if (!isAbsent) {
-          const pRate = pRateMap.get(dateStr) ?? 0;
-          if (pRate > 0) {
-            messingAmount += pRate;
-            lineItemsToInsert.push({
-              bill_id: currentBillId,
-              category: 'messing',
-              item_date: dateStr,
-              description: `Daily Messing (P-Rate) for ${dateStr}`,
-              quantity: 1,
-              unit_rate: pRate,
-              amount: pRate,
-            });
-          }
-        }
-      }
-    } else {
-      // FLAT_RATE
-      const primaryMeals: MessingMealType[] = ['breakfast', 'lunch', 'dinner'];
-      for (const dateStr of cycleDates) {
-        const attDay = (attendanceDays ?? []).find((ad) => ad.attendance_date === dateStr);
-        const isAbsent = attDay ? absenteeSet.has(`${attDay.id}:${member.id}`) : !member.dining_in;
-
-        if (!isAbsent) {
-          const rates = flatRateCache.get(dateStr)!;
-          for (const m of primaryMeals) {
-            const isCut = cutSet.has(`${member.id}:${dateStr}:${m}`);
-            if (!isCut) {
-              const rate = rates[m] ?? 0;
-              if (rate > 0) {
-                messingAmount += rate;
-                lineItemsToInsert.push({
-                  bill_id: currentBillId,
-                  category: 'messing',
-                  item_date: dateStr,
-                  description: `Messing - ${m.toUpperCase()} (${dateStr})`,
-                  quantity: 1,
-                  unit_rate: rate,
-                  amount: rate,
-                });
-              }
-            }
-          }
-        }
+    if (member.dining_in !== false) {
+      const messing = calculateMemberMessingCycle({
+        billingMode,
+        cycleDates,
+        isAbsentOnDate: (dateStr) => {
+          const attDay = attendanceByDate.get(dateStr);
+          return attDay ? absenteeSet.has(`${attDay.id}:${member.id}`) : !member.dining_in;
+        },
+        pRates: approvedPRates,
+        flatRatesOnDate: (dateStr) => flatRateCache.get(dateStr) ?? EMPTY_FLAT_RATES,
+        isMealCut: (dateStr, meal) => cutSet.has(`${member.id}:${dateStr}:${meal}`),
+      });
+      messingAmount = messing.total;
+      for (const item of messing.items) {
+        lineItemsToInsert.push({
+          bill_id: currentBillId,
+          category: 'messing',
+          item_date: item.date,
+          description: item.description,
+          quantity: 1,
+          unit_rate: item.amount,
+          amount: item.amount,
+        });
       }
     }
 
-    // B. Bar Chits
     const chits = memberBarChits.get(member.id) ?? [];
     for (const c of chits) {
       barAmount += c.amount;
@@ -322,10 +401,13 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       });
     }
 
-    // C. Guest Rooms
-    const rbs = memberRoomBills.get(member.id) ?? [];
+    const rbs = (memberRoomBills.get(member.id) ?? []).filter((rb) => {
+      const flags = roomBillFlags.get(rb.id);
+      return !flags || isChargeBillableForPeriod(flags, billing_period_id);
+    });
     for (const rb of rbs) {
       roomAmount += rb.amount;
+      roomBillsToMark.push(rb.id);
       lineItemsToInsert.push({
         bill_id: currentBillId,
         category: 'room',
@@ -338,10 +420,10 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       });
     }
 
-    // D. Casual Guest Meals
     const gms = memberGuestMeals.get(member.id) ?? [];
     for (const gm of gms) {
       guestMealAmount += Number(gm.total_amount);
+      guestMealsToMark.push(gm.id);
       lineItemsToInsert.push({
         bill_id: currentBillId,
         category: 'guest_meal',
@@ -354,7 +436,6 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       });
     }
 
-    // E. Monthly Subscriptions
     for (const sub of subscriptions ?? []) {
       const subAmt = Number(sub.amount);
       subscriptionsAmount += subAmt;
@@ -370,12 +451,11 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       });
     }
 
-    // F. Miscellaneous Debits
     const mds = memberMiscDebits.get(member.id) ?? [];
     for (const md of mds) {
       const amt = Number(md.amount);
       miscAmount += amt;
-      miscDebitsToMarkBilled.push(md.id);
+      miscDebitsToMark.push(md.id);
       lineItemsToInsert.push({
         bill_id: currentBillId,
         category: 'misc',
@@ -388,8 +468,46 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       });
     }
 
-    const totalAmount =
-      messingAmount + barAmount + roomAmount + guestMealAmount + subscriptionsAmount + miscAmount;
+    const pcs = memberPartyCharges.get(member.id) ?? [];
+    for (const pc of pcs) {
+      const amt = Number(pc.amount);
+      partyAmount += amt;
+      partyChargesToMark.push(pc.id);
+      lineItemsToInsert.push({
+        bill_id: currentBillId,
+        category: 'party',
+        item_date: pc.party_date,
+        description: `Party: ${pc.description}`,
+        quantity: 1,
+        unit_rate: amt,
+        amount: amt,
+        reference_id: pc.id,
+      });
+    }
+
+    const arrearsAmount = memberArrears.get(member.id) ?? 0;
+    if (arrearsAmount > 0) {
+      lineItemsToInsert.push({
+        bill_id: currentBillId,
+        category: 'arrear',
+        item_date: start_date,
+        description: 'Arrears from prior bills',
+        quantity: 1,
+        unit_rate: arrearsAmount,
+        amount: arrearsAmount,
+      });
+    }
+
+    const totalAmount = totalMessBillAmount({
+      messingAmount,
+      barAmount,
+      roomAmount,
+      guestMealAmount,
+      subscriptionsAmount,
+      miscAmount,
+      partyAmount,
+      arrearsAmount,
+    });
 
     billsToInsert.push({
       id: currentBillId,
@@ -397,21 +515,20 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       billing_period_id,
       profile_id: member.id,
       bill_number: billNumber,
-      messing_amount: Math.round(messingAmount * 100) / 100,
-      bar_amount: Math.round(barAmount * 100) / 100,
-      room_amount: Math.round(roomAmount * 100) / 100,
-      guest_meal_amount: Math.round(guestMealAmount * 100) / 100,
-      subscriptions_amount: Math.round(subscriptionsAmount * 100) / 100,
-      misc_amount: Math.round(miscAmount * 100) / 100,
-      arrears_amount: 0,
-      total_amount: Math.round(totalAmount * 100) / 100,
+      messing_amount: roundMoney(messingAmount),
+      bar_amount: roundMoney(barAmount),
+      room_amount: roundMoney(roomAmount),
+      guest_meal_amount: roundMoney(guestMealAmount),
+      subscriptions_amount: roundMoney(subscriptionsAmount),
+      misc_amount: roundMoney(miscAmount),
+      party_amount: roundMoney(partyAmount),
+      arrears_amount: roundMoney(arrearsAmount),
+      total_amount: totalAmount,
       status: 'draft',
       due_date: dueDate,
     });
   }
 
-  // 13. Persist bills and line items inside Supabase
-  // Delete any existing draft bills for this period first to allow clean recalculation
   await supabase.from('mess_bills').delete().eq('billing_period_id', billing_period_id);
 
   if (billsToInsert.length > 0) {
@@ -428,15 +545,13 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     }
   }
 
-  // Mark misc debits as billed
-  if (miscDebitsToMarkBilled.length > 0) {
-    await supabase
-      .from('mess_misc_debits')
-      .update({ is_billed: true })
-      .in('id', miscDebitsToMarkBilled);
-  }
+  await Promise.all([
+    markChargesBilled(supabase, 'guest_meals', guestMealsToMark, billing_period_id),
+    markChargesBilled(supabase, 'mess_misc_debits', miscDebitsToMark, billing_period_id),
+    markChargesBilled(supabase, 'mess_party_charges', partyChargesToMark, billing_period_id),
+    markChargesBilled(supabase, 'room_bills', roomBillsToMark, billing_period_id),
+  ]);
 
-  // Update billing period status to draft
   await supabase
     .from('mess_billing_periods')
     .update({ status: 'draft', updated_at: new Date().toISOString() })
@@ -489,6 +604,11 @@ export async function publishBillingPeriodAction(input: unknown): Promise<Action
     .eq('id', billing_period_id);
 
   revalidatePath('/billing');
+  try {
+    await notifyBillsPublished(billing_period_id);
+  } catch (err) {
+    console.error('Bill publish email batch failed:', err);
+  }
   return { ok: true };
 }
 
@@ -597,5 +717,102 @@ export async function createMiscDebitAction(input: unknown): Promise<ActionResul
  * Fetches bill details for client components without leaking server-only queries.
  */
 export async function getMessBillDetailsAction(billId: string) {
-  return getMessBillDetails(billId);
+  const user = await requireUser();
+  const bill = await getMessBillDetails(billId);
+  if (!bill) return null;
+  if (bill.profile_id === user.id) return bill;
+  if (
+    userHasCapability(user, 'billing.draft', bill.unit_id) ||
+    userHasCapability(user, 'billing.finalize', bill.unit_id)
+  ) {
+    return bill;
+  }
+  return { error: 'Forbidden' };
+}
+
+/**
+ * Deactivates a recurring subscription so it is excluded from the next billing run.
+ */
+export async function deactivateSubscriptionAction(
+  subscriptionId: string
+): Promise<ActionResult> {
+  if (!z.string().uuid().safeParse(subscriptionId).success) {
+    return { error: 'Invalid subscription id' };
+  }
+
+  const supabase = await createClient();
+  const { data: sub } = await supabase
+    .from('mess_subscriptions')
+    .select('id, unit_id')
+    .eq('id', subscriptionId)
+    .maybeSingle();
+
+  if (!sub) return { error: 'Subscription not found' };
+
+  await requireCapability('billing.draft', sub.unit_id);
+
+  const { error } = await supabase
+    .from('mess_subscriptions')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('id', subscriptionId);
+
+  if (error) {
+    return { error: `Failed to deactivate subscription: ${error.message}` };
+  }
+
+  revalidatePath('/billing');
+  return { ok: true };
+}
+
+const createPartyChargeSchema = z.object({
+  unit_id: z.string().uuid(),
+  profile_id: z.string().uuid(),
+  party_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  description: z.string().trim().min(2).max(255),
+  amount: z.coerce.number().positive(),
+});
+
+/**
+ * Records a party / function charge against a member for the next billing run.
+ */
+export async function createPartyChargeAction(input: unknown): Promise<ActionResult> {
+  const parsed = createPartyChargeSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: 'Invalid party charge input', details: parsed.error.flatten() };
+  }
+
+  const user = await requireCapability('billing.draft', parsed.data.unit_id);
+  const supabase = await createClient();
+
+  // Table exists in 20260910080100; generated Database types may lag.
+  const { error } = await (
+    supabase as unknown as {
+      from: (relation: 'mess_party_charges') => {
+        insert: (values: {
+          unit_id: string;
+          profile_id: string;
+          party_date: string;
+          description: string;
+          amount: number;
+          created_by: string;
+        }) => PromiseLike<{ error: { message: string } | null }>;
+      };
+    }
+  )
+    .from('mess_party_charges')
+    .insert({
+      unit_id: parsed.data.unit_id,
+      profile_id: parsed.data.profile_id,
+      party_date: parsed.data.party_date,
+      description: parsed.data.description,
+      amount: parsed.data.amount,
+      created_by: user.id,
+    });
+
+  if (error) {
+    return { error: `Failed to record party charge: ${error.message}` };
+  }
+
+  revalidatePath('/billing');
+  return { ok: true };
 }

@@ -1,249 +1,438 @@
 import { requireUser } from '@/lib/auth/require-role';
+import { userHasCapability } from '@/lib/auth/capabilities';
+import type { Role } from '@/lib/auth/types';
+import { createClient } from '@/lib/supabase/server';
+import { getDinerTodayStatus } from '@/lib/messing/queries';
+import { listPendingRegisters } from '@/lib/messing/register-queries';
+import { getMyMessBills } from '@/lib/billing/queries';
+import { RegisterApprovalQueue } from './_components/register-approval-queue';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { CalendarDays, Coffee, ReceiptText, ShieldCheck, Flame, Utensils, Compass, GraduationCap, Clock } from 'lucide-react';
+import { listUnitBulletins } from '@/lib/bulletins/queries';
+import { listUpcomingParties, listMyPartyCharges } from '@/lib/parties/queries';
+import { listMyWaitlist } from '@/lib/waitlist/queries';
+import { listMyBarChits } from '@/lib/dashboard/member-queries';
+import {
+  CalendarDays,
+  Coffee,
+  Flame,
+  Utensils,
+} from 'lucide-react';
 import Link from 'next/link';
+import { format, subDays } from 'date-fns';
+import type { LucideIcon } from 'lucide-react';
+
+export const dynamic = 'force-dynamic';
+
+const ROLE_LABEL: Record<Role, string> = {
+  user: 'Member',
+  manager: 'Manager',
+  unit_admin: 'Unit Admin',
+  super_admin: 'Super Admin',
+  mess_secretary: 'Mess Secretary',
+  mess_havildar: 'Mess Havildar',
+  bar_nco: 'Bar NCO',
+  property_nco: 'Property NCO',
+};
+
+const MEAL_ICONS: Record<string, LucideIcon> = {
+  breakfast: Coffee,
+  lunch: Utensils,
+  dinner: Flame,
+};
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function inr(value: number) {
+  return `₹${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
 
 export default async function DashboardPage() {
   const user = await requireUser();
+  const unitId = user.activeUnitId ?? user.homeUnitId;
+  const date = todayIso();
+  const supabase = await createClient();
 
-  // Premium Officer Role/Rank simulation
-  const mockRank = user.role === 'super_admin' ? 'Colonel' : user.role === 'unit_admin' ? 'Lieutenant Colonel' : 'Major';
-  const mockDinerId = `OM-${user.email.slice(0, 3).toUpperCase()}-402`;
+  const [{ data: profile }, { data: unit }] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('rank, service_no, full_name, display_name, dining_in')
+      .eq('id', user.id)
+      .maybeSingle(),
+    unitId
+      ? supabase.from('units').select('id, name, code').eq('id', unitId).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
 
-  const todayMeals = [
-    { name: 'Breakfast', time: '07:30 - 09:30', menu: 'Poached Eggs, Toast, Fresh Tea', status: 'Attended', icon: Coffee, active: false },
-    { name: 'Lunch', time: '12:30 - 14:30', menu: 'Roasted Herb Chicken & Salad', status: 'Registered (Auto)', icon: Utensils, active: true },
-    { name: 'Dinner', time: '19:30 - 21:30', menu: 'Grilled Salmon & Soufflé', status: 'Cut Requested', icon: Flame, active: false },
-  ];
+  const since = format(subDays(new Date(), 30), 'yyyy-MM-dd');
+  const canApproveRegister = unitId ? userHasCapability(user, 'messing.approve', unitId) : false;
 
-  const activeBookings = [
-    { room: 'VVIP Suite 302', checkIn: 'May 28', checkOut: 'Jun 02', status: 'Checked In' },
-  ];
+  const [dinerToday, myBills, bookings, bulletins, parties, waitlist, barChits, partyCharges, pendingRegisters] =
+    await Promise.all([
+      unitId
+        ? getDinerTodayStatus(unitId, user.id, date).catch(() => null)
+        : Promise.resolve(null),
+      getMyMessBills(user.id).catch(() => []),
+      unitId
+        ? supabase
+            .from('bookings')
+            .select('id, guest_name, check_in_date, check_out_date, status, room:room_id (name)')
+            .eq('unit_id', unitId)
+            .eq('host_profile_id', user.id)
+            .in('status', ['confirmed', 'checked_in'])
+            .gte('check_out_date', date)
+            .order('check_in_date', { ascending: true })
+            .then(({ data, error }) => (error ? [] : (data ?? [])))
+        : Promise.resolve([]),
+      unitId ? listUnitBulletins(unitId, 3).catch(() => []) : Promise.resolve([]),
+      unitId ? listUpcomingParties(unitId, date).catch(() => []) : Promise.resolve([]),
+      unitId ? listMyWaitlist(unitId, user.id).catch(() => []) : Promise.resolve([]),
+      unitId ? listMyBarChits(unitId, user.id, since).catch(() => []) : Promise.resolve([]),
+      unitId ? listMyPartyCharges(unitId, user.id).catch(() => []) : Promise.resolve([]),
+      unitId && canApproveRegister
+        ? listPendingRegisters(unitId).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+  const unpaidBills = myBills.filter((b) => b.status === 'published' || b.status === 'overdue');
+  const totalOutstanding = unpaidBills.reduce((sum, b) => sum + Number(b.total_amount), 0);
+  const nextDue = unpaidBills[0];
+  const displayName = profile?.display_name ?? profile?.full_name ?? user.displayName ?? user.email;
+  const greetingName = displayName.includes('@') ? displayName.split('@')[0] : displayName;
 
   return (
     <div className="space-y-8">
-      {/* Welcome Banner */}
-      <div className="relative overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-background p-6 md:p-8">
-        <div className="relative z-10 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-1.5">
-            <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-widest text-primary">
-              <Compass className="size-3.5 animate-spin-slow" /> Exclusive Officer Portal
-            </span>
-            <h1 className="text-3xl font-black font-heading tracking-tight text-foreground md:text-4xl">
-              Welcome back, {mockRank} {user.displayName ?? user.email.split('@')[0]}
-            </h1>
-            <p className="max-w-xl text-xs text-muted-foreground leading-relaxed">
-              Serving our officers with pristine hospitality, fine messing, and luxury guest quarters. All operational controls have been streamlined for a focused member experience.
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <Link href="/messing">
-              <Button size="sm" variant="default" className="shadow-xs transition-ds hover:opacity-95">
-                Messing Control
-              </Button>
-            </Link>
-            <Link href="/guest-rooms">
-              <Button size="sm" variant="outline">
-                Book a Room
-              </Button>
-            </Link>
-          </div>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-1">
+          <p className="text-xs font-mono uppercase tracking-widest text-primary">Officer portal</p>
+          <h1 className="font-heading text-3xl font-bold tracking-tight text-foreground">
+            Welcome back, {greetingName}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {unit ? `${unit.name} (${unit.code})` : 'No unit assigned'}
+            {profile?.rank ? ` · ${profile.rank}` : ''}
+          </p>
         </div>
-        <div className="absolute top-0 right-0 -mr-16 -mt-16 size-64 rounded-full bg-primary/5 blur-3xl" />
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" asChild>
+            <Link href="/messing">Messing</Link>
+          </Button>
+          <Button size="sm" variant="outline" asChild>
+            <Link href="/billing">Bills</Link>
+          </Button>
+        </div>
       </div>
 
+      {canApproveRegister ? (
+        <RegisterApprovalQueue pending={pendingRegisters} canApprove={canApproveRegister} />
+      ) : null}
+
       <div className="grid gap-6 md:grid-cols-3">
-        {/* Mess Profile/Badge Card */}
-        <Card className="border-border bg-gradient-to-b from-card to-background relative overflow-hidden group">
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-500 via-primary to-amber-600" />
-          <CardHeader className="pb-4">
-            <CardTitle className="font-heading text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-              Officer Mess Identity
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex items-center gap-4">
-              <div className="relative flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
-                <GraduationCap className="size-6" />
-                <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-success text-[8px] text-success-foreground font-black ring-2 ring-background">
-                  ✓
-                </span>
-              </div>
-              <div>
-                <span className="text-xs text-muted-foreground font-mono">{mockDinerId}</span>
-                <p className="font-heading font-bold text-foreground text-base">
-                  {mockRank} {user.displayName ?? user.email.split('@')[0]}
-                </p>
-                <div className="flex gap-1.5 mt-1 items-center flex-wrap">
-                  <Badge variant="outline" className="border-primary/20 text-primary bg-primary/5 text-[9px] font-mono py-0">
-                    GOLD MEMBER
-                  </Badge>
-                  <Badge variant="secondary" className="text-[9px] font-mono py-0">
-                    Active Unit Diner
-                  </Badge>
-                </div>
-              </div>
-            </div>
-
-            <div className="h-px bg-border" />
-
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              <div>
-                <span className="text-muted-foreground block mb-0.5">Mess Bill Auto-Pay</span>
-                <span className="font-medium text-success flex items-center gap-1">
-                  Active (Payroll Linked)
-                </span>
-              </div>
-              <div>
-                <span className="text-muted-foreground block mb-0.5">Assigned Unit</span>
-                <span className="font-medium text-foreground">
-                  {user.isAllUnits ? 'All Units' : (user.activeUnitId ? `Unit Scoped` : '1st Regt Mess')}
-                </span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Outstanding Dues Summary */}
-        <Card className="border-border relative">
-          <CardHeader className="pb-4">
-            <CardTitle className="font-heading text-xs font-semibold tracking-wider text-muted-foreground uppercase flex justify-between items-center">
-              Outstanding Dues
-              <Link href="/billing" className="text-[10px] text-primary hover:underline font-mono normal-case">
-                View Ledger
-              </Link>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="space-y-1">
-              <span className="text-[10px] text-muted-foreground uppercase font-mono tracking-wider">Due by 10 Jun 2026</span>
-              <p className="text-3xl font-black font-mono tracking-tight text-foreground">₹24,350.00</p>
-              <div className="text-[10px] text-destructive flex items-center gap-1 font-medium bg-destructive/5 border border-destructive/15 rounded px-2 py-0.5 w-fit mt-1">
-                Settles in next salary cycle
-              </div>
-            </div>
-
-            <div className="h-px bg-border" />
-
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              <div>
-                <span className="text-muted-foreground block mb-0.5">Dining Fees</span>
-                <span className="font-semibold text-foreground font-mono">₹14,850.00</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground block mb-0.5">Room & Lodging</span>
-                <span className="font-semibold text-foreground font-mono">₹9,500.00</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Active Guest Room Booking */}
         <Card className="border-border">
-          <CardHeader className="pb-4">
-            <CardTitle className="font-heading text-xs font-semibold tracking-wider text-muted-foreground uppercase flex justify-between items-center">
-              Guest Quarters
-              <Link href="/guest-rooms" className="text-[10px] text-primary hover:underline font-mono normal-case">
-                New Booking
+          <CardHeader className="pb-3">
+            <CardTitle className="font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Your profile
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div>
+              <p className="font-heading font-semibold text-foreground">{displayName}</p>
+              <p className="text-xs text-muted-foreground">{user.email}</p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="outline">{ROLE_LABEL[user.role]}</Badge>
+              {profile?.dining_in != null && (
+                <Badge variant="secondary">{profile.dining_in ? 'Dining in' : 'Dining out'}</Badge>
+              )}
+            </div>
+            <dl className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <dt className="text-muted-foreground">Service no.</dt>
+                <dd className="font-mono text-foreground">{profile?.service_no ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Rank</dt>
+                <dd className="text-foreground">{profile?.rank ?? '—'}</dd>
+              </div>
+            </dl>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Outstanding dues
+              <Link href="/billing" className="font-mono text-[10px] font-medium normal-case text-primary hover:underline">
+                View bills
               </Link>
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {activeBookings.map((b, i) => (
-              <div key={i} className="rounded-lg border border-border bg-muted/20 p-3.5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-foreground">{b.room}</span>
-                  <Badge variant="default" className="text-[9px] py-0 px-1.5 font-mono">
-                    {b.status}
-                  </Badge>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[10px] text-muted-foreground">
+          <CardContent className="space-y-3">
+            {unpaidBills.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No published unpaid bills.
+              </p>
+            ) : (
+              <>
+                <p className="font-mono text-3xl font-bold tracking-tight text-foreground">
+                  {inr(totalOutstanding)}
+                </p>
+                {nextDue?.due_date && (
+                  <p className="text-xs text-muted-foreground">
+                    Next due {format(new Date(nextDue.due_date), 'dd MMM yyyy')}
+                    {nextDue.bill_number ? ` · ${nextDue.bill_number}` : ''}
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-3 text-xs">
                   <div>
-                    <span className="block text-[9px] uppercase tracking-wide font-mono">Check-In Date</span>
-                    <span className="font-medium text-foreground">{b.checkIn}</span>
+                    <span className="block text-muted-foreground">Messing</span>
+                    <span className="font-mono text-foreground">
+                      {inr(unpaidBills.reduce((s, b) => s + Number(b.messing_amount), 0))}
+                    </span>
                   </div>
                   <div>
-                    <span className="block text-[9px] uppercase tracking-wide font-mono">Check-Out Date</span>
-                    <span className="font-medium text-foreground">{b.checkOut}</span>
+                    <span className="block text-muted-foreground">Other charges</span>
+                    <span className="font-mono text-foreground">
+                      {inr(
+                        unpaidBills.reduce(
+                          (s, b) =>
+                            s +
+                            Number(b.bar_amount) +
+                            Number(b.room_amount) +
+                            Number(b.guest_meal_amount) +
+                            Number(b.subscriptions_amount) +
+                            Number(b.misc_amount) +
+                            Number(b.arrears_amount),
+                          0,
+                        ),
+                      )}
+                    </span>
                   </div>
                 </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-border">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Guest rooms
+              <Link
+                href="/guest-rooms"
+                className="font-mono text-[10px] font-medium normal-case text-primary hover:underline"
+              >
+                Open
+              </Link>
+            </CardTitle>
+            <CardDescription>Your current and upcoming bookings</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {bookings.length === 0 ? (
+              <div className="flex flex-col items-center py-4 text-center text-xs text-muted-foreground">
+                <CalendarDays className="mb-2 size-6 text-muted-foreground/40" />
+                No active bookings.
               </div>
-            ))}
-            {activeBookings.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-6 text-center text-xs text-muted-foreground">
-                <CalendarDays className="size-8 text-muted-foreground/30 mb-2" />
-                No active suite bookings this week.
-              </div>
+            ) : (
+              bookings.map((booking) => {
+                const room = Array.isArray(booking.room) ? booking.room[0] : booking.room;
+                return (
+                  <div key={booking.id} className="rounded-lg border border-border bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-foreground">
+                        {room?.name ?? 'Room'}
+                      </span>
+                      <Badge variant="outline" className="font-mono text-[10px] capitalize">
+                        {booking.status.replace('_', ' ')}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {booking.guest_name ?? 'Guest'} ·{' '}
+                      {format(new Date(booking.check_in_date), 'dd MMM')} –{' '}
+                      {format(new Date(booking.check_out_date), 'dd MMM yyyy')}
+                    </p>
+                  </div>
+                );
+              })
             )}
           </CardContent>
         </Card>
       </div>
 
       <div className="grid gap-6 md:grid-cols-3">
-        {/* Quick Dining Tracker */}
-        <div className="md:col-span-2 space-y-4">
-          <h2 className="text-sm font-semibold font-heading text-foreground uppercase tracking-wide flex items-center gap-2">
-            <Clock className="size-4 text-muted-foreground" /> Today's Dining Ledger
+        <div className="space-y-4 md:col-span-2">
+          <h2 className="flex items-center gap-2 font-heading text-sm font-semibold uppercase tracking-wide text-foreground">
+            <Utensils className="size-4 text-muted-foreground" />
+            Today&apos;s messing
           </h2>
           <Card className="border-border">
-            <CardContent className="p-0 divide-y divide-border">
-              {todayMeals.map((m, idx) => {
-                const Icon = m.icon;
-                return (
-                  <div key={idx} className="flex items-center justify-between p-4 hover:bg-muted/10 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-md bg-muted text-muted-foreground">
-                        <Icon className="size-4.5 text-primary" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-foreground">{m.name}</span>
-                          <span className="text-[10px] text-muted-foreground">({m.time})</span>
+            {!dinerToday || !unitId ? (
+              <CardContent className="py-8 text-sm text-muted-foreground">
+                {unitId
+                  ? 'Messing data is not available for today.'
+                  : 'Assign a unit to see today’s dining register.'}
+              </CardContent>
+            ) : (
+              <>
+                <CardHeader className="pb-2">
+                  <CardDescription>
+                    {format(new Date(date), 'dd MMMM yyyy')}
+                    {dinerToday.billingMode === 'P_REGISTER_SPLIT' ? ' · P-register' : ' · Flat rate'}
+                    {' · '}
+                    {dinerToday.isAttendingDay ? 'On the day roll' : 'Marked absent'}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-0 divide-y divide-border p-0">
+                  {dinerToday.meals.map((meal) => {
+                    const Icon = MEAL_ICONS[meal.mealType] ?? Utensils;
+                    return (
+                      <div key={meal.mealType} className="flex items-center justify-between gap-3 px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <div className="rounded-md bg-muted p-2 text-primary">
+                            <Icon className="size-4" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-foreground">{meal.label}</p>
+                            {meal.cutReason ? (
+                              <p className="text-xs text-muted-foreground">{meal.cutReason}</p>
+                            ) : dinerToday.billingMode === 'FLAT_RATE' && meal.rate > 0 ? (
+                              <p className="font-mono text-xs text-muted-foreground">{inr(meal.rate)}</p>
+                            ) : null}
+                          </div>
                         </div>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">{m.menu}</p>
+                        <Badge variant={meal.isCut ? 'destructive' : dinerToday.isAttendingDay ? 'success' : 'secondary'}>
+                          {meal.isCut ? 'Meal cut' : dinerToday.isAttendingDay ? 'Registered' : 'Absent'}
+                        </Badge>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={m.status === 'Attended' ? 'success' : m.status === 'Cut Requested' ? 'destructive' : 'secondary'} className="text-[9px] py-0">
-                        {m.status}
-                      </Badge>
-                      {m.active && (
-                        <Link href="/messing">
-                          <Button size="xs" variant="outline" className="h-6 text-[10px]">
-                            Check-In
-                          </Button>
-                        </Link>
-                      )}
-                    </div>
+                    );
+                  })}
+                  <div className="flex items-center justify-between px-4 py-3">
+                    <span className="text-xs text-muted-foreground">Estimated today</span>
+                    <span className="font-mono text-sm font-semibold text-foreground">
+                      {inr(dinerToday.estimatedDailyCharge)}
+                    </span>
                   </div>
-                );
-              })}
-            </CardContent>
+                </CardContent>
+              </>
+            )}
           </Card>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/messing">Open messing</Link>
+          </Button>
         </div>
 
-        {/* Mess Bulletins / Announcements */}
         <div className="space-y-4">
-          <h2 className="text-sm font-semibold font-heading text-foreground uppercase tracking-wide flex items-center gap-2">
-            <ShieldCheck className="size-4 text-muted-foreground" /> Mess Bulletins
+          <h2 className="font-heading text-sm font-semibold uppercase tracking-wide text-foreground">
+            Unit &amp; account
           </h2>
-          <Card className="border-border bg-card/40">
-            <CardContent className="p-4 space-y-4 text-xs text-muted-foreground">
-              <div className="space-y-1">
-                <span className="font-bold text-foreground block">1. Dining Dress Protocol</span>
-                <p className="leading-relaxed text-[11px]">
-                  Formal uniforms or formal service attire is mandatory after 18:30 in the Regimental Dining Hall. Casual smartwear is restricted.
+
+          <Card className="border-border">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Bulletins
+                <Link href="/bulletins" className="font-mono text-[10px] font-medium normal-case text-primary hover:underline">
+                  All
+                </Link>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {bulletins.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No notices published.</p>
+              ) : (
+                bulletins.map((item) => (
+                  <div key={item.id}>
+                    <p className="text-sm font-medium text-foreground">{item.title}</p>
+                    <p className="line-clamp-2 text-xs text-muted-foreground">{item.body}</p>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Parties
+                <Link href="/party" className="font-mono text-[10px] font-medium normal-case text-primary hover:underline">
+                  Open
+                </Link>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              {parties.length === 0 ? (
+                <p className="text-muted-foreground">No upcoming parties.</p>
+              ) : (
+                parties.slice(0, 3).map((party) => (
+                  <div key={party.id} className="flex justify-between gap-2">
+                    <span className="text-foreground">{party.title}</span>
+                    <span className="font-mono text-muted-foreground">
+                      {format(new Date(party.party_date), 'dd MMM')}
+                    </span>
+                  </div>
+                ))
+              )}
+              {partyCharges.some((c) => !c.is_billed) && (
+                <p className="text-muted-foreground">
+                  Unbilled party charges:{' '}
+                  {inr(partyCharges.filter((c) => !c.is_billed).reduce((s, c) => s + c.amount, 0))}
                 </p>
-              </div>
-              <div className="h-px bg-border" />
-              <div className="space-y-1">
-                <span className="font-bold text-foreground block">2. Annual Regimental Night</span>
-                <p className="leading-relaxed text-[11px]">
-                  Reservations for the upcoming Guest Dining Night on June 12 are now open. Register guest counts through the messing portal early.
-                </p>
-              </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Bar account
+                <Link href="/reports" className="font-mono text-[10px] font-medium normal-case text-primary hover:underline">
+                  Report
+                </Link>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              {barChits.length === 0 ? (
+                <p className="text-muted-foreground">No bar chits in the last 30 days.</p>
+              ) : (
+                <>
+                  <p className="font-mono text-lg font-semibold text-foreground">
+                    {inr(barChits.reduce((s, c) => s + c.total_amount, 0))}
+                  </p>
+                  {barChits.slice(0, 3).map((chit) => (
+                    <div key={chit.id} className="flex justify-between">
+                      <span className="text-muted-foreground">
+                        {format(new Date(chit.date), 'dd MMM')} · {chit.status}
+                      </span>
+                      <span className="font-mono">{inr(chit.total_amount)}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Room waitlist
+                <Link href="/waitlist" className="font-mono text-[10px] font-medium normal-case text-primary hover:underline">
+                  Request
+                </Link>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              {waitlist.length === 0 ? (
+                <p className="text-muted-foreground">No open waitlist requests.</p>
+              ) : (
+                waitlist.slice(0, 3).map((row) => (
+                  <div key={row.id} className="flex justify-between gap-2">
+                    <span className="text-foreground">{row.guest_name}</span>
+                    <span className="capitalize text-muted-foreground">{row.status}</span>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </div>

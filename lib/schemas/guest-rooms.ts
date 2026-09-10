@@ -101,6 +101,7 @@ export const updateBookingSchema = z.object({
 export const checkOutBookingSchema = z.object({
   booking_id: z.string().uuid(),
   settlement_type: settlementTypeSchema.default('DIRECT_SETTLEMENT'),
+  host_profile_id: z.string().uuid().nullable().optional(),
   payment_method: z.string().trim().optional().nullable(),
   payment_reference: z.string().trim().optional().nullable(),
   paid_amount: z.coerce.number().min(0).optional(),

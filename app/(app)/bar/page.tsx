@@ -46,6 +46,7 @@ export default async function BarPage() {
   ]);
 
   const canWrite = userHasCapability(user, 'bar.write', unitId);
+  const canFinalize = userHasCapability(user, 'bar.finalize', unitId);
 
   return (
     <BarClient
@@ -55,6 +56,7 @@ export default async function BarPage() {
       members={members}
       bookings={bookings}
       canWrite={canWrite}
+      canFinalize={canFinalize}
     />
   );
 }

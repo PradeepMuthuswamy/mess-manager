@@ -2,12 +2,19 @@ import 'server-only';
 import { createClient } from '@/lib/supabase/server';
 import type { MessingMealType, MessingBillingMode } from '@/lib/schemas/messing';
 import { messingMealTypeEnum, MESSING_MEAL_TYPE_LABEL } from '@/lib/schemas/messing';
+import { calculateMemberMessingCycle } from '@/lib/billing/compute';
+import { getCurrentBillingPeriod } from '@/lib/billing/queries';
+import { eachDayOfInterval, differenceInCalendarDays, parseISO, format } from 'date-fns';
 import type {
   MessDailyExpenditureRow,
   MessDailyPRateRow,
   MessMealCutRow,
   GuestMealRow,
   DinerTodayMessingView,
+  CycleMtdView,
+  RequestedMealCutView,
+  MealCutStatus,
+  MessingFlatRateRow,
 } from './types';
 
 /**
@@ -120,6 +127,25 @@ export async function getMonthlyPRates(
 
   if (error) throw new Error(error.message);
   return data ?? [];
+}
+
+/**
+ * Last N calendar days of stored P-rates (inclusive of today).
+ */
+export async function getRecentPRates(
+  unitId: string,
+  days: number
+): Promise<MessDailyPRateRow[]> {
+  const safeDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 7;
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - (safeDays - 1));
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const toIso = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  return getMonthlyPRates(unitId, toIso(start), toIso(end));
 }
 
 /**
@@ -242,10 +268,13 @@ export async function getDinerTodayStatus(
   const primaryMeals: MessingMealType[] = ['breakfast', 'lunch', 'dinner'];
   const meals = primaryMeals.map((m) => {
     const cut = cutMap.get(m);
+    const cutStatus = (cut?.status as MealCutStatus | undefined) ?? null;
     return {
       mealType: m,
       label: MESSING_MEAL_TYPE_LABEL[m],
-      isCut: !!cut && cut.status === 'approved',
+      isCut: cutStatus === 'approved',
+      isRequested: cutStatus === 'requested',
+      cutStatus,
       cutReason: cut?.reason,
       rate: rates[m] ?? 0,
     };
@@ -274,4 +303,178 @@ export async function getDinerTodayStatus(
     todayPRate,
     estimatedDailyCharge,
   };
+}
+
+/**
+ * Meal-cut requests awaiting Havildar / attendance.write approval.
+ */
+export async function listRequestedMealCuts(unitId: string): Promise<RequestedMealCutView[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_meal_cuts')
+    .select('*')
+    .eq('unit_id', unitId)
+    .eq('status', 'requested')
+    .order('cut_date', { ascending: false });
+
+  if (error) throw new Error(error.message);
+  const rows = data ?? [];
+  const ids = [...new Set(rows.map((r) => r.profile_id))];
+
+  const names = new Map<string, string>();
+  if (ids.length > 0) {
+    const { data: profiles, error: pErr } = await supabase
+      .from('profiles')
+      .select('id, display_name, full_name, rank')
+      .in('id', ids);
+    if (pErr) throw new Error(pErr.message);
+    for (const p of profiles ?? []) {
+      const label = [p.rank, p.display_name ?? p.full_name].filter(Boolean).join(' ');
+      names.set(p.id, label || 'Unknown');
+    }
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    memberName: names.get(r.profile_id) ?? 'Unknown',
+  }));
+}
+
+function ratesOnDate(
+  history: MessingFlatRateRow[],
+  dateStr: string,
+): Record<MessingMealType, number> {
+  const mapping = {} as Record<MessingMealType, number>;
+  for (const m of messingMealTypeEnum) {
+    mapping[m] = 0;
+  }
+  const assigned = new Set<MessingMealType>();
+  for (const row of history) {
+    if (row.valid_from > dateStr) continue;
+    if (row.valid_to && row.valid_to < dateStr) continue;
+    const meal = row.meal_type as MessingMealType;
+    if (assigned.has(meal)) continue;
+    assigned.add(meal);
+    mapping[meal] = Number(row.rate);
+  }
+  return mapping;
+}
+
+/**
+ * Current (or date-containing) billing period plus a cheap cycle MTD estimate
+ * for the member, using stored P-rates, approved cuts, and absences.
+ */
+export async function getMemberCycleMtd(
+  unitId: string,
+  profileId: string,
+  asOfDate: string,
+): Promise<CycleMtdView | null> {
+  const supabase = await createClient();
+
+  const { data: containing, error: containingErr } = await supabase
+    .from('mess_billing_periods')
+    .select('*')
+    .eq('unit_id', unitId)
+    .lte('start_date', asOfDate)
+    .gte('end_date', asOfDate)
+    .in('status', ['open', 'draft', 'published'])
+    .order('start_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (containingErr) throw new Error(containingErr.message);
+
+  const period = containing ?? (await getCurrentBillingPeriod(unitId));
+  if (!period) return null;
+
+  const start = period.start_date;
+  const end = period.end_date;
+  const clampedAsOf = asOfDate < start ? start : asOfDate > end ? end : asOfDate;
+  const daysElapsed = Math.max(
+    0,
+    differenceInCalendarDays(parseISO(clampedAsOf), parseISO(start)) + 1,
+  );
+  const daysInPeriod = Math.max(
+    1,
+    differenceInCalendarDays(parseISO(end), parseISO(start)) + 1,
+  );
+
+  const base: CycleMtdView = {
+    periodName: period.name,
+    periodStart: start,
+    periodEnd: end,
+    periodStatus: period.status,
+    daysElapsed,
+    daysInPeriod,
+    estimatedCycleTotal: null,
+  };
+
+  try {
+    const { data: unitData } = await supabase
+      .from('units')
+      .select('messing_billing_mode')
+      .eq('id', unitId)
+      .single();
+
+    const billingMode: MessingBillingMode =
+      (unitData?.messing_billing_mode as MessingBillingMode) ?? 'P_REGISTER_SPLIT';
+
+    const cycleDates = eachDayOfInterval({
+      start: parseISO(start),
+      end: parseISO(clampedAsOf),
+    }).map((d) => format(d, 'yyyy-MM-dd'));
+
+    const [{ data: days }, pRateRows, cuts, flatHistory] = await Promise.all([
+      supabase
+        .from('attendance_days')
+        .select('id, attendance_date')
+        .eq('unit_id', unitId)
+        .gte('attendance_date', start)
+        .lte('attendance_date', clampedAsOf),
+      getMonthlyPRates(unitId, start, clampedAsOf),
+      getMemberMealCuts(unitId, profileId, start, clampedAsOf),
+      getFlatRatesHistory(unitId),
+    ]);
+
+    const dayRows = days ?? [];
+    const dayById = new Map(dayRows.map((d) => [d.id, d.attendance_date]));
+    const absentDates = new Set<string>();
+
+    if (dayRows.length > 0) {
+      const { data: absences } = await supabase
+        .from('attendance_absences')
+        .select('day_id')
+        .eq('profile_id', profileId)
+        .in(
+          'day_id',
+          dayRows.map((d) => d.id),
+        );
+      for (const a of absences ?? []) {
+        const date = dayById.get(a.day_id);
+        if (date) absentDates.add(date);
+      }
+    }
+
+    const pRates = new Map<string, number>(
+      pRateRows.map((r) => [r.rate_date, Number(r.rate_per_diner)]),
+    );
+    const approvedCuts = new Set(
+      cuts
+        .filter((c) => c.status === 'approved')
+        .map((c) => `${c.cut_date}:${c.meal_type}`),
+    );
+
+    const result = calculateMemberMessingCycle({
+      billingMode,
+      cycleDates,
+      isAbsentOnDate: (d) => absentDates.has(d),
+      pRates,
+      flatRatesOnDate: (d) => ratesOnDate(flatHistory, d),
+      isMealCut: (d, meal) => approvedCuts.has(`${d}:${meal}`),
+    });
+
+    return { ...base, estimatedCycleTotal: result.total };
+  } catch {
+    return base;
+  }
 }

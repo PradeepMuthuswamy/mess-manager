@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -20,11 +22,15 @@ import {
   Receipt, 
   AlertTriangle, 
   TrendingUp, 
-  Calendar, 
   User, 
   GlassWater, 
-  Users 
+  Users,
+  Loader2,
 } from 'lucide-react';
+import {
+  finalizeBarChitAction,
+  reopenBarChitAction,
+} from '@/lib/bar/actions';
 import type { BarChitRow } from '@/lib/bar/types';
 import { cn } from '@/lib/utils';
 
@@ -61,6 +67,7 @@ interface BarClientProps {
   members: Member[];
   bookings: ActiveBooking[];
   canWrite: boolean;
+  canFinalize: boolean;
 }
 
 export function BarClient({
@@ -70,8 +77,32 @@ export function BarClient({
   members,
   bookings,
   canWrite,
+  canFinalize,
 }: BarClientProps) {
+  const router = useRouter();
   const [openChitDialog, setOpenChitDialog] = useState(false);
+  const [busyChitId, setBusyChitId] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  function runChitAction(
+    id: string,
+    kind: 'finalize' | 'reopen',
+  ) {
+    setBusyChitId(id);
+    startTransition(async () => {
+      const res =
+        kind === 'finalize'
+          ? await finalizeBarChitAction({ id })
+          : await reopenBarChitAction({ id });
+      setBusyChitId(null);
+      if (res.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success(kind === 'finalize' ? 'Chit finalized' : 'Chit reopened');
+      router.refresh();
+    });
+  }
 
   // Compute stats
   const stats = useMemo(() => {
@@ -193,7 +224,12 @@ export function BarClient({
                       <TableHead>Consumer</TableHead>
                       <TableHead>Items</TableHead>
                       <TableHead className="text-right">Total</TableHead>
-                      <TableHead className="text-center pr-6 w-[100px]">Status</TableHead>
+                      <TableHead className={cn('text-center w-[100px]', !canFinalize && 'pr-6')}>
+                        Status
+                      </TableHead>
+                      {canFinalize && (
+                        <TableHead className="text-right pr-6 w-[120px]">Action</TableHead>
+                      )}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -230,19 +266,45 @@ export function BarClient({
                           <TableCell className="text-right font-semibold text-sm">
                             ₹{Number(chit.total_amount).toFixed(2)}
                           </TableCell>
-                          <TableCell className="text-center pr-6">
+                          <TableCell className={cn('text-center', !canFinalize && 'pr-6')}>
                             <Badge
-                              variant="outline"
-                              className={cn(
-                                "capitalize h-5 text-[10px] px-2 font-medium border",
-                                chit.status === 'finalized'
-                                  ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400"
-                                  : "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400"
-                              )}
+                              variant={chit.status === 'finalized' ? 'default' : 'outline'}
+                              className="capitalize h-5 text-[10px] px-2 font-medium"
                             >
                               {chit.status}
                             </Badge>
                           </TableCell>
+                          {canFinalize && (
+                            <TableCell className="text-right pr-6">
+                              {chit.status === 'pending' ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={isPending}
+                                  onClick={() => runChitAction(chit.id, 'finalize')}
+                                >
+                                  {busyChitId === chit.id ? (
+                                    <Loader2 className="size-3.5 animate-spin" />
+                                  ) : (
+                                    'Finalize'
+                                  )}
+                                </Button>
+                              ) : chit.status === 'finalized' ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={isPending}
+                                  onClick={() => runChitAction(chit.id, 'reopen')}
+                                >
+                                  {busyChitId === chit.id ? (
+                                    <Loader2 className="size-3.5 animate-spin" />
+                                  ) : (
+                                    'Reopen'
+                                  )}
+                                </Button>
+                              ) : null}
+                            </TableCell>
+                          )}
                         </TableRow>
                       );
                     })}

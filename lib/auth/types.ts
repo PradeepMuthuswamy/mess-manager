@@ -11,6 +11,7 @@ export const CAPABILITIES = [
   'users.read','users.invite','users.manage',
   'reports.unit','reports.cross_unit',
   'billing.read','billing.draft','billing.finalize',
+  'messing.approve',
 ] as const;
 export type Capability = typeof CAPABILITIES[number];
 
@@ -26,6 +27,7 @@ export const CAPABILITY_DOMAIN_LABELS: Record<string, string> = {
   users:      'Users',
   reports:    'Reports',
   billing:    'Billing',
+  messing:    'Messing',
 };
 
 // Friendly action label per capability (no domain repetition — labels are
@@ -68,6 +70,7 @@ export const CAPABILITY_ACTION_LABELS: Record<Capability, string> = {
   'billing.read':           'View bills',
   'billing.draft':          'Draft bills',
   'billing.finalize':       'Finalise and publish bills',
+  'messing.approve':        'Approve the daily messing register',
 };
 
 export function capabilityLabel(cap: Capability) {

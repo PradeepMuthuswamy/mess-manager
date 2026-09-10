@@ -3,18 +3,19 @@ import { requireUser } from '@/lib/auth/require-role';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { ReceiptText, AlertCircle, CheckCircle2, History } from 'lucide-react';
 import {
   getMyMessBills,
   getCurrentBillingPeriod,
   getSubscriptions,
+  getMessBillsForPeriod,
 } from '@/lib/billing/queries';
+import { listDiningCandidates } from '@/lib/attendance/queries';
 import { BillingOpsPanel } from './_components/billing-ops-panel';
 import { BillPaymentDialog } from './_components/bill-payment-dialog';
 import { BillDetailDialog } from './_components/bill-detail-dialog';
+import { DraftBillsTable } from './_components/draft-bills-table';
 import { EmptyState } from '@/components/shared/empty-state';
-import { format } from 'date-fns';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,16 +42,27 @@ export default async function BillingPage() {
   const canDraftBilling = userHasCapability(user, 'billing.draft', unitId);
   const canFinalizeBilling = userHasCapability(user, 'billing.finalize', unitId);
 
-  // Parallel data fetching
-  const [myBills, currentPeriod, subscriptions] = await Promise.all([
+  const [myBills, currentPeriod, subscriptions, diningCandidates] = await Promise.all([
     getMyMessBills(user.id),
     canDraftBilling ? getCurrentBillingPeriod(unitId) : Promise.resolve(null),
     canDraftBilling ? getSubscriptions(unitId) : Promise.resolve([]),
+    canDraftBilling ? listDiningCandidates(unitId) : Promise.resolve([]),
   ]);
 
-  // Outstanding unpaid bills
+  const periodBills =
+    canDraftBilling && currentPeriod
+      ? await getMessBillsForPeriod(currentPeriod.id)
+      : [];
+
+  const members = diningCandidates
+    .filter((c) => c.person_type === 'profile')
+    .map((c) => ({ id: c.person_id, name: c.name }));
+
   const unpaidBills = myBills.filter((b) => b.status === 'published' || b.status === 'overdue');
-  const totalOutstanding = unpaidBills.reduce((acc, b) => acc + Number(b.total_amount), 0);
+  const totalOutstanding = unpaidBills.reduce(
+    (acc, b) => acc + (Number(b.total_amount) - Number(b.paid_amount ?? 0)),
+    0
+  );
   const latestUnpaid = unpaidBills[0];
 
   return (
@@ -76,8 +88,13 @@ export default async function BillingPage() {
           unitId={unitId}
           currentPeriod={currentPeriod}
           subscriptions={subscriptions}
+          members={members}
           canFinalize={canFinalizeBilling}
         />
+      )}
+
+      {canDraftBilling && currentPeriod && (
+        <DraftBillsTable bills={periodBills} periodName={currentPeriod.name} />
       )}
 
       {/* Main Outstanding Dues Card */}
@@ -131,41 +148,53 @@ export default async function BillingPage() {
             {latestUnpaid && (
               <>
                 <div className="h-px bg-border" />
-                <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 text-xs">
+                <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
                   <div>
-                    <span className="text-muted-foreground block mb-0.5">Messing</span>
+                    <span className="mb-0.5 block text-muted-foreground">Messing</span>
                     <span className="font-mono font-bold text-foreground">
                       ₹{Number(latestUnpaid.messing_amount).toFixed(0)}
                     </span>
                   </div>
                   <div>
-                    <span className="text-muted-foreground block mb-0.5">Bar Lounge</span>
+                    <span className="mb-0.5 block text-muted-foreground">Bar Lounge</span>
                     <span className="font-mono font-bold text-foreground">
                       ₹{Number(latestUnpaid.bar_amount).toFixed(0)}
                     </span>
                   </div>
                   <div>
-                    <span className="text-muted-foreground block mb-0.5">Guest Rooms</span>
+                    <span className="mb-0.5 block text-muted-foreground">Guest Rooms</span>
                     <span className="font-mono font-bold text-foreground">
                       ₹{Number(latestUnpaid.room_amount).toFixed(0)}
                     </span>
                   </div>
                   <div>
-                    <span className="text-muted-foreground block mb-0.5">Casual Guests</span>
+                    <span className="mb-0.5 block text-muted-foreground">Casual Guests</span>
                     <span className="font-mono font-bold text-foreground">
                       ₹{Number(latestUnpaid.guest_meal_amount).toFixed(0)}
                     </span>
                   </div>
                   <div>
-                    <span className="text-muted-foreground block mb-0.5">Subscriptions</span>
+                    <span className="mb-0.5 block text-muted-foreground">Subscriptions</span>
                     <span className="font-mono font-bold text-foreground">
                       ₹{Number(latestUnpaid.subscriptions_amount).toFixed(0)}
                     </span>
                   </div>
                   <div>
-                    <span className="text-muted-foreground block mb-0.5">Recoveries</span>
+                    <span className="mb-0.5 block text-muted-foreground">Recoveries</span>
                     <span className="font-mono font-bold text-foreground">
                       ₹{Number(latestUnpaid.misc_amount).toFixed(0)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="mb-0.5 block text-muted-foreground">Party</span>
+                    <span className="font-mono font-bold text-foreground">
+                      ₹{Number(latestUnpaid.party_amount ?? 0).toFixed(0)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="mb-0.5 block text-muted-foreground">Arrears</span>
+                    <span className="font-mono font-bold text-foreground">
+                      ₹{Number(latestUnpaid.arrears_amount ?? 0).toFixed(0)}
                     </span>
                   </div>
                 </div>

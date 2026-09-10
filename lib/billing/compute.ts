@@ -279,3 +279,114 @@ export function groupHostChargeRoomBills(
   }
   return map;
 }
+
+export const APPROVED_REGISTER_STATUS = 'approved' as const;
+
+/** Kitchen P-register is billable only after Mess Secretary approval. */
+export function isApprovedRegisterDay(registerStatus: string | null | undefined): boolean {
+  return registerStatus === APPROVED_REGISTER_STATUS;
+}
+
+/**
+ * Drops P-rates whose kitchen register is missing or not `approved`.
+ * A missing expenditure row is treated as not approved (P4-G-007).
+ */
+export function filterApprovedPRates(
+  pRates: Map<string, number>,
+  registerStatusByDate: Map<string, string | null | undefined>
+): Map<string, number> {
+  const approved = new Map<string, number>();
+  for (const [date, rate] of pRates) {
+    if (isApprovedRegisterDay(registerStatusByDate.get(date))) {
+      approved.set(date, rate);
+    }
+  }
+  return approved;
+}
+
+export type PeriodChargeFlag = {
+  is_billed: boolean;
+  billed_period_id: string | null;
+};
+
+/** Unbilled, never-attributed, or already locked to this draft period. */
+export function isChargeBillableForPeriod(
+  charge: PeriodChargeFlag,
+  periodId: string
+): boolean {
+  return !charge.is_billed || charge.billed_period_id == null || charge.billed_period_id === periodId;
+}
+
+export type ArrearSourceBill = {
+  profile_id: string;
+  total_amount: number;
+  paid_amount?: number | null;
+  status: string;
+  period_end_date: string;
+};
+
+const ARREAR_STATUSES = new Set(['published', 'overdue']);
+
+export function isArrearBill(bill: ArrearSourceBill, periodStartDate: string): boolean {
+  if (!ARREAR_STATUSES.has(bill.status)) return false;
+  if (bill.period_end_date >= periodStartDate) return false;
+  return Number(bill.total_amount) - Number(bill.paid_amount ?? 0) > 0;
+}
+
+/** Unpaid published/overdue bills whose period ended before this cycle starts. */
+export function sumArrears(bills: ArrearSourceBill[], periodStartDate: string): number {
+  let total = 0;
+  for (const bill of bills) {
+    if (!isArrearBill(bill, periodStartDate)) continue;
+    total += Number(bill.total_amount) - Number(bill.paid_amount ?? 0);
+  }
+  return Math.round(total * 100) / 100;
+}
+
+export function groupMemberArrears(
+  bills: ArrearSourceBill[],
+  periodStartDate: string
+): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const bill of bills) {
+    if (!isArrearBill(bill, periodStartDate)) continue;
+    const unpaid = Number(bill.total_amount) - Number(bill.paid_amount ?? 0);
+    map.set(bill.profile_id, (map.get(bill.profile_id) ?? 0) + unpaid);
+  }
+  for (const [id, amount] of map) {
+    map.set(id, Math.round(amount * 100) / 100);
+  }
+  return map;
+}
+
+export function sumChargeAmounts(charges: Array<{ amount: number }>): number {
+  return Math.round(charges.reduce((sum, charge) => sum + Number(charge.amount), 0) * 100) / 100;
+}
+
+export type MessBillAmountParts = {
+  messingAmount: number;
+  barAmount: number;
+  roomAmount: number;
+  guestMealAmount: number;
+  subscriptionsAmount: number;
+  miscAmount: number;
+  partyAmount: number;
+  arrearsAmount: number;
+};
+
+/** Header total — includes party + arrears (P4-G-012 / P4-G-013). */
+export function totalMessBillAmount(parts: MessBillAmountParts): number {
+  return (
+    Math.round(
+      (parts.messingAmount +
+        parts.barAmount +
+        parts.roomAmount +
+        parts.guestMealAmount +
+        parts.subscriptionsAmount +
+        parts.miscAmount +
+        parts.partyAmount +
+        parts.arrearsAmount) *
+        100
+    ) / 100
+  );
+}

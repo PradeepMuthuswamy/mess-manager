@@ -297,3 +297,97 @@ export async function createBarChitAction(
 
   return res;
 }
+
+function parseChitId(input: { id: string }): string | null {
+  const id = typeof input?.id === 'string' ? input.id.trim() : '';
+  return id.length > 0 ? id : null;
+}
+
+export async function finalizeBarChitAction(input: {
+  id: string;
+}): Promise<ActionResult> {
+  const id = parseChitId(input);
+  if (!id) return { error: 'Chit id is required' };
+
+  const supabase = await createClient();
+  const { data: chit, error: loadErr } = await supabase
+    .from('bar_chits')
+    .select('id, unit_id, status')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (loadErr) return { error: loadErr.message };
+  if (!chit) return { error: 'Bar chit not found' };
+
+  await requireCapability('bar.finalize', chit.unit_id);
+
+  if (chit.status !== 'pending') {
+    return { error: 'Only pending chits can be finalized' };
+  }
+
+  const { data: updated, error: updateErr } = await supabase
+    .from('bar_chits')
+    .update({ status: 'finalized' })
+    .eq('id', chit.id)
+    .eq('status', 'pending')
+    .select('id')
+    .maybeSingle();
+
+  if (updateErr) return { error: updateErr.message };
+  if (!updated) return { error: 'Only pending chits can be finalized' };
+
+  revalidatePath('/bar');
+  return { ok: true, id: chit.id };
+}
+
+/** Reopens a finalized chit if its billing period is not yet published. */
+export async function reopenBarChitAction(input: {
+  id: string;
+}): Promise<ActionResult> {
+  const id = parseChitId(input);
+  if (!id) return { error: 'Chit id is required' };
+
+  const supabase = await createClient();
+  const { data: chit, error: loadErr } = await supabase
+    .from('bar_chits')
+    .select('id, unit_id, status, date')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (loadErr) return { error: loadErr.message };
+  if (!chit) return { error: 'Bar chit not found' };
+
+  await requireCapability('bar.finalize', chit.unit_id);
+
+  if (chit.status !== 'finalized') {
+    return { error: 'Only finalized chits can be reopened' };
+  }
+
+  const { data: publishedPeriod, error: periodErr } = await supabase
+    .from('mess_billing_periods')
+    .select('id')
+    .eq('unit_id', chit.unit_id)
+    .in('status', ['published', 'closed'])
+    .lte('start_date', chit.date)
+    .gte('end_date', chit.date)
+    .maybeSingle();
+
+  if (periodErr) return { error: periodErr.message };
+  if (publishedPeriod) {
+    return { error: 'Cannot reopen a chit after the billing period has been published' };
+  }
+
+  const { data: updated, error: updateErr } = await supabase
+    .from('bar_chits')
+    .update({ status: 'pending' })
+    .eq('id', chit.id)
+    .eq('status', 'finalized')
+    .select('id')
+    .maybeSingle();
+
+  if (updateErr) return { error: updateErr.message };
+  if (!updated) return { error: 'Only finalized chits can be reopened' };
+
+  revalidatePath('/bar');
+  return { ok: true, id: chit.id };
+}

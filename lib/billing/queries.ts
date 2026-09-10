@@ -10,11 +10,38 @@ import type {
 import {
   BILLABLE_BAR_CHIT_STATUSES,
   isBillableMemberBarChit,
+  isChargeBillableForPeriod,
   isHostChargeRoomBill,
   isRoomBillInPeriod,
+  type ArrearSourceBill,
   type BarChitRollupRow,
   type HostRoomBillRollupRow,
 } from './compute';
+import type { Database } from '@/lib/supabase/database.types';
+
+export type GuestMealBillRow = Database['public']['Tables']['guest_meals']['Row'];
+export type PartyChargeBillRow = Database['public']['Tables']['mess_party_charges']['Row'];
+
+/** Generated types lag `billed_period_id` on misc debits. */
+export type MiscDebitBillRow = Database['public']['Tables']['mess_misc_debits']['Row'] & {
+  billed_period_id: string | null;
+};
+
+export type HostRoomBillWithPeriodFlag = HostRoomBillRollupRow & {
+  is_billed: boolean;
+  billed_period_id: string | null;
+};
+
+export type PublishedBillForEmail = {
+  id: string;
+  bill_number: string;
+  total_amount: number;
+  due_date: string;
+  profile_id: string;
+  email: string | null;
+  full_name: string | null;
+  period_name: string;
+};
 
 /**
  * Returns all billing periods for a unit.
@@ -200,6 +227,8 @@ type RoomBillQueryRow = {
   status: string;
   payment_status: string | null;
   paid_at: string | null;
+  is_billed?: boolean;
+  billed_period_id?: string | null;
   booking:
     | {
         host_profile_id: string | null;
@@ -218,7 +247,7 @@ type RoomBillQueryRow = {
     | null;
 };
 
-function normalizeRoomBillRow(row: RoomBillQueryRow): HostRoomBillRollupRow {
+function normalizeRoomBillRow(row: RoomBillQueryRow): HostRoomBillWithPeriodFlag {
   const raw = Array.isArray(row.booking) ? row.booking[0] : row.booking;
   return {
     id: row.id,
@@ -227,6 +256,8 @@ function normalizeRoomBillRow(row: RoomBillQueryRow): HostRoomBillRollupRow {
     status: row.status,
     payment_status: row.payment_status,
     paid_at: row.paid_at,
+    is_billed: Boolean(row.is_billed),
+    billed_period_id: row.billed_period_id ?? null,
     booking: raw
       ? {
           host_profile_id: raw.host_profile_id,
@@ -248,7 +279,7 @@ export async function getHostChargeRoomBillsForPeriod(
   unitId: string,
   startDate: string,
   endDate: string
-): Promise<HostRoomBillRollupRow[]> {
+): Promise<HostRoomBillWithPeriodFlag[]> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('room_bills')
@@ -260,6 +291,8 @@ export async function getHostChargeRoomBillsForPeriod(
       status,
       payment_status,
       paid_at,
+      is_billed,
+      billed_period_id,
       booking:bookings!inner (
         host_profile_id,
         guest_name,
@@ -281,4 +314,201 @@ export async function getHostChargeRoomBillsForPeriod(
     .filter(
       (bill) => isHostChargeRoomBill(bill) && isRoomBillInPeriod(bill, startDate, endDate)
     );
+}
+
+/**
+ * Kitchen P-register status by expenditure date (missing row = not approved).
+ */
+export async function getRegisterStatusByDate(
+  unitId: string,
+  startDate: string,
+  endDate: string
+): Promise<Map<string, string | null>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_daily_expenditures')
+    .select('expenditure_date, register_status')
+    .eq('unit_id', unitId)
+    .gte('expenditure_date', startDate)
+    .lte('expenditure_date', endDate);
+
+  if (error) throw new Error(error.message);
+
+  const map = new Map<string, string | null>();
+  for (const row of data ?? []) {
+    map.set(row.expenditure_date, row.register_status);
+  }
+  return map;
+}
+
+export async function getBillableGuestMealsForPeriod(
+  unitId: string,
+  periodId: string,
+  startDate: string,
+  endDate: string
+): Promise<GuestMealBillRow[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('guest_meals')
+    .select('*')
+    .eq('unit_id', unitId)
+    .gte('meal_date', startDate)
+    .lte('meal_date', endDate);
+
+  if (error) throw new Error(error.message);
+  return (data ?? []).filter((row) => isChargeBillableForPeriod(row, periodId));
+}
+
+export async function getBillableMiscDebitsForPeriod(
+  unitId: string,
+  periodId: string,
+  endDate: string
+): Promise<MiscDebitBillRow[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_misc_debits')
+    .select('*')
+    .eq('unit_id', unitId)
+    .lte('charge_date', endDate)
+    .or(`is_billed.eq.false,billed_period_id.eq.${periodId}`);
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as unknown as MiscDebitBillRow[]).filter((row) =>
+    isChargeBillableForPeriod(
+      { is_billed: row.is_billed, billed_period_id: row.billed_period_id ?? null },
+      periodId
+    )
+  );
+}
+
+export async function getBillablePartyChargesForPeriod(
+  unitId: string,
+  periodId: string,
+  endDate: string
+): Promise<PartyChargeBillRow[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_party_charges')
+    .select('*')
+    .eq('unit_id', unitId)
+    .lte('party_date', endDate)
+    .or(`is_billed.eq.false,billed_period_id.eq.${periodId}`);
+
+  if (error) throw new Error(error.message);
+  return (data ?? []).filter((row) => isChargeBillableForPeriod(row, periodId));
+}
+
+/**
+ * Prior published/overdue bills whose period ended before this cycle starts.
+ */
+export async function getPriorArrearSourceBills(
+  unitId: string,
+  periodStartDate: string
+): Promise<ArrearSourceBill[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_bills')
+    .select(
+      `
+      profile_id,
+      total_amount,
+      paid_amount,
+      status,
+      period:mess_billing_periods!inner (
+        end_date
+      )
+    `
+    )
+    .eq('unit_id', unitId)
+    .in('status', ['published', 'overdue']);
+
+  if (error) throw new Error(error.message);
+
+  type ArrearQueryRow = {
+    profile_id: string;
+    total_amount: number;
+    paid_amount: number | null;
+    status: string;
+    period: { end_date: string } | { end_date: string }[] | null;
+  };
+
+  return ((data ?? []) as unknown as ArrearQueryRow[]).map((row) => {
+    const period = Array.isArray(row.period) ? row.period[0] : row.period;
+    return {
+      profile_id: row.profile_id,
+      total_amount: Number(row.total_amount),
+      paid_amount: Number(row.paid_amount ?? 0),
+      status: row.status,
+      period_end_date: period?.end_date ?? periodStartDate,
+    };
+  });
+}
+
+export async function getPublishedBillsForEmail(
+  periodId: string
+): Promise<PublishedBillForEmail[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_bills')
+    .select(
+      `
+      id,
+      bill_number,
+      total_amount,
+      due_date,
+      profile_id,
+      profile:profiles (
+        email,
+        full_name
+      ),
+      period:mess_billing_periods (
+        name
+      )
+    `
+    )
+    .eq('billing_period_id', periodId)
+    .eq('status', 'published');
+
+  if (error) throw new Error(error.message);
+
+  type NotifyQueryRow = {
+    id: string;
+    bill_number: string;
+    total_amount: number;
+    due_date: string;
+    profile_id: string;
+    profile:
+      | { email: string | null; full_name: string | null }
+      | { email: string | null; full_name: string | null }[]
+      | null;
+    period: { name: string } | { name: string }[] | null;
+  };
+
+  return ((data ?? []) as unknown as NotifyQueryRow[]).map((row) => {
+    const profile = Array.isArray(row.profile) ? row.profile[0] : row.profile;
+    const period = Array.isArray(row.period) ? row.period[0] : row.period;
+    return {
+      id: row.id,
+      bill_number: row.bill_number,
+      total_amount: Number(row.total_amount),
+      due_date: row.due_date,
+      profile_id: row.profile_id,
+      email: profile?.email ?? null,
+      full_name: profile?.full_name ?? null,
+      period_name: period?.name ?? 'Mess bill',
+    };
+  });
+}
+
+export async function getSentMessBillEmailIds(periodId: string): Promise<Set<string>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_bill_email_sends')
+    .select('bill_id')
+    .eq('billing_period_id', periodId)
+    .eq('status', 'sent');
+
+  if (error) throw new Error(error.message);
+  return new Set((data ?? []).map((row) => row.bill_id));
 }

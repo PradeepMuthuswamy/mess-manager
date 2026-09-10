@@ -10,8 +10,13 @@ import {
   roomBillRollupDate,
   isHostChargeRoomBill,
   groupHostChargeRoomBills,
+  filterApprovedPRates,
+  isChargeBillableForPeriod,
+  groupMemberArrears,
+  totalMessBillAmount,
   type BarChitRollupRow,
   type HostRoomBillRollupRow,
+  type ArrearSourceBill,
 } from './compute';
 import type { MessingMealType } from '@/lib/schemas/messing';
 
@@ -343,5 +348,138 @@ describe('room bill host routing (CP-07 / G-018)', () => {
     expect(groupHostChargeRoomBills([merged], MAY_START, MAY_END).get('officer-101')?.[0].id).toBe(
       'merged-status'
     );
+  });
+});
+
+describe('filterApprovedPRates', () => {
+  const rates = new Map<string, number>([
+    ['2026-05-01', 80],
+    ['2026-05-02', 90],
+    ['2026-05-03', 75],
+    ['2026-05-04', 60],
+  ]);
+
+  it('keeps only days whose kitchen register is approved', () => {
+    const register = new Map<string, string | null>([
+      ['2026-05-01', 'approved'],
+      ['2026-05-02', 'submitted'],
+      ['2026-05-03', 'draft'],
+    ]);
+
+    const approved = filterApprovedPRates(rates, register);
+    expect([...approved.entries()]).toEqual([['2026-05-01', 80]]);
+  });
+
+  it('treats a missing expenditure row as not approved', () => {
+    const register = new Map<string, string | null>([['2026-05-04', 'approved']]);
+    const approved = filterApprovedPRates(rates, register);
+    expect(approved.has('2026-05-01')).toBe(false);
+    expect(approved.get('2026-05-04')).toBe(60);
+  });
+});
+
+describe('isChargeBillableForPeriod', () => {
+  const periodId = 'period-may';
+
+  it('includes unbilled, never-attributed, and this-period charges', () => {
+    expect(isChargeBillableForPeriod({ is_billed: false, billed_period_id: null }, periodId)).toBe(
+      true
+    );
+    expect(isChargeBillableForPeriod({ is_billed: true, billed_period_id: null }, periodId)).toBe(
+      true
+    );
+    expect(
+      isChargeBillableForPeriod({ is_billed: true, billed_period_id: periodId }, periodId)
+    ).toBe(true);
+  });
+
+  it('excludes charges already locked to another period', () => {
+    expect(
+      isChargeBillableForPeriod({ is_billed: true, billed_period_id: 'period-april' }, periodId)
+    ).toBe(false);
+  });
+});
+
+describe('groupMemberArrears', () => {
+  const start = '2026-04-26';
+
+  function arrear(overrides: Partial<ArrearSourceBill>): ArrearSourceBill {
+    return {
+      profile_id: 'officer-101',
+      total_amount: 1200,
+      paid_amount: 0,
+      status: 'published',
+      period_end_date: '2026-03-25',
+      ...overrides,
+    };
+  }
+
+  it('sums unpaid published/overdue bills whose period ended before this cycle', () => {
+    const grouped = groupMemberArrears(
+      [
+        arrear({ total_amount: 1200, paid_amount: 200 }),
+        arrear({
+          profile_id: 'officer-101',
+          total_amount: 400,
+          status: 'overdue',
+          period_end_date: '2026-02-25',
+        }),
+        arrear({
+          profile_id: 'officer-102',
+          total_amount: 800,
+          period_end_date: '2026-03-25',
+        }),
+      ],
+      start
+    );
+
+    expect(grouped.get('officer-101')).toBe(1400);
+    expect(grouped.get('officer-102')).toBe(800);
+  });
+
+  it('ignores paid, draft, and same-or-later period bills', () => {
+    const grouped = groupMemberArrears(
+      [
+        arrear({ total_amount: 500, paid_amount: 500 }),
+        arrear({ status: 'draft', total_amount: 900 }),
+        arrear({ period_end_date: '2026-04-26', total_amount: 300 }),
+        arrear({ period_end_date: '2026-05-25', total_amount: 300 }),
+      ],
+      start
+    );
+
+    expect(grouped.size).toBe(0);
+  });
+});
+
+describe('totalMessBillAmount', () => {
+  it('includes party and arrears in the header total', () => {
+    expect(
+      totalMessBillAmount({
+        messingAmount: 100,
+        barAmount: 50,
+        roomAmount: 25,
+        guestMealAmount: 10,
+        subscriptionsAmount: 5,
+        miscAmount: 4,
+        partyAmount: 20,
+        arrearsAmount: 11,
+      })
+    ).toBe(225);
+  });
+
+  it('rounds to two decimal places', () => {
+    expect(
+      totalMessBillAmount({
+        messingAmount: 10.125,
+        barAmount: 0,
+        roomAmount: 0,
+        guestMealAmount: 0,
+        subscriptionsAmount: 0,
+        miscAmount: 0,
+        partyAmount: 0.125,
+        arrearsAmount: 0,
+      })
+    ).toBe(10.25);
   });
 });

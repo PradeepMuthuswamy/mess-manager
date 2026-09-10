@@ -74,8 +74,40 @@ export const guestMealInputSchema = z.object({
   notes: z.string().trim().optional().nullable(),
 }).openapi('GuestMealInput');
 
+export const approveMealCutSchema = z.object({
+  id: z.string().uuid(),
+  unit_id: z.string().uuid(),
+}).openapi('ApproveMealCutInput');
+
+export const rejectMealCutSchema = z.object({
+  id: z.string().uuid(),
+  unit_id: z.string().uuid(),
+  reason: z.string().trim().max(300).optional().nullable(),
+}).openapi('RejectMealCutInput');
+
+const registerDateFields = {
+  unit_id: z.string().uuid(),
+  expenditure_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+};
+
+export const submitDailyRegisterSchema = z.object(registerDateFields).openapi('SubmitDailyRegisterInput');
+
+export const approveDailyRegisterSchema = z.object(registerDateFields).openapi('ApproveDailyRegisterInput');
+
+export const rejectDailyRegisterSchema = z
+  .object({
+    ...registerDateFields,
+    reject_reason: z.string().trim().max(500).optional().nullable(),
+  })
+  .openapi('RejectDailyRegisterInput');
+
 export type FlatRateInput = z.infer<typeof flatRateInputSchema>;
 export type UpdateUnitFlatRatesInput = z.infer<typeof updateUnitFlatRatesSchema>;
 export type DailyKitchenExpenditureInput = z.infer<typeof dailyKitchenExpenditureSchema>;
 export type MealCutInput = z.infer<typeof mealCutInputSchema>;
 export type GuestMealInput = z.infer<typeof guestMealInputSchema>;
+export type ApproveMealCutInput = z.infer<typeof approveMealCutSchema>;
+export type RejectMealCutInput = z.infer<typeof rejectMealCutSchema>;
+export type SubmitDailyRegisterInput = z.infer<typeof submitDailyRegisterSchema>;
+export type ApproveDailyRegisterInput = z.infer<typeof approveDailyRegisterSchema>;
+export type RejectDailyRegisterInput = z.infer<typeof rejectDailyRegisterSchema>;

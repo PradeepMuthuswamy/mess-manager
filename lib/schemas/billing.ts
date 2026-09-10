@@ -12,6 +12,7 @@ export const billLineCategoryEnum = [
   'guest_meal',
   'subscription',
   'misc',
+  'party',
   'arrear',
 ] as const;
 

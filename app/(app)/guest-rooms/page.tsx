@@ -9,6 +9,9 @@ import {
   getRooms,
   getUnitFurniture,
 } from '@/lib/guest-rooms/queries';
+import { listUnitWaitlist } from '@/lib/waitlist/queries';
+import { WaitlistQueue } from './_components/waitlist-queue';
+import { userHasCapability } from '@/lib/auth/capabilities';
 
 export default async function GuestRoomsPage() {
   await requireCapability('rooms.read');
@@ -39,10 +42,12 @@ export default async function GuestRoomsPage() {
   const gridEnd = endOfWeek(endOfMonth(today), { weekStartsOn: 0 });
   const from = format(gridStart, 'yyyy-MM-dd');
   const to = format(gridEnd, 'yyyy-MM-dd');
-  const [rooms, bookings, furniture] = await Promise.all([
+  const canManageWaitlist = userHasCapability(user, 'rooms.booking.write', user.activeUnitId);
+  const [rooms, bookings, furniture, waitlist] = await Promise.all([
     getRooms(user.activeUnitId),
     getBookings(user.activeUnitId, from, to),
     getUnitFurniture(user.activeUnitId),
+    canManageWaitlist ? listUnitWaitlist(user.activeUnitId).catch(() => []) : Promise.resolve([]),
   ]);
 
   return (
@@ -69,6 +74,8 @@ export default async function GuestRoomsPage() {
           fetchedAt: new Date().toISOString(),
         }}
       />
+
+      {canManageWaitlist ? <WaitlistQueue unitId={user.activeUnitId} rows={waitlist} /> : null}
     </div>
   );
 }

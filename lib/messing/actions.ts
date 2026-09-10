@@ -4,18 +4,36 @@ import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { requireCapability } from '@/lib/auth/require-capability';
-import { requireRole } from '@/lib/auth/require-role';
-import { requireUser } from '@/lib/auth/require-role';
+import { requireRole, requireUser } from '@/lib/auth/require-role';
+import { userHasCapability } from '@/lib/auth/capabilities';
+import type { AuthUser } from '@/lib/auth/types';
 import {
   updateUnitFlatRatesSchema,
   dailyKitchenExpenditureSchema,
   mealCutInputSchema,
   guestMealInputSchema,
+  submitDailyRegisterSchema,
+  approveDailyRegisterSchema,
+  rejectDailyRegisterSchema,
+  approveMealCutSchema,
+  rejectMealCutSchema,
 } from '@/lib/schemas/messing';
 import { format, subDays, parseISO } from 'date-fns';
-import { getAttendanceDay } from '@/lib/attendance/queries';
+import { recalculateDailyPRate } from './prate';
+import type { MessingMealType } from '@/lib/schemas/messing';
 
 type ActionResult = { ok: true; data?: unknown } | { error: string; details?: unknown };
+
+function unitMismatch(user: AuthUser, unitId: string): string | null {
+  if (user.homeUnitId === unitId || user.activeUnitId === unitId) return null;
+  return 'You can only act on your assigned unit.';
+}
+
+function revalidateMessing() {
+  revalidatePath('/messing');
+  revalidatePath('/messing/cuts');
+  revalidatePath('/dashboard');
+}
 
 /**
  * Updates flat rates for a unit (Mess Secretary / Admin)
@@ -28,17 +46,14 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
 
   const { unit_id, rates } = parsed.data;
 
-  // Verifies super_admin or unit_admin role
   const user = await requireRole(['super_admin', 'unit_admin']);
-  if (user.role !== 'super_admin' && user.homeUnitId !== unit_id) {
-    return { error: 'You can only configure your own unit.' };
-  }
+  const mismatch = unitMismatch(user, unit_id);
+  if (mismatch) return { error: mismatch };
 
   const admin = createServiceClient();
 
   try {
     for (const rateInput of rates) {
-      // Check if a rate starting exactly on this day already exists.
       const { data: existingRate, error: checkErr } = await admin
         .from('messing_flat_rates')
         .select('id')
@@ -52,7 +67,6 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
       }
 
       if (existingRate) {
-        // If so, update it.
         const { error: updateErr } = await admin
           .from('messing_flat_rates')
           .update({
@@ -66,7 +80,6 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
           return { error: `Failed to update existing rate: ${updateErr.message}` };
         }
       } else {
-        // If not, check if there is an active rate overlapping with valid_from.
         const { data: overlappingRate, error: overlapErr } = await admin
           .from('messing_flat_rates')
           .select('id, valid_from, valid_to')
@@ -81,7 +94,6 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
         }
 
         if (overlappingRate) {
-          // set its valid_to = valid_from - 1 day
           const previousDay = format(subDays(parseISO(rateInput.valid_from), 1), 'yyyy-MM-dd');
 
           const { error: updateOverlapErr } = await admin
@@ -98,7 +110,6 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
           }
         }
 
-        // Insert the new rate record.
         const { error: insertErr } = await admin
           .from('messing_flat_rates')
           .insert({
@@ -125,8 +136,9 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
 }
 
 /**
- * Mess Havildar records daily kitchen expenditures (Morning, Afternoon, Dinner)
- * and automatically computes the daily per-capita rate P_d.
+ * Mess Havildar records daily kitchen expenditures.
+ * Saving always reopens the register as draft; P-rate is recalculated
+ * only from finalized attendance (via recalculateDailyPRate).
  */
 export async function recordDailyKitchenExpenditureAction(input: unknown): Promise<ActionResult> {
   const parsed = dailyKitchenExpenditureSchema.safeParse(input);
@@ -146,14 +158,14 @@ export async function recordDailyKitchenExpenditureAction(input: unknown): Promi
     sourcing_category,
   } = parsed.data;
 
-  // Authorization: Mess Havildar / Attendance write capability
   const user = await requireCapability('attendance.write', unit_id);
-  const supabase = await createClient();
+  const mismatch = unitMismatch(user, unit_id);
+  if (mismatch) return { error: mismatch };
 
+  const supabase = await createClient();
   const total_amount = morning_amount + afternoon_amount + dinner_amount;
 
-  // 1. Upsert daily expenditure
-  const { data: expRow, error: expErr } = await supabase
+  const { error: expErr } = await supabase
     .from('mess_daily_expenditures')
     .upsert(
       {
@@ -167,58 +179,182 @@ export async function recordDailyKitchenExpenditureAction(input: unknown): Promi
         receipt_ref: receipt_ref ?? null,
         vendor_name: vendor_name ?? null,
         sourcing_category,
+        register_status: 'draft',
+        submitted_at: null,
+        submitted_by: null,
+        approved_at: null,
+        approved_by: null,
+        rejected_at: null,
+        rejected_by: null,
+        reject_reason: null,
         updated_by: user.id,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: 'unit_id, expenditure_date' }
-    )
-    .select()
-    .single();
+      { onConflict: 'unit_id, expenditure_date' },
+    );
 
   if (expErr) {
     return { error: `Failed to save kitchen expenditure: ${expErr.message}` };
   }
 
-  // 2. Fetch present diners count from attendance
-  let presentCount = 0;
-  try {
-    const attendance = await getAttendanceDay(unit_id, expenditure_date, supabase);
-    presentCount = attendance.present_count;
-  } catch {
-    // If no attendance entered yet, default present count to 0
-    presentCount = 0;
+  const pResult = await recalculateDailyPRate(unit_id, expenditure_date, user.id);
+  if ('error' in pResult) {
+    return { error: `Expenditure saved, but failed to update P-rate: ${pResult.error}` };
   }
 
-  // 3. Compute P_d rate: Total Expenditure / Total Present Count
-  const ratePerDiner = presentCount > 0 ? total_amount / presentCount : 0;
-
-  // 4. Upsert mess_daily_p_rates snapshot
-  const { error: pErr } = await supabase
-    .from('mess_daily_p_rates')
-    .upsert(
-      {
-        unit_id,
-        rate_date: expenditure_date,
-        total_expenditure: total_amount,
-        present_count: presentCount,
-        rate_per_diner: Math.round(ratePerDiner * 10000) / 10000,
-        calculated_at: new Date().toISOString(),
-        calculated_by: user.id,
-      },
-      { onConflict: 'unit_id, rate_date' }
-    );
-
-  if (pErr) {
-    return { error: `Expenditure saved, but failed to update P-rate: ${pErr.message}` };
-  }
-
-  revalidatePath('/messing');
+  revalidateMessing();
   revalidatePath('/attendance');
-  return { ok: true, data: { total_amount, presentCount, ratePerDiner } };
+  return {
+    ok: true,
+    data: {
+      total_amount,
+      presentCount: pResult.presentCount,
+      ratePerDiner: pResult.ratePerDiner,
+    },
+  };
+}
+
+/** Alias used by `/api/v1/messing/kitchen`. */
+export const saveKitchenExpenditureAction = recordDailyKitchenExpenditureAction;
+
+export async function submitDailyRegisterAction(input: unknown): Promise<ActionResult> {
+  const parsed = submitDailyRegisterSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: 'Invalid input', details: parsed.error.flatten() };
+  }
+
+  const user = await requireCapability('attendance.write', parsed.data.unit_id);
+  const mismatch = unitMismatch(user, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
+
+  const supabase = await createClient();
+  const { data: row, error: fetchErr } = await supabase
+    .from('mess_daily_expenditures')
+    .select('id, register_status')
+    .eq('unit_id', parsed.data.unit_id)
+    .eq('expenditure_date', parsed.data.expenditure_date)
+    .maybeSingle();
+
+  if (fetchErr) return { error: fetchErr.message };
+  if (!row) return { error: 'No kitchen register exists for this date.' };
+  if (row.register_status !== 'draft') {
+    return { error: 'Only a draft register can be submitted.' };
+  }
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('mess_daily_expenditures')
+    .update({
+      register_status: 'submitted',
+      submitted_at: now,
+      submitted_by: user.id,
+      rejected_at: null,
+      rejected_by: null,
+      reject_reason: null,
+      updated_by: user.id,
+      updated_at: now,
+    })
+    .eq('id', row.id);
+
+  if (error) return { error: `Failed to submit register: ${error.message}` };
+
+  revalidateMessing();
+  return { ok: true };
+}
+
+export async function approveDailyRegisterAction(input: unknown): Promise<ActionResult> {
+  const parsed = approveDailyRegisterSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: 'Invalid input', details: parsed.error.flatten() };
+  }
+
+  const user = await requireCapability('messing.approve', parsed.data.unit_id);
+  const mismatch = unitMismatch(user, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
+
+  const supabase = await createClient();
+  const { data: row, error: fetchErr } = await supabase
+    .from('mess_daily_expenditures')
+    .select('id, register_status')
+    .eq('unit_id', parsed.data.unit_id)
+    .eq('expenditure_date', parsed.data.expenditure_date)
+    .maybeSingle();
+
+  if (fetchErr) return { error: fetchErr.message };
+  if (!row) return { error: 'No kitchen register exists for this date.' };
+  if (row.register_status !== 'submitted') {
+    return { error: 'Only a submitted register can be approved.' };
+  }
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('mess_daily_expenditures')
+    .update({
+      register_status: 'approved',
+      approved_at: now,
+      approved_by: user.id,
+      rejected_at: null,
+      rejected_by: null,
+      reject_reason: null,
+      updated_by: user.id,
+      updated_at: now,
+    })
+    .eq('id', row.id);
+
+  if (error) return { error: `Failed to approve register: ${error.message}` };
+
+  revalidateMessing();
+  return { ok: true };
+}
+
+export async function rejectDailyRegisterAction(input: unknown): Promise<ActionResult> {
+  const parsed = rejectDailyRegisterSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: 'Invalid input', details: parsed.error.flatten() };
+  }
+
+  const user = await requireCapability('messing.approve', parsed.data.unit_id);
+  const mismatch = unitMismatch(user, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
+
+  const supabase = await createClient();
+  const { data: row, error: fetchErr } = await supabase
+    .from('mess_daily_expenditures')
+    .select('id, register_status')
+    .eq('unit_id', parsed.data.unit_id)
+    .eq('expenditure_date', parsed.data.expenditure_date)
+    .maybeSingle();
+
+  if (fetchErr) return { error: fetchErr.message };
+  if (!row) return { error: 'No kitchen register exists for this date.' };
+  if (row.register_status !== 'submitted') {
+    return { error: 'Only a submitted register can be rejected.' };
+  }
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('mess_daily_expenditures')
+    .update({
+      register_status: 'rejected',
+      rejected_at: now,
+      rejected_by: user.id,
+      reject_reason: parsed.data.reject_reason ?? null,
+      approved_at: null,
+      approved_by: null,
+      updated_by: user.id,
+      updated_at: now,
+    })
+    .eq('id', row.id);
+
+  if (error) return { error: `Failed to reject register: ${error.message}` };
+
+  revalidateMessing();
+  return { ok: true };
 }
 
 /**
  * Officer or Mess Havildar records a meal cut (e.g. absent for dinner).
+ * Status is approved when the actor has attendance.write; otherwise requested.
  */
 export async function recordMealCutAction(input: unknown): Promise<ActionResult> {
   const parsed = mealCutInputSchema.safeParse(input);
@@ -227,9 +363,12 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
   }
 
   const currentUser = await requireUser();
-  const targetProfileId = parsed.data.profile_id ?? currentUser.id;
+  const mismatch = unitMismatch(currentUser, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
 
-  // If setting for someone else, require attendance.write
+  const targetProfileId = parsed.data.profile_id ?? currentUser.id;
+  const canWrite = userHasCapability(currentUser, 'attendance.write', parsed.data.unit_id);
+
   if (targetProfileId !== currentUser.id) {
     await requireCapability('attendance.write', parsed.data.unit_id);
   }
@@ -244,18 +383,76 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
         profile_id: targetProfileId,
         cut_date: parsed.data.cut_date,
         meal_type: parsed.data.meal_type,
-        status: 'approved',
+        status: canWrite ? 'approved' : 'requested',
         reason: parsed.data.reason ?? null,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: 'profile_id, cut_date, meal_type' }
+      { onConflict: 'profile_id, cut_date, meal_type' },
     );
 
   if (error) {
     return { error: `Failed to place meal cut: ${error.message}` };
   }
 
-  revalidatePath('/messing');
+  revalidateMessing();
+  return { ok: true };
+}
+
+export async function approveMealCutAction(input: unknown): Promise<ActionResult> {
+  const parsed = approveMealCutSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: 'Invalid input', details: parsed.error.flatten() };
+  }
+
+  const user = await requireCapability('attendance.write', parsed.data.unit_id);
+  const mismatch = unitMismatch(user, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_meal_cuts')
+    .update({ status: 'approved', updated_at: new Date().toISOString() })
+    .eq('id', parsed.data.id)
+    .eq('unit_id', parsed.data.unit_id)
+    .eq('status', 'requested')
+    .select('id')
+    .maybeSingle();
+
+  if (error) return { error: `Failed to approve meal cut: ${error.message}` };
+  if (!data) return { error: 'Meal cut is no longer pending.' };
+
+  revalidateMessing();
+  return { ok: true };
+}
+
+export async function rejectMealCutAction(input: unknown): Promise<ActionResult> {
+  const parsed = rejectMealCutSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: 'Invalid input', details: parsed.error.flatten() };
+  }
+
+  const user = await requireCapability('attendance.write', parsed.data.unit_id);
+  const mismatch = unitMismatch(user, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('mess_meal_cuts')
+    .update({
+      status: 'rejected',
+      reason: parsed.data.reason ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', parsed.data.id)
+    .eq('unit_id', parsed.data.unit_id)
+    .eq('status', 'requested')
+    .select('id')
+    .maybeSingle();
+
+  if (error) return { error: `Failed to reject meal cut: ${error.message}` };
+  if (!data) return { error: 'Meal cut is no longer pending.' };
+
+  revalidateMessing();
   return { ok: true };
 }
 
@@ -269,6 +466,9 @@ export async function cancelMealCutAction(input: {
   profile_id?: string;
 }): Promise<ActionResult> {
   const currentUser = await requireUser();
+  const mismatch = unitMismatch(currentUser, input.unit_id);
+  if (mismatch) return { error: mismatch };
+
   const targetProfileId = input.profile_id ?? currentUser.id;
 
   if (targetProfileId !== currentUser.id) {
@@ -283,13 +483,13 @@ export async function cancelMealCutAction(input: {
     .eq('unit_id', input.unit_id)
     .eq('profile_id', targetProfileId)
     .eq('cut_date', input.cut_date)
-    .eq('meal_type', input.meal_type as any);
+    .eq('meal_type', input.meal_type as MessingMealType);
 
   if (error) {
     return { error: `Failed to cancel meal cut: ${error.message}` };
   }
 
-  revalidatePath('/messing');
+  revalidateMessing();
   return { ok: true };
 }
 
@@ -302,7 +502,13 @@ export async function recordGuestMealAction(input: unknown): Promise<ActionResul
     return { error: 'Invalid guest meal input', details: parsed.error.flatten() };
   }
 
-  const user = await requireCapability('attendance.write', parsed.data.unit_id);
+  const user = await requireUser();
+  const mismatch = unitMismatch(user, parsed.data.unit_id);
+  if (mismatch) return { error: mismatch };
+
+  if (parsed.data.host_profile_id !== user.id) {
+    await requireCapability('attendance.write', parsed.data.unit_id);
+  }
   const supabase = await createClient();
 
   const total_amount = parsed.data.guest_count * parsed.data.rate_charged;
@@ -326,6 +532,6 @@ export async function recordGuestMealAction(input: unknown): Promise<ActionResul
     return { error: `Failed to record guest meal: ${error.message}` };
   }
 
-  revalidatePath('/messing');
+  revalidateMessing();
   return { ok: true };
 }

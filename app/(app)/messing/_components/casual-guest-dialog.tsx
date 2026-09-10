@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -43,6 +44,7 @@ export function CasualGuestDialog({
   const [guestCount, setGuestCount] = useState(1);
   const [rate, setRate] = useState(defaultGuestRate);
   const [guestNames, setGuestNames] = useState('');
+  const [notes, setNotes] = useState('');
   const [isPending, startTransition] = useTransition();
 
   const total = guestCount * rate;
@@ -58,6 +60,7 @@ export function CasualGuestDialog({
         guest_count: guestCount,
         rate_charged: rate,
         guest_names: guestNames || undefined,
+        notes: notes || undefined,
       });
 
       if ('error' in res) {
@@ -66,6 +69,7 @@ export function CasualGuestDialog({
         toast.success(`Guest meal recorded: ₹${total.toFixed(2)} added to monthly bill.`);
         setOpen(false);
         setGuestNames('');
+        setNotes('');
       }
     });
   };
@@ -123,6 +127,17 @@ export function CasualGuestDialog({
                 placeholder="e.g. Mrs. Sharma (Spouse), 2 College Friends"
                 value={guestNames}
                 onChange={(e) => setGuestNames(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="guestNotes">Notes</Label>
+              <Textarea
+                id="guestNotes"
+                placeholder="Occasion, dietary notes, or host remarks"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={2}
               />
             </div>
 

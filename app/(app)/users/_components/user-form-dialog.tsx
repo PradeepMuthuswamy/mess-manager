@@ -40,6 +40,7 @@ export const FUNCTIONAL_ROLES = [
     description: 'Access to messing operations (daily attendance, ration issues, stock management, and unit reports).',
     capabilities: [
       'attendance.read', 'attendance.write',
+      'messing.approve',
       'ration.read', 'ration.issue',
       'inventory.read', 'inventory.write',
       'reports.unit'

@@ -236,6 +236,7 @@ export function CheckoutDialog({
       const result = await checkOutAction({
         booking_id: booking.id,
         settlement_type: settlementType,
+        host_profile_id: selectedHostId || null,
         payment_method:
           settlementType === 'DIRECT_SETTLEMENT' ? paymentMethod : null,
         payment_reference:

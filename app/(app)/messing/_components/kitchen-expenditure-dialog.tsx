@@ -14,9 +14,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { recordDailyKitchenExpenditureAction } from '@/lib/messing/actions';
 import { UtensilsCrossed, Calculator, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+
+type SourcingCategory = 'LOCAL_PURCHASE' | 'CANTEEN' | 'OTHER';
 
 interface KitchenExpenditureDialogProps {
   unitId: string;
@@ -27,6 +36,8 @@ interface KitchenExpenditureDialogProps {
   initialDinner?: number;
   initialNotes?: string | null;
   initialVendor?: string | null;
+  initialReceipt?: string | null;
+  initialSourcing?: string | null;
 }
 
 export function KitchenExpenditureDialog({
@@ -38,17 +49,23 @@ export function KitchenExpenditureDialog({
   initialDinner = 0,
   initialNotes = '',
   initialVendor = '',
+  initialReceipt = '',
+  initialSourcing = 'LOCAL_PURCHASE',
 }: KitchenExpenditureDialogProps) {
   const [open, setOpen] = useState(false);
   const [morning, setMorning] = useState(initialMorning);
   const [afternoon, setAfternoon] = useState(initialAfternoon);
   const [dinner, setDinner] = useState(initialDinner);
   const [vendor, setVendor] = useState(initialVendor ?? '');
+  const [receipt, setReceipt] = useState(initialReceipt ?? '');
+  const [sourcing, setSourcing] = useState<SourcingCategory>(
+    (initialSourcing as SourcingCategory) || 'LOCAL_PURCHASE',
+  );
   const [notes, setNotes] = useState(initialNotes ?? '');
   const [isPending, startTransition] = useTransition();
 
   const total = (morning || 0) + (afternoon || 0) + (dinner || 0);
-  const calculatedPRate = presentCount > 0 ? total / presentCount : 0;
+  const previewPRate = presentCount > 0 ? total / presentCount : 0;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,14 +77,22 @@ export function KitchenExpenditureDialog({
         afternoon_amount: afternoon,
         dinner_amount: dinner,
         vendor_name: vendor || undefined,
+        receipt_ref: receipt || undefined,
         notes: notes || undefined,
-        sourcing_category: 'LOCAL_PURCHASE',
+        sourcing_category: sourcing,
       });
 
       if ('error' in res) {
         toast.error(res.error);
       } else {
-        toast.success(`Kitchen log saved! P-rate arrived at ₹${calculatedPRate.toFixed(2)}/diner.`);
+        const data = res.data as { presentCount?: number; ratePerDiner?: number } | undefined;
+        const rate = data?.ratePerDiner ?? 0;
+        const diners = data?.presentCount ?? 0;
+        toast.success(
+          diners > 0
+            ? `Kitchen log saved. P-rate ₹${rate.toFixed(2)}/diner (${diners} finalized).`
+            : 'Kitchen log saved as draft. P-rate updates after attendance is finalized.',
+        );
         setOpen(false);
       }
     });
@@ -89,7 +114,8 @@ export function KitchenExpenditureDialog({
               Daily Kitchen Expenditure (P-Register)
             </DialogTitle>
             <DialogDescription>
-              Log actual market purchases for {date}. Total costs will be split across {presentCount} diners present.
+              Log actual market purchases for {date}. Saving reopens the register as draft.
+              Preview uses {presentCount} diners on roll; billed P-rate waits for finalized attendance.
             </DialogDescription>
           </DialogHeader>
 
@@ -133,20 +159,44 @@ export function KitchenExpenditureDialog({
               </div>
             </div>
 
-            {/* Real-time Calculation Summary Card */}
-            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-1 text-xs">
+            <div className="space-y-1 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs">
               <div className="flex justify-between font-medium">
                 <span className="text-muted-foreground">Total Day Kitchen Expense:</span>
                 <span className="font-mono font-bold text-foreground">₹{total.toFixed(2)}</span>
               </div>
               <div className="flex justify-between font-medium">
-                <span className="text-muted-foreground">Total Diners Present (P):</span>
+                <span className="text-muted-foreground">Diners on roll (preview):</span>
                 <span className="font-mono text-foreground">{presentCount}</span>
               </div>
-              <div className="h-px bg-primary/10 my-1" />
-              <div className="flex justify-between font-semibold text-sm">
-                <span className="text-primary">Computed P-Rate (P_d):</span>
-                <span className="font-mono text-primary">₹{calculatedPRate.toFixed(2)} / diner</span>
+              <div className="my-1 h-px bg-primary/10" />
+              <div className="flex justify-between text-sm font-semibold">
+                <span className="text-primary">Preview P-Rate:</span>
+                <span className="font-mono text-primary">₹{previewPRate.toFixed(2)} / diner</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="receipt">Receipt / voucher ref</Label>
+                <Input
+                  id="receipt"
+                  value={receipt}
+                  onChange={(e) => setReceipt(e.target.value)}
+                  placeholder="e.g. CM-1042"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Sourcing</Label>
+                <Select value={sourcing} onValueChange={(v) => setSourcing(v as SourcingCategory)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="LOCAL_PURCHASE">Local purchase</SelectItem>
+                    <SelectItem value="CANTEEN">Canteen</SelectItem>
+                    <SelectItem value="OTHER">Other</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -161,12 +211,12 @@ export function KitchenExpenditureDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="notes">Remarks / Voucher No.</Label>
+              <Label htmlFor="notes">Remarks</Label>
               <Textarea
                 id="notes"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Cash memo numbers, extra dairy, special menu details..."
+                placeholder="Special menu details, extra dairy..."
                 rows={2}
               />
             </div>
@@ -178,7 +228,7 @@ export function KitchenExpenditureDialog({
             </Button>
             <Button type="submit" disabled={isPending} className="gap-1.5">
               {isPending && <Loader2 className="size-4 animate-spin" />}
-              Save & Snapshot P-Rate
+              Save kitchen log
             </Button>
           </DialogFooter>
         </form>

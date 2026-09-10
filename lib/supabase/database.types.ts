@@ -561,6 +561,8 @@ export type Database = {
           guest_names: string | null
           host_profile_id: string
           id: string
+          is_billed: boolean
+          billed_period_id: string | null
           meal_date: string
           meal_type: Database["public"]["Enums"]["messing_meal_type"]
           notes: string | null
@@ -569,12 +571,14 @@ export type Database = {
           unit_id: string
         }
         Insert: {
+          billed_period_id?: string | null
           created_at?: string
           created_by?: string | null
           guest_count?: number
           guest_names?: string | null
           host_profile_id: string
           id?: string
+          is_billed?: boolean
           meal_date: string
           meal_type: Database["public"]["Enums"]["messing_meal_type"]
           notes?: string | null
@@ -583,12 +587,14 @@ export type Database = {
           unit_id: string
         }
         Update: {
+          billed_period_id?: string | null
           created_at?: string
           created_by?: string | null
           guest_count?: number
           guest_names?: string | null
           host_profile_id?: string
           id?: string
+          is_billed?: boolean
           meal_date?: string
           meal_type?: Database["public"]["Enums"]["messing_meal_type"]
           notes?: string | null
@@ -639,6 +645,61 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      mess_bill_email_sends: {
+        Row: {
+          bill_id: string
+          billing_period_id: string
+          created_at: string
+          error: string | null
+          id: string
+          profile_id: string
+          sent_at: string | null
+          status: string
+        }
+        Insert: {
+          bill_id: string
+          billing_period_id: string
+          created_at?: string
+          error?: string | null
+          id?: string
+          profile_id: string
+          sent_at?: string | null
+          status?: string
+        }
+        Update: {
+          bill_id?: string
+          billing_period_id?: string
+          created_at?: string
+          error?: string | null
+          id?: string
+          profile_id?: string
+          sent_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mess_bill_email_sends_bill_id_fkey"
+            columns: ["bill_id"]
+            isOneToOne: true
+            referencedRelation: "mess_bills"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "mess_bill_email_sends_billing_period_id_fkey"
+            columns: ["billing_period_id"]
+            isOneToOne: false
+            referencedRelation: "mess_billing_periods"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "mess_bill_email_sends_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       mess_bill_line_items: {
         Row: {
@@ -761,6 +822,7 @@ export type Database = {
           notes: string | null
           paid_amount: number
           paid_at: string | null
+          party_amount: number
           payment_method: string | null
           payment_reference: string | null
           profile_id: string
@@ -785,6 +847,7 @@ export type Database = {
           notes?: string | null
           paid_amount?: number
           paid_at?: string | null
+          party_amount?: number
           payment_method?: string | null
           payment_reference?: string | null
           profile_id: string
@@ -809,6 +872,7 @@ export type Database = {
           notes?: string | null
           paid_amount?: number
           paid_at?: string | null
+          party_amount?: number
           payment_method?: string | null
           payment_reference?: string | null
           profile_id?: string
@@ -846,6 +910,8 @@ export type Database = {
       mess_daily_expenditures: {
         Row: {
           afternoon_amount: number
+          approved_at: string | null
+          approved_by: string | null
           created_at: string
           created_by: string | null
           dinner_amount: number
@@ -854,7 +920,13 @@ export type Database = {
           morning_amount: number
           notes: string | null
           receipt_ref: string | null
+          register_status: string
+          rejected_at: string | null
+          rejected_by: string | null
+          reject_reason: string | null
           sourcing_category: string
+          submitted_at: string | null
+          submitted_by: string | null
           total_amount: number
           unit_id: string
           updated_at: string
@@ -863,6 +935,8 @@ export type Database = {
         }
         Insert: {
           afternoon_amount?: number
+          approved_at?: string | null
+          approved_by?: string | null
           created_at?: string
           created_by?: string | null
           dinner_amount?: number
@@ -871,7 +945,13 @@ export type Database = {
           morning_amount?: number
           notes?: string | null
           receipt_ref?: string | null
+          register_status?: string
+          rejected_at?: string | null
+          rejected_by?: string | null
+          reject_reason?: string | null
           sourcing_category?: string
+          submitted_at?: string | null
+          submitted_by?: string | null
           total_amount: number
           unit_id: string
           updated_at?: string
@@ -880,6 +960,8 @@ export type Database = {
         }
         Update: {
           afternoon_amount?: number
+          approved_at?: string | null
+          approved_by?: string | null
           created_at?: string
           created_by?: string | null
           dinner_amount?: number
@@ -888,7 +970,13 @@ export type Database = {
           morning_amount?: number
           notes?: string | null
           receipt_ref?: string | null
+          register_status?: string
+          rejected_at?: string | null
+          rejected_by?: string | null
+          reject_reason?: string | null
           sourcing_category?: string
+          submitted_at?: string | null
+          submitted_by?: string | null
           total_amount?: number
           unit_id?: string
           updated_at?: string
@@ -1000,6 +1088,7 @@ export type Database = {
       mess_misc_debits: {
         Row: {
           amount: number
+          billed_period_id: string | null
           category: string
           charge_date: string
           created_at: string
@@ -1013,6 +1102,7 @@ export type Database = {
         }
         Insert: {
           amount: number
+          billed_period_id?: string | null
           category: string
           charge_date: string
           created_at?: string
@@ -1026,6 +1116,7 @@ export type Database = {
         }
         Update: {
           amount?: number
+          billed_period_id?: string | null
           category?: string
           charge_date?: string
           created_at?: string
@@ -1053,6 +1144,87 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      mess_parties: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          host_profile_id: string | null
+          id: string
+          notes: string | null
+          party_date: string
+          party_type: string
+          status: string
+          title: string
+          unit_id: string
+          venue: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          host_profile_id?: string | null
+          id?: string
+          notes?: string | null
+          party_date: string
+          party_type?: string
+          status?: string
+          title: string
+          unit_id: string
+          venue?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          host_profile_id?: string | null
+          id?: string
+          notes?: string | null
+          party_date?: string
+          party_type?: string
+          status?: string
+          title?: string
+          unit_id?: string
+          venue?: string | null
+        }
+        Relationships: []
+      }
+      mess_party_charges: {
+        Row: {
+          amount: number
+          billed_period_id: string | null
+          created_at: string
+          created_by: string | null
+          description: string
+          id: string
+          is_billed: boolean
+          party_date: string
+          profile_id: string
+          unit_id: string
+        }
+        Insert: {
+          amount: number
+          billed_period_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          description: string
+          id?: string
+          is_billed?: boolean
+          party_date: string
+          profile_id: string
+          unit_id: string
+        }
+        Update: {
+          amount?: number
+          billed_period_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          description?: string
+          id?: string
+          is_billed?: boolean
+          party_date?: string
+          profile_id?: string
+          unit_id?: string
+        }
+        Relationships: []
       }
       mess_subscriptions: {
         Row: {
@@ -1731,10 +1903,12 @@ export type Database = {
       }
       room_bills: {
         Row: {
+          billed_period_id: string | null
           booking_id: string
           created_at: string
           folio_number: string | null
           id: string
+          is_billed: boolean
           paid_amount: number
           paid_at: string | null
           payment_method: string | null
@@ -1747,10 +1921,12 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          billed_period_id?: string | null
           booking_id: string
           created_at?: string
           folio_number?: string | null
           id?: string
+          is_billed?: boolean
           paid_amount?: number
           paid_at?: string | null
           payment_method?: string | null
@@ -1763,10 +1939,12 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          billed_period_id?: string | null
           booking_id?: string
           created_at?: string
           folio_number?: string | null
           id?: string
+          is_billed?: boolean
           paid_amount?: number
           paid_at?: string | null
           payment_method?: string | null
@@ -2150,6 +2328,75 @@ export type Database = {
             referencedColumns: ["variant_id"]
           },
         ]
+      }
+      room_waitlist_requests: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          guest_name: string
+          id: string
+          notes: string | null
+          profile_id: string
+          requested_from: string
+          requested_to: string
+          status: string
+          unit_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          guest_name: string
+          id?: string
+          notes?: string | null
+          profile_id: string
+          requested_from: string
+          requested_to: string
+          status?: string
+          unit_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          guest_name?: string
+          id?: string
+          notes?: string | null
+          profile_id?: string
+          requested_from?: string
+          requested_to?: string
+          status?: string
+          unit_id?: string
+        }
+        Relationships: []
+      }
+      unit_bulletins: {
+        Row: {
+          body: string
+          created_at: string
+          created_by: string | null
+          id: string
+          published_at: string
+          title: string
+          unit_id: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          published_at?: string
+          title: string
+          unit_id: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          published_at?: string
+          title?: string
+          unit_id?: string
+        }
+        Relationships: []
       }
       units: {
         Row: {
@@ -2535,6 +2782,7 @@ export type Database = {
         | "billing.finalize"
         | "inventory.read"
         | "inventory.write"
+        | "messing.approve"
       guest_settlement_type: "DIRECT_SETTLEMENT" | "CHARGE_TO_HOST"
       item_category:
         | "ration"
@@ -2736,6 +2984,7 @@ export const Constants = {
         "billing.finalize",
         "inventory.read",
         "inventory.write",
+        "messing.approve",
       ],
       guest_settlement_type: ["DIRECT_SETTLEMENT", "CHARGE_TO_HOST"],
       item_category: [

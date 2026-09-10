@@ -533,7 +533,9 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
     ? options.settlement_type
     : (booking.settlement_type ?? options.settlement_type);
 
-  if (settlementType === 'CHARGE_TO_HOST' && !booking.host_profile_id) {
+  const hostId = options.host_profile_id ?? booking.host_profile_id;
+
+  if (settlementType === 'CHARGE_TO_HOST' && !hostId) {
     return {
       error:
         'Cannot transfer bill to mess account: No sponsoring host officer is assigned to this booking.',
@@ -571,6 +573,7 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
     .update({
       status: 'checked_out',
       settlement_type: settlementType,
+      ...(settlementType === 'CHARGE_TO_HOST' ? { host_profile_id: hostId } : {}),
       actual_check_out: now.toISOString(),
       updated_at: now.toISOString(),
     })
@@ -823,12 +826,18 @@ export async function updateBookingAction(id: string, input: UpdateBookingInput)
   const supabase = await createClient();
   const { data: existing } = await supabase
     .from('bookings')
-    .select('unit_id, room_id, check_in_date, check_out_date')
+    .select('unit_id, room_id, check_in_date, check_out_date, host_profile_id, settlement_type')
     .eq('id', id)
     .single();
   if (!existing) return { error: 'Booking not found' };
 
   await requireCapability('rooms.booking.write', existing.unit_id);
+
+  const settlementType = parsed.data.settlement_type ?? existing.settlement_type;
+  const hostId = parsed.data.host_profile_id ?? existing.host_profile_id;
+  if (settlementType === 'CHARGE_TO_HOST' && !hostId) {
+    return { error: 'A sponsoring host officer is required when charging to mess bill.' };
+  }
 
   const roomId = parsed.data.room_id ?? existing.room_id;
   const checkIn = parsed.data.check_in_date ?? existing.check_in_date;

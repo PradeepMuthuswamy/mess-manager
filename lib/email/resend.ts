@@ -313,3 +313,124 @@ export async function sendMagicLinkEmail(opts: SendMagicLinkEmailOpts) {
     throw new Error(error.message);
   }
 }
+
+interface SendMessBillEmailOpts {
+  email: string;
+  fullName: string;
+  billNumber: string;
+  periodName: string;
+  totalAmount: number;
+  dueDate: string;
+  viewUrl: string;
+}
+
+interface SendMessBillPublishSummaryEmailOpts {
+  email: string;
+  fullName?: string;
+  periodName: string;
+  sentCount: number;
+  failedCount: number;
+  skippedCount: number;
+  viewUrl: string;
+}
+
+function formatInr(amount: number): string {
+  return `₹${Number(amount).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatBillDate(value: string): string {
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+/**
+ * Sends a member their published mess bill (HTML + portal link, no PDF).
+ * Throws when RESEND_API_KEY is missing so the send log can record the error.
+ */
+export async function sendMessBillEmail(opts: SendMessBillEmailOpts) {
+  const name = opts.fullName || 'Officer';
+  const amount = formatInr(opts.totalAmount);
+  const due = formatBillDate(opts.dueDate);
+
+  const html = getEmailLayout({
+    title: `Mess bill ${opts.billNumber}`,
+    preheader: `Your mess bill for ${opts.periodName} is ${amount}. Due ${due}.`,
+    eyebrow: 'Monthly mess bill',
+    heading: `Bill ${opts.billNumber}`,
+    bodyHtml: `
+      ${paragraph(`Dear ${esc(name)},`)}
+      ${paragraph(`Your mess bill for <strong>${esc(opts.periodName)}</strong> has been published. The itemised statement is available in the member portal.`)}
+      ${detailRows([
+        ['Bill number', opts.billNumber],
+        ['Period', opts.periodName],
+        ['Amount due', amount],
+        ['Due date', due],
+      ])}
+      ${paragraph(`Open the secure member portal to view the same bill:`)}
+      ${button(opts.viewUrl, 'View your bill')}
+      ${securityNote(`<strong>Security notice:</strong> This link opens your signed-in billing portal. Do not forward this email if your mailbox is shared.`)}
+      ${fallbackLink(opts.viewUrl)}
+    `,
+  });
+
+  const { error } = await getResend().emails.send({
+    from: FROM_EMAIL,
+    to: opts.email,
+    subject: `Mess bill ${opts.billNumber} — ${opts.periodName}`,
+    html,
+  });
+
+  if (error) {
+    console.error('Resend error sending mess bill:', error);
+    throw new Error(error.message);
+  }
+}
+
+/**
+ * Optional publish summary for the secretary / publisher (REQ-BIL-18).
+ */
+export async function sendMessBillPublishSummaryEmail(
+  opts: SendMessBillPublishSummaryEmailOpts
+) {
+  const name = opts.fullName || 'Secretary';
+  const total = opts.sentCount + opts.failedCount + opts.skippedCount;
+
+  const html = getEmailLayout({
+    title: `Mess bills published — ${opts.periodName}`,
+    preheader: `${opts.sentCount} of ${total} mess bills emailed for ${opts.periodName}.`,
+    eyebrow: 'Publish summary',
+    heading: `${opts.periodName} published`,
+    bodyHtml: `
+      ${paragraph(`Dear ${esc(name)},`)}
+      ${paragraph(`Mess bills for <strong>${esc(opts.periodName)}</strong> have been published. Delivery status for this batch:`)}
+      ${detailRows([
+        ['Emailed', String(opts.sentCount)],
+        ['Failed (retryable)', String(opts.failedCount)],
+        ['Already sent (skipped)', String(opts.skippedCount)],
+      ])}
+      ${paragraph(`Review bills and retry failed sends from the billing workspace:`)}
+      ${button(opts.viewUrl, 'Open billing')}
+      ${fallbackLink(opts.viewUrl)}
+    `,
+  });
+
+  const { error } = await getResend().emails.send({
+    from: FROM_EMAIL,
+    to: opts.email,
+    subject: `Mess bills published — ${opts.periodName}`,
+    html,
+  });
+
+  if (error) {
+    console.error('Resend error sending mess bill publish summary:', error);
+    throw new Error(error.message);
+  }
+}

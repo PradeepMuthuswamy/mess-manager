@@ -12,6 +12,7 @@ import {
   setDiningInSchema,
 } from '@/lib/schemas/attendance';
 import { applyAttendanceSave, applyFinalize } from './save-core';
+import { recalculateDailyPRate } from '@/lib/messing/prate';
 import { postDailyRationConsumptionAction } from '@/lib/ration/actions';
 import { getDailyRationConsumption } from '@/lib/ration/queries';
 
@@ -52,8 +53,8 @@ export async function finalizeAttendanceAction(input: unknown): Promise<ActionRe
   if (!parsed.success)
     return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const { unit_id } = parsed.data;
-  await requireCapability('attendance.finalize', unit_id);
+  const { unit_id, attendance_date } = parsed.data;
+  const user = await requireCapability('attendance.finalize', unit_id);
 
   const supabase = await createClient();
   const uid = await authUid();
@@ -63,10 +64,13 @@ export async function finalizeAttendanceAction(input: unknown): Promise<ActionRe
 
   revalidatePath(ATTENDANCE_PATH);
 
-  const warning = await maybeAutoPostRation(
-    parsed.data.unit_id,
-    parsed.data.attendance_date,
+  const rationWarning = await maybeAutoPostRation(unit_id, attendance_date);
+  const pRateWarning = await maybeRecalculatePRate(
+    unit_id,
+    attendance_date,
+    uid ?? user.id,
   );
+  const warning = [rationWarning, pRateWarning].filter(Boolean).join(' ') || undefined;
   return warning ? { ok: true, warning } : { ok: true };
 }
 
@@ -107,6 +111,25 @@ async function maybeAutoPostRation(
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return `Attendance finalized, but ration auto-post failed: ${message}`;
+  }
+}
+
+/** Best-effort daily P-rate snapshot after finalize.
+ *  Failures never roll back finalize — they surface as a warning. */
+async function maybeRecalculatePRate(
+  unitId: string,
+  rateDate: string,
+  calculatedBy: string,
+): Promise<string | undefined> {
+  try {
+    const result = await recalculateDailyPRate(unitId, rateDate, calculatedBy);
+    if ('error' in result) {
+      return `Attendance finalized, but P-rate recalculation failed: ${result.error}`;
+    }
+    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return `Attendance finalized, but P-rate recalculation failed: ${message}`;
   }
 }
 
