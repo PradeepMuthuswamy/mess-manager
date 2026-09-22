@@ -2,7 +2,6 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
-import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -14,20 +13,35 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { offerWaitlistAction, markWaitlistBookedAction } from '@/lib/waitlist/actions';
-import type { RoomWaitlistRequest } from '@/lib/waitlist/types';
+import { formatStayDate, type RoomWaitlistRequest } from '@/lib/waitlist/types';
 import { toast } from 'sonner';
 
-export function WaitlistQueue({ unitId, rows }: { unitId: string; rows: RoomWaitlistRequest[] }) {
+type RoomOption = { id: string; name: string };
+
+export function WaitlistQueue({
+  unitId,
+  rows,
+  rooms,
+}: {
+  unitId: string;
+  rows: RoomWaitlistRequest[];
+  rooms: RoomOption[];
+}) {
   const router = useRouter();
   const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [roomChoice, setRoomChoice] = useState<Record<string, string>>({});
   const [pending, start] = useTransition();
 
   const visible = rows.filter((row) => row.unit_id === unitId);
 
-  function run(id: string, key: string, action: (id: string) => Promise<{ ok: true } | { error: string }>, ok: string) {
+  function run(
+    key: string,
+    action: () => Promise<{ ok: true } | { error: string }>,
+    ok: string,
+  ) {
     setPendingKey(key);
     start(async () => {
-      const res = await action(id);
+      const res = await action();
       setPendingKey(null);
       if ('error' in res) {
         toast.error(res.error);
@@ -39,7 +53,7 @@ export function WaitlistQueue({ unitId, rows }: { unitId: string; rows: RoomWait
   }
 
   if (visible.length === 0) {
-    return <p className="text-sm text-muted-foreground">No open waitlist requests.</p>;
+    return <p className="text-sm text-muted-foreground">No open room requests.</p>;
   }
 
   return (
@@ -62,8 +76,8 @@ export function WaitlistQueue({ unitId, rows }: { unitId: string; rows: RoomWait
               <TableRow key={row.id}>
                 <TableCell className="font-medium text-foreground">{row.guest_name}</TableCell>
                 <TableCell className="text-muted-foreground">
-                  {format(new Date(row.requested_from), 'dd MMM')} –{' '}
-                  {format(new Date(row.requested_to), 'dd MMM yyyy')}
+                  {formatStayDate(row.requested_from, 'dd MMM')} –{' '}
+                  {formatStayDate(row.requested_to, 'dd MMM yyyy')}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" className="capitalize">
@@ -80,23 +94,61 @@ export function WaitlistQueue({ unitId, rows }: { unitId: string; rows: RoomWait
                         type="button"
                         size="sm"
                         disabled={pending}
-                        onClick={() => run(row.id, `${row.id}:offer`, offerWaitlistAction, 'Room offered')}
+                        onClick={() =>
+                          run(
+                            `${row.id}:offer`,
+                            () => offerWaitlistAction(row.id),
+                            'Room offered',
+                          )
+                        }
                       >
                         {offering ? 'Offering…' : 'Offer'}
                       </Button>
                     )}
                     {row.status === 'offered' && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={pending}
-                        onClick={() =>
-                          run(row.id, `${row.id}:book`, markWaitlistBookedAction, 'Marked booked')
-                        }
-                      >
-                        {booking ? 'Saving…' : 'Mark booked'}
-                      </Button>
+                      <>
+                        <select
+                          aria-label={`Room for ${row.guest_name}`}
+                          className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                          value={roomChoice[row.id] ?? ''}
+                          disabled={pending || rooms.length === 0}
+                          onChange={(event) =>
+                            setRoomChoice((current) => ({
+                              ...current,
+                              [row.id]: event.target.value,
+                            }))
+                          }
+                        >
+                          <option value="">
+                            {rooms.length === 0 ? 'No rooms' : 'Choose a room'}
+                          </option>
+                          {rooms.map((room) => (
+                            <option key={room.id} value={room.id}>
+                              {room.name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={pending || rooms.length === 0}
+                          onClick={() => {
+                            const roomId = roomChoice[row.id];
+                            if (!roomId) {
+                              toast.error('Choose a room.');
+                              return;
+                            }
+                            run(
+                              `${row.id}:book`,
+                              () => markWaitlistBookedAction(row.id, roomId),
+                              'Room booked',
+                            );
+                          }}
+                        >
+                          {booking ? 'Booking…' : 'Book room'}
+                        </Button>
+                      </>
                     )}
                   </div>
                 </TableCell>

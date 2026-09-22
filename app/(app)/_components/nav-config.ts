@@ -38,13 +38,13 @@ export const NAV_DINER: NavItem[] = [
   { label: 'Calendar',     href: '/calendar',     icon: 'CalendarDays', module: 'calendar' },
   { label: 'Parties',      href: '/party',        icon: 'PartyPopper',  module: 'parties' },
   { label: 'My Report',    href: '/reports',      icon: 'BarChart3' },
-  { label: 'Room waitlist', href: '/waitlist',    icon: 'BedDouble',    module: 'guest_rooms' },
+  { label: 'Room requests', href: '/waitlist',    icon: 'BedDouble',    module: 'guest_rooms' },
 ];
 
 // Mess Manager & Quartermaster operations navigation - capability gated
 export const NAV_OPS: NavItem[] = [
   { label: 'Attendance',   href: '/attendance',   icon: 'ClipboardList', requires: 'attendance.read', module: 'attendance' },
-  { label: 'Meal cuts',    href: '/messing/cuts', icon: 'Scissors',      requires: 'attendance.write', module: 'attendance' },
+  { label: 'Messing',      href: '/messing/cuts', icon: 'Scissors',      requires: 'attendance.write', module: 'attendance' },
   { label: 'Ration',       href: '/ration',       icon: 'Boxes',         requires: 'ration.read', module: 'ration' },
   { label: 'Stock',        href: '/stock',        icon: 'PackageOpen',   requires: 'inventory.read' },
   { label: 'Bar',          href: '/bar',          icon: 'Martini',       requires: 'bar.read', module: 'bar' },

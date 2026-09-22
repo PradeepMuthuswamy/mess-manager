@@ -34,7 +34,7 @@ export function WaitlistForm({ unitId }: { unitId: string }) {
             toast.error(res.error);
             return;
           }
-          toast.success('Waitlist request recorded');
+          toast.success('Room request saved');
           setGuestName('');
           setFrom('');
           setTo('');
@@ -45,15 +45,15 @@ export function WaitlistForm({ unitId }: { unitId: string }) {
     >
       <div className="space-y-1.5 sm:col-span-2">
         <Label htmlFor="wl-guest">Guest name</Label>
-        <Input id="wl-guest" value={guestName} onChange={(e) => setGuestName(e.target.value)} required />
+        <Input id="wl-guest" value={guestName} onChange={(e) => setGuestName(e.target.value)} required minLength={2} maxLength={120} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="wl-from">From</Label>
+        <Label htmlFor="wl-from">Check-in</Label>
         <Input id="wl-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} required />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="wl-to">To</Label>
-        <Input id="wl-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} required />
+        <Label htmlFor="wl-to">Check-out</Label>
+        <Input id="wl-to" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} required />
       </div>
       <div className="space-y-1.5 sm:col-span-2">
         <Label htmlFor="wl-notes">Notes</Label>
@@ -61,7 +61,7 @@ export function WaitlistForm({ unitId }: { unitId: string }) {
       </div>
       <div className="sm:col-span-2">
         <Button type="submit" size="sm" disabled={pending}>
-          {pending ? 'Saving…' : 'Join waitlist'}
+          {pending ? 'Saving…' : 'Request a room'}
         </Button>
       </div>
     </form>

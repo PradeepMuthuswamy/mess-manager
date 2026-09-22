@@ -33,7 +33,7 @@ export function MealCutToggle({ unitId, date, mealType, cutStatus }: MealCutTogg
       if ('error' in res) {
         toast.error(res.error);
       } else {
-        toast.success(`Meal cut logged for ${mealType}`);
+        toast.success(`Messing logged for ${mealType}`);
         setReason('');
       }
     });
@@ -94,7 +94,7 @@ export function MealCutToggle({ unitId, date, mealType, cutStatus }: MealCutTogg
         className="h-8 gap-1.5 text-xs text-destructive border-destructive/20 hover:bg-destructive/5"
       >
         <X className="size-3.5" />
-        Place Meal Cut
+        Place messing
       </Button>
     </div>
   );

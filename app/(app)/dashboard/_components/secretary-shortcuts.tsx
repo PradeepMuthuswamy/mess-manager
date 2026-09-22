@@ -20,7 +20,7 @@ const SHORTCUTS: Shortcut[] = [
   { href: '/users', label: 'Users', icon: Users, variant: 'outline' },
   {
     href: '/messing/cuts',
-    label: 'Meal cuts',
+    label: 'Messing',
     icon: Scissors,
     variant: 'destructive',
     destructive: true,

@@ -119,7 +119,7 @@ export default async function MessingPage({
             Messing & Dining
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage daily meals, place advance mess cuts, and review dining charges.
+            Manage daily meals, place advance messing, and review dining charges.
           </p>
         </div>
 
@@ -143,7 +143,7 @@ export default async function MessingPage({
           </div>
           {canWriteAttendance && (
             <Button asChild size="sm" variant="outline">
-              <Link href="/messing/cuts">Meal-cut queue</Link>
+              <Link href="/messing/cuts">Messing</Link>
             </Button>
           )}
           <CasualGuestDialog unitId={unitId} hostProfileId={user.id} date={date} />
@@ -210,7 +210,7 @@ export default async function MessingPage({
               {dinerToday.meals.map((meal) => {
                 const Icon = MEAL_ICONS[meal.mealType] ?? Utensils;
                 const mealBadge = meal.isCut
-                  ? { label: 'Meal Cut', variant: 'destructive' as const }
+                  ? { label: 'Cut', variant: 'destructive' as const }
                   : meal.isRequested
                     ? { label: 'Requested', variant: 'warning' as const }
                     : { label: 'Registered', variant: 'success' as const };
@@ -260,13 +260,13 @@ export default async function MessingPage({
           <Card className="border-border">
             <CardHeader>
               <CardTitle className="font-heading text-base font-semibold">
-                Your Recent Meal Cuts
+                Your recent messing
               </CardTitle>
               <CardDescription>Official cut notices recorded for billing deduction</CardDescription>
             </CardHeader>
             <CardContent>
               {recentCuts.length === 0 ? (
-                <p className="py-2 text-sm text-muted-foreground">No recent meal cuts on record.</p>
+                <p className="py-2 text-sm text-muted-foreground">No recent messing on record.</p>
               ) : (
                 <div className="divide-y divide-border">
                   {recentCuts.map((cut) => (

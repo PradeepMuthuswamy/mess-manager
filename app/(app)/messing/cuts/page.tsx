@@ -17,12 +17,12 @@ export default async function MealCutQueuePage() {
     return (
       <div className="space-y-6">
         <h1 className="font-heading text-3xl font-bold tracking-tight text-foreground">
-          Meal-cut queue
+          Messing
         </h1>
         <EmptyState
           icon={<AlertCircle className="size-5" />}
           title="No active unit"
-          description="Select a unit to review meal-cut requests."
+          description="Select a unit to review messing requests."
         />
       </div>
     );
@@ -38,10 +38,10 @@ export default async function MealCutQueuePage() {
             Messing
           </p>
           <h1 className="font-heading text-3xl font-bold tracking-tight text-foreground">
-            Meal-cut queue
+            Messing
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Approve or reject requested meal cuts for the unit.
+            Approve or reject requested messing for the unit.
           </p>
         </div>
         <Button asChild size="sm" variant="outline">
@@ -51,7 +51,7 @@ export default async function MealCutQueuePage() {
 
       <Card className="border-border">
         <CardHeader>
-          <CardTitle className="font-heading text-base font-semibold">Requested cuts</CardTitle>
+          <CardTitle className="font-heading text-base font-semibold">Requests</CardTitle>
           <CardDescription>
             {cuts.length === 0
               ? 'The queue is empty.'

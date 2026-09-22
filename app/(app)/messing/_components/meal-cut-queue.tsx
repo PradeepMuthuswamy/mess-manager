@@ -19,7 +19,7 @@ export function MealCutQueue({
   const [isPending, startTransition] = useTransition();
 
   if (cuts.length === 0) {
-    return <p className="text-sm text-muted-foreground">No meal-cut requests waiting.</p>;
+    return <p className="text-sm text-muted-foreground">No messing requests waiting.</p>;
   }
 
   return (
@@ -48,7 +48,7 @@ export function MealCutQueue({
                 startTransition(async () => {
                   const res = await approveMealCutAction({ id: cut.id, unit_id: unitId });
                   if ('error' in res) toast.error(res.error);
-                  else toast.success('Meal cut approved');
+                  else toast.success('Messing approved');
                 });
               }}
             >
@@ -68,7 +68,7 @@ export function MealCutQueue({
                     reason: reason.trim() || undefined,
                   });
                   if ('error' in res) toast.error(res.error);
-                  else toast.success('Meal cut rejected');
+                  else toast.success('Messing rejected');
                 });
               }}
             >

@@ -359,7 +359,7 @@ export async function rejectDailyRegisterAction(input: unknown): Promise<ActionR
 export async function recordMealCutAction(input: unknown): Promise<ActionResult> {
   const parsed = mealCutInputSchema.safeParse(input);
   if (!parsed.success) {
-    return { error: 'Invalid meal cut input', details: parsed.error.flatten() };
+    return { error: 'Invalid messing input', details: parsed.error.flatten() };
   }
 
   const currentUser = await requireUser();
@@ -391,7 +391,7 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
     );
 
   if (error) {
-    return { error: `Failed to place meal cut: ${error.message}` };
+    return { error: `Failed to place messing: ${error.message}` };
   }
 
   revalidateMessing();
@@ -418,8 +418,8 @@ export async function approveMealCutAction(input: unknown): Promise<ActionResult
     .select('id')
     .maybeSingle();
 
-  if (error) return { error: `Failed to approve meal cut: ${error.message}` };
-  if (!data) return { error: 'Meal cut is no longer pending.' };
+  if (error) return { error: `Failed to approve messing: ${error.message}` };
+  if (!data) return { error: 'Messing is no longer pending.' };
 
   revalidateMessing();
   return { ok: true };
@@ -449,8 +449,8 @@ export async function rejectMealCutAction(input: unknown): Promise<ActionResult>
     .select('id')
     .maybeSingle();
 
-  if (error) return { error: `Failed to reject meal cut: ${error.message}` };
-  if (!data) return { error: 'Meal cut is no longer pending.' };
+  if (error) return { error: `Failed to reject messing: ${error.message}` };
+  if (!data) return { error: 'Messing is no longer pending.' };
 
   revalidateMessing();
   return { ok: true };
@@ -486,7 +486,7 @@ export async function cancelMealCutAction(input: {
     .eq('meal_type', input.meal_type as MessingMealType);
 
   if (error) {
-    return { error: `Failed to cancel meal cut: ${error.message}` };
+    return { error: `Failed to cancel messing: ${error.message}` };
   }
 
   revalidateMessing();

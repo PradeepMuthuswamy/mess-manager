@@ -75,7 +75,23 @@ export default async function GuestRoomsPage() {
         }}
       />
 
-      {canManageWaitlist ? <WaitlistQueue unitId={user.activeUnitId} rows={waitlist} /> : null}
+      {canManageWaitlist ? (
+        <section className="space-y-3">
+          <div>
+            <h2 className="font-heading text-lg font-semibold text-foreground">Room requests</h2>
+            <p className="text-sm text-muted-foreground">
+              Offer a room, then book the stay into the calendar.
+            </p>
+          </div>
+          <WaitlistQueue
+            unitId={user.activeUnitId}
+            rows={waitlist}
+            rooms={rooms.flatMap((room) =>
+              room.id && room.name ? [{ id: room.id, name: room.name }] : [],
+            )}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }

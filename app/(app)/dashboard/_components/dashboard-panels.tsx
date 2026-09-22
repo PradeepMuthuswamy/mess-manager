@@ -229,7 +229,7 @@ export async function DashboardPanels({
                           </div>
                         </div>
                         <Badge variant={meal.isCut ? 'destructive' : dinerToday.isAttendingDay ? 'success' : 'secondary'}>
-                          {meal.isCut ? 'Meal cut' : dinerToday.isAttendingDay ? 'Registered' : 'Absent'}
+                          {meal.isCut ? 'Cut' : dinerToday.isAttendingDay ? 'Registered' : 'Absent'}
                         </Badge>
                       </div>
                     );
@@ -414,7 +414,7 @@ export async function DashboardPanels({
           <Card className="border-border">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center justify-between font-heading text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Room waitlist
+                Room requests
                 <Link href="/waitlist" className="font-mono text-[10px] font-medium normal-case text-primary hover:underline">
                   Request
                 </Link>
@@ -422,7 +422,7 @@ export async function DashboardPanels({
             </CardHeader>
             <CardContent className="flex flex-col gap-2 text-xs">
               {waitlist.length === 0 ? (
-                <p className="text-muted-foreground">No open waitlist requests.</p>
+                <p className="text-muted-foreground">No open room requests.</p>
               ) : (
                 waitlist.slice(0, 3).map((row) => (
                   <div key={row.id} className="flex justify-between gap-2">
