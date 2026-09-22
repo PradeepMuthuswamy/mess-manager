@@ -117,6 +117,16 @@ export const createBillItemSchema = z.object({
   order_id: z.string().uuid().nullable().optional(),
 }).openapi('CreateBillItemInput');
 
+export const patchRoomBillItemSchema = z.object({
+  id: z.string().uuid(),
+  amount: z.coerce.number().optional(),
+  description: z.string().trim().min(1).max(500).optional(),
+}).openapi('PatchRoomBillItemInput');
+
+export const patchRoomBillSchema = z.object({
+  items: z.array(patchRoomBillItemSchema).min(1),
+}).openapi('PatchRoomBillInput');
+
 export const createBillOrderSchema = z.object({
   bill_id: z.string().uuid(),
   label: z.string().trim().min(1).max(200),
@@ -142,6 +152,8 @@ export type CreateBookingInput = z.infer<typeof createBookingSchema>;
 export type UpdateBookingInput = z.infer<typeof updateBookingSchema>;
 export type CheckOutBookingInput = z.infer<typeof checkOutBookingSchema>;
 export type CreateBillItemInput = z.infer<typeof createBillItemSchema>;
+export type PatchRoomBillItemInput = z.infer<typeof patchRoomBillItemSchema>;
+export type PatchRoomBillInput = z.infer<typeof patchRoomBillSchema>;
 export type CreateBillOrderInput = z.infer<typeof createBillOrderSchema>;
 export type FinalizeBillInput = z.infer<typeof finalizeBillSchema>;
 export type RoomTypeInput = z.infer<typeof roomTypeSchema>;

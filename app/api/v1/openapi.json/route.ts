@@ -10,6 +10,7 @@ import {
   createItemApiSchema, updateProductSchema, updateVariantSchema,
   setUserCapabilitiesSchema, createTemplateSchema, updateTemplateSchema,
   createBarChitSchema,
+  createBookingSchema, updateBookingSchema, checkOutBookingSchema, patchRoomBillSchema,
 } from '@/lib/schemas';
 
 export const dynamic = 'force-dynamic';
@@ -33,6 +34,10 @@ function build() {
   r.register('CreateCapabilityTemplateInput', createTemplateSchema);
   r.register('UpdateCapabilityTemplateInput', updateTemplateSchema);
   r.register('CreateBarChitInput', createBarChitSchema);
+  r.register('CreateBookingInput', createBookingSchema);
+  r.register('UpdateBookingInput', updateBookingSchema);
+  r.register('CheckOutBookingInput', checkOutBookingSchema);
+  r.register('PatchRoomBillInput', patchRoomBillSchema);
 
   r.registerComponent('securitySchemes', 'bearerAuth', {
     type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
@@ -81,6 +86,60 @@ function build() {
     security: [{ bearerAuth: [] }],
     request: { body: { content: { 'application/json': { schema: createBarChitSchema } } } },
     responses: { 201: { description: 'Created' }, 422: { description: 'Invalid input' } },
+  });
+  r.registerPath({
+    method: 'get', path: '/api/v1/guest-rooms/rooms', summary: 'List guest rooms', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' }, 403: { description: 'Forbidden' } },
+  });
+  r.registerPath({
+    method: 'get', path: '/api/v1/guest-rooms/bookings', summary: 'List bookings', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' }, 403: { description: 'Forbidden' } },
+  });
+  r.registerPath({
+    method: 'post', path: '/api/v1/guest-rooms/bookings', summary: 'Create booking', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    request: { body: { content: { 'application/json': { schema: createBookingSchema } } } },
+    responses: { 201: { description: 'Created' }, 422: { description: 'Invalid input' } },
+  });
+  r.registerPath({
+    method: 'get', path: '/api/v1/guest-rooms/bookings/{id}', summary: 'Get booking with folio', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' }, 404: { description: 'Not found' } },
+  });
+  r.registerPath({
+    method: 'patch', path: '/api/v1/guest-rooms/bookings/{id}', summary: 'Update booking', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    request: { body: { content: { 'application/json': { schema: updateBookingSchema } } } },
+    responses: { 200: { description: 'OK' }, 422: { description: 'Invalid input' } },
+  });
+  r.registerPath({
+    method: 'post', path: '/api/v1/guest-rooms/bookings/{id}/check-in', summary: 'Check in a booking', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' } },
+  });
+  r.registerPath({
+    method: 'post', path: '/api/v1/guest-rooms/bookings/{id}/check-out', summary: 'Check out and settle folio', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    request: { body: { content: { 'application/json': { schema: checkOutBookingSchema } } } },
+    responses: { 200: { description: 'OK' }, 400: { description: 'Idempotency-Key required' } },
+  });
+  r.registerPath({
+    method: 'get', path: '/api/v1/guest-rooms/bills/{id}', summary: 'Get room bill with items', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' }, 404: { description: 'Not found' } },
+  });
+  r.registerPath({
+    method: 'patch', path: '/api/v1/guest-rooms/bills/{id}', summary: 'Patch draft room-bill items', tags: ['Guest rooms'],
+    security: [{ bearerAuth: [] }],
+    request: { body: { content: { 'application/json': { schema: patchRoomBillSchema } } } },
+    responses: { 200: { description: 'OK' } },
+  });
+  r.registerPath({
+    method: 'get', path: '/api/v1/reports/unit', summary: 'Unit KPI snapshot', tags: ['Reports'],
+    security: [{ bearerAuth: [] }],
+    responses: { 200: { description: 'OK' }, 403: { description: 'Forbidden' } },
   });
 
   return new OpenApiGeneratorV31(r.definitions).generateDocument({

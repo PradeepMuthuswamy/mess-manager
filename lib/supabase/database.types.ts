@@ -1158,6 +1158,16 @@ export type Database = {
           title: string
           unit_id: string
           venue: string | null
+          expected_headcount: number | null
+          budget_amount: number
+          budget_status: string
+          ration_cost: number
+          bar_cost: number
+          catering_cost: number
+          approved_at: string | null
+          approved_by: string | null
+          finalized_at: string | null
+          finalized_by: string | null
         }
         Insert: {
           created_at?: string
@@ -1171,6 +1181,16 @@ export type Database = {
           title: string
           unit_id: string
           venue?: string | null
+          expected_headcount?: number | null
+          budget_amount?: number
+          budget_status?: string
+          ration_cost?: number
+          bar_cost?: number
+          catering_cost?: number
+          approved_at?: string | null
+          approved_by?: string | null
+          finalized_at?: string | null
+          finalized_by?: string | null
         }
         Update: {
           created_at?: string
@@ -1184,6 +1204,16 @@ export type Database = {
           title?: string
           unit_id?: string
           venue?: string | null
+          expected_headcount?: number | null
+          budget_amount?: number
+          budget_status?: string
+          ration_cost?: number
+          bar_cost?: number
+          catering_cost?: number
+          approved_at?: string | null
+          approved_by?: string | null
+          finalized_at?: string | null
+          finalized_by?: string | null
         }
         Relationships: []
       }
@@ -1223,6 +1253,69 @@ export type Database = {
           party_date?: string
           profile_id?: string
           unit_id?: string
+        }
+        Relationships: []
+      }
+      mess_party_cost_lines: {
+        Row: {
+          amount: number
+          category: string
+          created_at: string
+          created_by: string | null
+          description: string
+          funding: string
+          id: string
+          party_id: string
+          unit_id: string
+        }
+        Insert: {
+          amount: number
+          category: string
+          created_at?: string
+          created_by?: string | null
+          description: string
+          funding: string
+          id?: string
+          party_id: string
+          unit_id: string
+        }
+        Update: {
+          amount?: number
+          category?: string
+          created_at?: string
+          created_by?: string | null
+          description?: string
+          funding?: string
+          id?: string
+          party_id?: string
+          unit_id?: string
+        }
+        Relationships: []
+      }
+      mess_party_guests: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          guest_name: string
+          id: string
+          notes: string | null
+          party_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          guest_name: string
+          id?: string
+          notes?: string | null
+          party_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          guest_name?: string
+          id?: string
+          notes?: string | null
+          party_id?: string
         }
         Relationships: []
       }
@@ -1444,6 +1537,8 @@ export type Database = {
           unit_id: string | null
           updated_at: string
           updated_by: string | null
+          date_of_birth: string | null
+          marriage_date: string | null
         }
         Insert: {
           created_at?: string
@@ -1460,6 +1555,8 @@ export type Database = {
           unit_id?: string | null
           updated_at?: string
           updated_by?: string | null
+          date_of_birth?: string | null
+          marriage_date?: string | null
         }
         Update: {
           created_at?: string
@@ -1476,6 +1573,8 @@ export type Database = {
           unit_id?: string | null
           updated_at?: string
           updated_by?: string | null
+          date_of_birth?: string | null
+          marriage_date?: string | null
         }
         Relationships: [
           {
@@ -2398,6 +2497,78 @@ export type Database = {
         }
         Relationships: []
       }
+      social_calendar_events: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          description: string | null
+          end_date: string | null
+          event_date: string
+          event_type: string
+          id: string
+          is_recurring: boolean
+          party_id: string | null
+          profile_id: string | null
+          title: string
+          unit_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          end_date?: string | null
+          event_date: string
+          event_type: string
+          id?: string
+          is_recurring?: boolean
+          party_id?: string | null
+          profile_id?: string | null
+          title: string
+          unit_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          end_date?: string | null
+          event_date?: string
+          event_type?: string
+          id?: string
+          is_recurring?: boolean
+          party_id?: string | null
+          profile_id?: string | null
+          title?: string
+          unit_id?: string
+        }
+        Relationships: []
+      }
+      social_calendar_publishes: {
+        Row: {
+          id: string
+          month: number
+          published_at: string
+          published_by: string | null
+          unit_id: string
+          year: number
+        }
+        Insert: {
+          id?: string
+          month: number
+          published_at?: string
+          published_by?: string | null
+          unit_id: string
+          year: number
+        }
+        Update: {
+          id?: string
+          month?: number
+          published_at?: string
+          published_by?: string | null
+          unit_id?: string
+          year?: number
+        }
+        Relationships: []
+      }
       units: {
         Row: {
           auto_ration_post: boolean
@@ -2414,6 +2585,9 @@ export type Database = {
           terrain: Database["public"]["Enums"]["ration_terrain"] | null
           updated_at: string
           updated_by: string | null
+          enabled_modules: string[]
+          bill_format_template: string
+          room_bill_format_template: string
         }
         Insert: {
           auto_ration_post?: boolean
@@ -2430,6 +2604,9 @@ export type Database = {
           terrain?: Database["public"]["Enums"]["ration_terrain"] | null
           updated_at?: string
           updated_by?: string | null
+          enabled_modules?: string[]
+          bill_format_template?: string
+          room_bill_format_template?: string
         }
         Update: {
           auto_ration_post?: boolean
@@ -2446,6 +2623,9 @@ export type Database = {
           terrain?: Database["public"]["Enums"]["ration_terrain"] | null
           updated_at?: string
           updated_by?: string | null
+          enabled_modules?: string[]
+          bill_format_template?: string
+          room_bill_format_template?: string
         }
         Relationships: []
       }

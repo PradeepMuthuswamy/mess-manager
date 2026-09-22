@@ -37,7 +37,8 @@ export async function notifyBillsPublished(periodId: string): Promise<void> {
   try {
     if (!process.env.RESEND_API_KEY) return;
 
-    const viewUrl = `${process.env.NEXT_PUBLIC_SITE_URL || ''}/billing`;
+    const site = process.env.NEXT_PUBLIC_SITE_URL || '';
+    const portalUrl = `${site}/billing`;
     const bills = await getPublishedBillsForEmail(periodId);
     const alreadySent = await getSentMessBillEmailIds(periodId);
 
@@ -74,7 +75,7 @@ export async function notifyBillsPublished(periodId: string): Promise<void> {
           periodName: bill.period_name,
           totalAmount: bill.total_amount,
           dueDate: bill.due_date,
-          viewUrl,
+          viewUrl: bill.id ? `${site}/billing/${bill.id}/print` : portalUrl,
         });
         sentCount += 1;
         await recordBillEmailSend({
@@ -105,7 +106,7 @@ export async function notifyBillsPublished(periodId: string): Promise<void> {
           sentCount,
           failedCount,
           skippedCount,
-          viewUrl,
+          viewUrl: portalUrl,
         });
       }
     } catch (err) {

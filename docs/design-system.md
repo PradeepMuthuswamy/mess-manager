@@ -1,6 +1,6 @@
 # Officers Mess — Design System Reference
 
-**Direction:** Modern Defence SaaS — cool slate neutrals, indigo primary, calm and high-trust.
+**Direction:** Modern Defence SaaS — cool neutral canvas (hue ~250), restrained blue primary, calm and high-trust. **Theme:** Option B (see `app/globals.css`).
 **Source of truth:** `app/globals.css`. Never hardcode colors/fonts; use the semantic tokens below. Enforced by `scripts/ds-audit.sh`.
 
 ## Fonts
@@ -37,27 +37,27 @@ Use semantic classes only: `bg-background`, `text-foreground`, `bg-card`, `bg-mu
 
 | Token | Value | Use |
 |---|---|---|
-| `--background` | `oklch(0.99 0.004 255)` | app canvas |
-| `--foreground` | `oklch(0.24 0.02 262)` | primary text |
+| `--background` | `oklch(0.985 0.004 250)` | app canvas |
+| `--foreground` | `oklch(0.22 0.02 250)` | primary text |
 | `--card` / `--popover` | `oklch(1 0 0)` | raised surfaces |
-| `--primary` | `oklch(0.52 0.18 264)` | brand / primary action |
-| `--primary-foreground` | `oklch(0.99 0.003 255)` | text on primary |
-| `--secondary` / `--muted` | `oklch(0.968 0.006 255)` | quiet surfaces |
-| `--muted-foreground` | `oklch(0.45 0.02 262)` | secondary text (AA) |
-| `--accent` | `oklch(0.95 0.035 264)` | indigo tint surface |
-| `--accent-foreground` | `oklch(0.34 0.13 264)` | text on accent |
+| `--primary` | `oklch(0.48 0.11 250)` | brand / primary action |
+| `--primary-foreground` | `oklch(0.99 0 0)` | text on primary |
+| `--secondary` / `--muted` | `oklch(0.96 0.006 250)` | quiet surfaces |
+| `--muted-foreground` | `oklch(0.44 0.02 250)` | secondary text (AA) |
+| `--accent` | `oklch(0.94 0.02 250)` | subtle blue tint surface |
+| `--accent-foreground` | `oklch(0.22 0.04 250)` | text on accent |
 | `--destructive` | `oklch(0.58 0.22 27)` | errors / destructive |
 | `--success` | `oklch(0.55 0.16 155)` | positive state |
 | `--warning` | `oklch(0.60 0.14 75)` | caution state |
 | `--info` | `oklch(0.52 0.15 240)` | informational state |
-| `--border` / `--input` | `oklch(0.92 0.007 255)` | hairlines / fields |
-| `--ring` | `oklch(0.52 0.18 264)` | focus ring |
-| `--chart-1..5` | `0.52 0.18 264` · `0.58 0.13 185` · `0.66 0.15 75` · `0.60 0.16 8` · `0.55 0.17 300` | data series |
+| `--border` / `--input` | `oklch(0.91 0.008 250)` | hairlines / fields |
+| `--ring` | `oklch(0.48 0.11 250)` | focus ring |
+| `--chart-1..5` | `0.48 0.11 250` · `0.58 0.13 185` · `0.66 0.15 75` · `0.60 0.16 8` · `0.55 0.17 300` | data series |
 | `--radius` | `0.375rem` | base radius (cascades `--radius-sm..4xl`) |
 
 ### Dark (`.dark`)
 
-Calibrated for perceptual parity. Key shifts: `--background oklch(0.17 0.015 262)`, `--card oklch(0.21 0.018 262)` (genuinely elevated), `--primary oklch(0.64 0.17 264)`, `--border oklch(1 0 0 / 14%)`, success/warning/info lightened for parity. Full values in `app/globals.css`.
+Calibrated for perceptual parity (hue ~250 family). Key shifts: `--background oklch(0.17 0.015 250)`, `--card oklch(0.21 0.018 250)`, `--primary oklch(0.62 0.11 250)`, `--border oklch(1 0 0 / 14%)`. Full values in `app/globals.css`.
 
 ## Elevation
 

@@ -2,6 +2,8 @@ import { requireUser } from '@/lib/auth/require-role';
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { UnitSettingsCard } from './_components/unit-settings-card';
+import { BillTemplateCard } from './_components/bill-template-card';
+import { resolveBillFormatTemplate } from '@/lib/billing/templates';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,22 +12,27 @@ import type { RationTerrain } from '@/lib/schemas/ration';
 import { getFlatRatesHistory, getActiveFlatRates } from '@/lib/messing/queries';
 import type { MessingBillingMode } from '@/lib/schemas/messing';
 
+function optionalIsoDate(value: FormDataEntryValue | null): string | null {
+  const raw = String(value ?? '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+}
+
 async function updateProfileAction(formData: FormData) {
   'use server';
+  const user = await requireUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return;
   await supabase
     .from('profiles')
     .update({
       full_name: String(formData.get('full_name') ?? '').trim() || null,
       service_no: String(formData.get('service_no') ?? '').trim() || null,
       rank: String(formData.get('rank') ?? '').trim() || null,
+      date_of_birth: optionalIsoDate(formData.get('date_of_birth')),
+      marriage_date: optionalIsoDate(formData.get('marriage_date')),
     })
     .eq('id', user.id);
   revalidatePath('/settings');
+  revalidatePath('/calendar');
 }
 
 export default async function SettingsPage() {
@@ -33,7 +40,7 @@ export default async function SettingsPage() {
   const supabase = await createClient();
   const { data: profile } = await supabase
     .from('profiles')
-    .select('full_name, service_no, rank, email')
+    .select('full_name, service_no, rank, email, date_of_birth, marriage_date')
     .eq('id', user.id)
     .single();
   const canManageUnit = user.role === 'super_admin' || user.role === 'unit_admin';
@@ -46,6 +53,8 @@ export default async function SettingsPage() {
     messing_billing_mode: MessingBillingMode;
     guest_food_per_night: number;
     auto_ration_post: boolean;
+    bill_format_template: string;
+    room_bill_format_template: string;
   };
   let unit: UnitCfg | null = null;
   let activeFlatRates: Record<string, number> = {};
@@ -53,7 +62,9 @@ export default async function SettingsPage() {
   if (canManageUnit && unitId) {
     const { data } = await supabase
       .from('units')
-      .select('id, name, mess_type, terrain, messing_billing_mode, guest_food_per_night, auto_ration_post')
+      .select(
+        'id, name, mess_type, terrain, messing_billing_mode, guest_food_per_night, auto_ration_post, bill_format_template, room_bill_format_template',
+      )
       .eq('id', unitId)
       .single();
     if (data) {
@@ -82,6 +93,15 @@ export default async function SettingsPage() {
           autoRationPost={Boolean(unit.auto_ration_post)}
           activeFlatRates={activeFlatRates}
           flatRatesHistory={flatRatesHistory}
+        />
+      )}
+
+      {canManageUnit && unit && (
+        <BillTemplateCard
+          unitId={unit.id}
+          unitName={unit.name}
+          billFormatTemplate={resolveBillFormatTemplate(unit.bill_format_template)}
+          roomBillFormatTemplate={resolveBillFormatTemplate(unit.room_bill_format_template)}
         />
       )}
 
@@ -141,6 +161,34 @@ export default async function SettingsPage() {
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-sm font-medium" htmlFor="date_of_birth">
+                  Date of birth
+                </label>
+                <Input
+                  id="date_of_birth"
+                  name="date_of_birth"
+                  type="date"
+                  defaultValue={profile?.date_of_birth ?? ''}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium" htmlFor="marriage_date">
+                  Marriage date
+                </label>
+                <Input
+                  id="marriage_date"
+                  name="marriage_date"
+                  type="date"
+                  defaultValue={profile?.marriage_date ?? ''}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Used to generate birthday and anniversary entries on the unit social calendar.
+            </p>
 
             <div className="flex justify-end pt-2">
               <Button type="submit" className="transition-ds">

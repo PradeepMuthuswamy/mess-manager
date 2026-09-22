@@ -16,12 +16,33 @@ import {
 import { createPartyAction } from '@/lib/parties/actions';
 import { toast } from 'sonner';
 
-export function CreatePartyForm({ unitId }: { unitId: string }) {
+export type PartyHostOption = {
+  id: string;
+  full_name: string | null;
+  rank?: string | null;
+  service_no?: string | null;
+};
+
+function hostLabel(host: PartyHostOption) {
+  const name = [host.rank, host.full_name].filter(Boolean).join(' ');
+  return host.service_no ? `${name} (${host.service_no})` : name;
+}
+
+export function CreatePartyForm({
+  unitId,
+  hosts = [],
+}: {
+  unitId: string;
+  hosts?: PartyHostOption[];
+}) {
   const router = useRouter();
   const [title, setTitle] = useState('');
   const [partyDate, setPartyDate] = useState('');
   const [venue, setVenue] = useState('');
   const [partyType, setPartyType] = useState<'mess' | 'individual'>('mess');
+  const [hostProfileId, setHostProfileId] = useState('');
+  const [expectedHeadcount, setExpectedHeadcount] = useState('');
+  const [budgetAmount, setBudgetAmount] = useState('');
   const [notes, setNotes] = useState('');
   const [pending, start] = useTransition();
 
@@ -31,6 +52,9 @@ export function CreatePartyForm({ unitId }: { unitId: string }) {
       onSubmit={(e) => {
         e.preventDefault();
         start(async () => {
+          const headcount =
+            expectedHeadcount.trim() === '' ? undefined : Number(expectedHeadcount);
+          const budget = budgetAmount.trim() === '' ? undefined : Number(budgetAmount);
           const res = await createPartyAction({
             unit_id: unitId,
             title,
@@ -38,6 +62,9 @@ export function CreatePartyForm({ unitId }: { unitId: string }) {
             venue: venue || null,
             party_type: partyType,
             notes: notes || null,
+            expected_headcount: Number.isFinite(headcount) ? headcount : undefined,
+            budget_amount: Number.isFinite(budget) ? budget : undefined,
+            host_profile_id: hostProfileId || undefined,
           });
           if ('error' in res) {
             toast.error(res.error);
@@ -47,6 +74,9 @@ export function CreatePartyForm({ unitId }: { unitId: string }) {
           setTitle('');
           setPartyDate('');
           setVenue('');
+          setHostProfileId('');
+          setExpectedHeadcount('');
+          setBudgetAmount('');
           setNotes('');
           router.refresh();
         });
@@ -78,9 +108,57 @@ export function CreatePartyForm({ unitId }: { unitId: string }) {
           </SelectContent>
         </Select>
       </div>
-      <div className="space-y-1.5 sm:col-span-2">
+      <div className="space-y-1.5">
         <Label htmlFor="party-venue">Venue</Label>
         <Input id="party-venue" value={venue} onChange={(e) => setVenue(e.target.value)} />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="party-host">
+          Host officer{' '}
+          <span className="font-normal text-muted-foreground">(optional)</span>
+        </Label>
+        <Select
+          value={hostProfileId || 'none'}
+          onValueChange={(v) => setHostProfileId(v === 'none' ? '' : v)}
+        >
+          <SelectTrigger id="party-host">
+            <SelectValue placeholder="Select host officer" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">
+              <span className="text-muted-foreground">No host assigned</span>
+            </SelectItem>
+            {hosts.map((host) => (
+              <SelectItem key={host.id} value={host.id}>
+                {hostLabel(host)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="party-headcount">Expected headcount</Label>
+        <Input
+          id="party-headcount"
+          type="number"
+          min={0}
+          step={1}
+          inputMode="numeric"
+          value={expectedHeadcount}
+          onChange={(e) => setExpectedHeadcount(e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="party-budget">Budget (₹)</Label>
+        <Input
+          id="party-budget"
+          type="number"
+          min={0}
+          step="0.01"
+          inputMode="decimal"
+          value={budgetAmount}
+          onChange={(e) => setBudgetAmount(e.target.value)}
+        />
       </div>
       <div className="space-y-1.5 sm:col-span-2">
         <Label htmlFor="party-notes">Notes</Label>

@@ -16,9 +16,12 @@ export const billLineCategoryEnum = [
   'arrear',
 ] as const;
 
+export const billFormatTemplateEnum = ['classic', 'compact', 'formal'] as const;
+
 export type BillingPeriodStatus = (typeof billingPeriodStatusEnum)[number];
 export type BillStatus = (typeof billStatusEnum)[number];
 export type BillLineCategory = (typeof billLineCategoryEnum)[number];
+export type BillFormatTemplate = (typeof billFormatTemplateEnum)[number];
 
 export const createBillingPeriodSchema = z.object({
   unit_id: z.string().uuid(),
@@ -63,9 +66,16 @@ export const createMiscDebitSchema = z.object({
   receipt_ref: z.string().trim().optional().nullable(),
 }).openapi('CreateMiscDebitInput');
 
+export const updateUnitBillTemplateSchema = z.object({
+  unit_id: z.string().uuid(),
+  bill_format_template: z.enum(billFormatTemplateEnum),
+  room_bill_format_template: z.enum(billFormatTemplateEnum).optional(),
+}).openapi('UpdateUnitBillTemplateInput');
+
 export type CreateBillingPeriodInput = z.infer<typeof createBillingPeriodSchema>;
 export type RunBillingInput = z.infer<typeof runBillingSchema>;
 export type PublishBillsInput = z.infer<typeof publishBillsSchema>;
 export type MarkBillPaidInput = z.infer<typeof markBillPaidSchema>;
 export type CreateSubscriptionInput = z.infer<typeof createSubscriptionSchema>;
 export type CreateMiscDebitInput = z.infer<typeof createMiscDebitSchema>;
+export type UpdateUnitBillTemplateInput = z.infer<typeof updateUnitBillTemplateSchema>;

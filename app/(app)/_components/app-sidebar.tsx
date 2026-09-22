@@ -1,7 +1,6 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import * as Lucide from 'lucide-react';
 import {
   Sidebar,
   SidebarHeader,
@@ -17,17 +16,11 @@ import {
   SidebarMenuSubButton,
   SidebarFooter,
 } from '@/components/ui/sidebar';
-import { navForPath, type NavItem } from './nav-config';
+import { navForPath, navItemMatchesModules, type NavItem } from './nav-config';
+import { NavIcon } from './nav-icons';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { AuthUser } from '@/lib/auth/types';
 import { useAppContext } from '@/lib/auth/context';
-
-function iconOf(name: string) {
-  const I = (Lucide as unknown as Record<string, unknown>)[name] as
-    | React.ComponentType<{ className?: string }>
-    | undefined;
-  return I ?? Lucide.Circle;
-}
 
 function canSee(user: AuthUser, item: NavItem): boolean {
   if (item.requiresRole && !item.requiresRole.includes(user.role)) return false;
@@ -38,164 +31,121 @@ function canSee(user: AuthUser, item: NavItem): boolean {
   return true;
 }
 
-export function AppSidebar() {
+function NavLink({
+  item,
+  pathname,
+}: {
+  item: NavItem;
+  pathname: string;
+}) {
+  const visibleChildren = item.children ?? [];
+  const active = item.href
+    ? pathname === item.href || pathname.startsWith(`${item.href}/`)
+    : visibleChildren.some((c) => c.href && pathname.startsWith(c.href));
+
+  if (visibleChildren.length === 0 && item.href) {
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
+          <Link href={item.href}>
+            <NavIcon name={item.icon} />
+            <span>{item.label}</span>
+          </Link>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  }
+
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton isActive={active} tooltip={item.label}>
+        <NavIcon name={item.icon} />
+        <span>{item.label}</span>
+      </SidebarMenuButton>
+      <SidebarMenuSub>
+        {visibleChildren.map((child) => {
+          const childActive = child.href
+            ? pathname === child.href || pathname.startsWith(`${child.href}/`)
+            : false;
+          return (
+            <SidebarMenuSubItem key={child.label}>
+              <SidebarMenuSubButton asChild isActive={childActive}>
+                <Link href={child.href!}>
+                  <NavIcon name={child.icon} />
+                  <span>{child.label}</span>
+                </Link>
+              </SidebarMenuSubButton>
+            </SidebarMenuSubItem>
+          );
+        })}
+      </SidebarMenuSub>
+    </SidebarMenuItem>
+  );
+}
+
+export function AppSidebar({ enabledModules }: { enabledModules: readonly string[] }) {
   const { user } = useAppContext();
   const pathname = usePathname();
   const { diner, ops } = navForPath(pathname);
-  const visibleOps = ops.filter((item) => canSee(user, item));
+
+  const visibleDiner = diner.filter(
+    (item) => canSee(user, item) && navItemMatchesModules(item, enabledModules),
+  );
+  const dinerHrefs = new Set(visibleDiner.map((item) => item.href).filter(Boolean));
+  const visibleOps = ops.filter((item) => {
+    if (!canSee(user, item) || !navItemMatchesModules(item, enabledModules)) return false;
+    if (item.href && dinerHrefs.has(item.href)) return false;
+    if (item.children) {
+      return item.children.some((child) => canSee(user, child));
+    }
+    return true;
+  });
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="px-4 py-4 border-b border-sidebar-border">
+      <SidebarHeader className="border-b border-sidebar-border px-4 py-4">
         <div className="font-heading font-semibold tracking-tight text-sidebar-foreground">
           Officers Mess
         </div>
       </SidebarHeader>
       <SidebarContent>
-        {/* Member Workspace */}
         <SidebarGroup>
-          <SidebarGroupLabel className="text-xs uppercase tracking-wide text-muted-foreground px-2 py-2">
+          <SidebarGroupLabel className="px-2 py-2 text-xs uppercase tracking-wide text-muted-foreground">
             Workspace
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {diner.map((item) => {
-                if (!canSee(user, item)) return null;
-                const visibleChildren = item.children?.filter((c) => canSee(user, c)) ?? [];
-                if (item.children && visibleChildren.length === 0) return null;
-
-                const Icon = iconOf(item.icon);
-                const active = item.href
-                  ? pathname === item.href || pathname.startsWith(item.href + '/')
-                  : visibleChildren.some((c) => c.href && pathname.startsWith(c.href));
-
-                if (visibleChildren.length === 0 && item.href) {
-                  return (
-                    <SidebarMenuItem key={item.label}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={active}
-                        tooltip={item.label}
-                        className="transition-ds"
-                      >
-                        <Link href={item.href}>
-                          <Icon className="size-4 shrink-0" />
-                          <span>{item.label}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                }
-
-                return (
-                  <SidebarMenuItem key={item.label}>
-                    <SidebarMenuButton
-                      isActive={active}
-                      tooltip={item.label}
-                      className="transition-ds"
-                    >
-                      <Icon className="size-4 shrink-0" />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                    <SidebarMenuSub>
-                      {visibleChildren.map((c) => {
-                        const CI = iconOf(c.icon);
-                        const childActive = c.href
-                          ? pathname === c.href || pathname.startsWith(c.href + '/')
-                          : false;
-                        return (
-                          <SidebarMenuSubItem key={c.label}>
-                            <SidebarMenuSubButton
-                              asChild
-                              isActive={childActive}
-                              className="transition-ds"
-                            >
-                              <Link href={c.href!}>
-                                <CI className="size-4 shrink-0" />
-                                <span>{c.label}</span>
-                              </Link>
-                            </SidebarMenuSubButton>
-                          </SidebarMenuSubItem>
-                        );
-                      })}
-                    </SidebarMenuSub>
-                  </SidebarMenuItem>
-                );
-              })}
+              {visibleDiner.map((item) => (
+                <NavLink
+                  key={item.label}
+                  item={{
+                    ...item,
+                    children: item.children?.filter((child) => canSee(user, child)),
+                  }}
+                  pathname={pathname}
+                />
+              ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Mess Operations */}
         {visibleOps.length > 0 && (
           <SidebarGroup className="mt-2">
-            <SidebarGroupLabel className="text-xs uppercase tracking-wide text-muted-foreground px-2 py-2">
+            <SidebarGroupLabel className="px-2 py-2 text-xs uppercase tracking-wide text-muted-foreground">
               Mess Operations
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {visibleOps.map((item) => {
-                  const visibleChildren = item.children?.filter((c) => canSee(user, c)) ?? [];
-                  if (item.children && visibleChildren.length === 0) return null;
-
-                  const Icon = iconOf(item.icon);
-                  const active = item.href
-                    ? pathname === item.href || pathname.startsWith(item.href + '/')
-                    : visibleChildren.some((c) => c.href && pathname.startsWith(c.href));
-
-                  if (visibleChildren.length === 0 && item.href) {
-                    return (
-                      <SidebarMenuItem key={item.label}>
-                        <SidebarMenuButton
-                          asChild
-                          isActive={active}
-                          tooltip={item.label}
-                          className="transition-ds"
-                        >
-                          <Link href={item.href}>
-                            <Icon className="size-4 shrink-0" />
-                            <span>{item.label}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    );
-                  }
-
-                  return (
-                    <SidebarMenuItem key={item.label}>
-                      <SidebarMenuButton
-                        isActive={active}
-                        tooltip={item.label}
-                        className="transition-ds"
-                      >
-                        <Icon className="size-4 shrink-0" />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                      <SidebarMenuSub>
-                        {visibleChildren.map((c) => {
-                          const CI = iconOf(c.icon);
-                          const childActive = c.href
-                            ? pathname === c.href || pathname.startsWith(c.href + '/')
-                            : false;
-                          return (
-                            <SidebarMenuSubItem key={c.label}>
-                              <SidebarMenuSubButton
-                                asChild
-                                isActive={childActive}
-                                className="transition-ds"
-                              >
-                                <Link href={c.href!}>
-                                  <CI className="size-4 shrink-0" />
-                                  <span>{c.label}</span>
-                                </Link>
-                              </SidebarMenuSubButton>
-                            </SidebarMenuSubItem>
-                          );
-                        })}
-                      </SidebarMenuSub>
-                    </SidebarMenuItem>
-                  );
-                })}
+                {visibleOps.map((item) => (
+                  <NavLink
+                    key={item.label}
+                    item={{
+                      ...item,
+                      children: item.children?.filter((child) => canSee(user, child)),
+                    }}
+                    pathname={pathname}
+                  />
+                ))}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

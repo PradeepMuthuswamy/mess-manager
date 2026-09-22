@@ -8,31 +8,38 @@ import { createClient } from '@/lib/supabase/server';
 import { ModalStyleProvider } from '@/lib/preferences/modal-style-context';
 import { readUiPreferences } from '@/lib/preferences/cookie';
 import { AppContextProvider } from '@/lib/auth/context';
+import { defaultEnabledModules, getEnabledModules } from '@/lib/dashboard/modules';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const cookieStore = await cookies();
   const defaultOpen = cookieStore.get('sidebar_state')?.value !== 'false';
   const { modal_style: modalStyle } = await readUiPreferences();
+  const unitId = user.activeUnitId ?? user.homeUnitId;
 
-  // Admins need the list of units for the UnitSwitcher.
-  let units: { id: string; name: string; code: string }[] = [];
-  if (user.role === 'super_admin') {
-    const supabase = await createClient();
-    const { data } = await supabase
-      .from('units')
-      .select('id, name, code')
-      .eq('is_active', true)
-      .order('name');
-    units = data ?? [];
-  }
+  const [units, enabledModules] = await Promise.all([
+    user.role === 'super_admin'
+      ? (async () => {
+          const supabase = await createClient();
+          const { data } = await supabase
+            .from('units')
+            .select('id, name, code')
+            .eq('is_active', true)
+            .order('name');
+          return data ?? [];
+        })()
+      : Promise.resolve([] as { id: string; name: string; code: string }[]),
+    unitId
+      ? getEnabledModules(unitId).catch(() => defaultEnabledModules())
+      : Promise.resolve(defaultEnabledModules()),
+  ]);
 
   return (
     <TooltipProvider>
       <ModalStyleProvider value={modalStyle}>
         <AppContextProvider user={user}>
           <SidebarProvider defaultOpen={defaultOpen}>
-            <AppSidebar />
+            <AppSidebar enabledModules={enabledModules} />
             <SidebarInset>
               <AppNavbar units={units} />
               <main className="flex-1 px-6 py-6 [&>*]:mx-auto [&>*]:max-w-7xl">{children}</main>
