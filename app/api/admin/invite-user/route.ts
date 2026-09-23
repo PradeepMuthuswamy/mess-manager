@@ -8,7 +8,7 @@ import { userHasCapability } from '@/lib/auth/capabilities';
 import type { AuthUser, Capability, Role } from '@/lib/auth/types';
 import type { Database } from '@/lib/supabase/database.types';
 import { sendInvitationEmail } from '@/lib/email/resend';
-import { buildAuthConfirmLink } from '@/lib/auth/email-links';
+import { issueAuthConfirmLink } from '@/lib/auth/email-links';
 import { opsInviteBlock } from '@/lib/users/invite-rules';
 
 export const dynamic = 'force-dynamic';
@@ -51,26 +51,26 @@ export const POST = withRoute(async (req: NextRequest) => {
   const mappedRole = parsed.data.role;
 
   const admin = createServiceClient();
-  const { data: invited, error: invErr } = await admin.auth.admin.generateLink({
+  const invited = await issueAuthConfirmLink(admin, {
     type: 'invite',
     email: parsed.data.email,
-    options: {
-      data: {
-        ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-        role: mappedRole,
-        unit_id: targetUnit,
-      },
+    next: '/accept-invite',
+    data: {
+      ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
+      role: mappedRole,
+      unit_id: targetUnit,
     },
   });
-  if (invErr || !invited?.user || !invited?.properties?.hashed_token) {
-    throw Errors.conflict(invErr?.message ?? 'Could not invite');
+  if (invited.error || !invited.link || !invited.userId) {
+    throw Errors.conflict(invited.error?.message ?? 'Could not invite');
   }
+  const invitedUserId = invited.userId;
 
   await admin.from('profiles').update({
     role: mappedRole as Database['public']['Enums']['user_role'],
     unit_id: targetUnit,
     ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-  }).eq('id', invited.user.id);
+  }).eq('id', invitedUserId);
 
   // Get unit name for custom invite email
   let unitName = 'Officers\' Mess';
@@ -83,11 +83,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     await sendInvitationEmail({
       email: parsed.data.email,
       fullName: parsed.data.full_name || undefined,
-      inviteLink: buildAuthConfirmLink({
-        type: 'invite',
-        hashedToken: invited.properties.hashed_token,
-        next: '/accept-invite',
-      }),
+      inviteLink: invited.link,
       unitName,
       role: mappedRole,
     });
@@ -99,14 +95,14 @@ export const POST = withRoute(async (req: NextRequest) => {
   if (parsed.data.capability_template_id) {
     const { data: tpl } = await admin.from('capability_templates').select('capabilities').eq('id', parsed.data.capability_template_id).single();
     if (tpl) {
-      const rows = (tpl.capabilities as Capability[]).map((c) => ({ user_id: invited.user!.id, capability: c, unit_id: targetUnit as string }));
+      const rows = (tpl.capabilities as Capability[]).map((c) => ({ user_id: invitedUserId, capability: c, unit_id: targetUnit as string }));
       if (rows.length) await admin.from('user_capabilities').upsert(rows);
     }
   }
   if (parsed.data.capabilities?.length) {
-    const rows = parsed.data.capabilities.map((c) => ({ user_id: invited.user!.id, capability: c as Capability, unit_id: targetUnit as string }));
+    const rows = parsed.data.capabilities.map((c) => ({ user_id: invitedUserId, capability: c as Capability, unit_id: targetUnit as string }));
     await admin.from('user_capabilities').upsert(rows);
   }
 
-  return created({ id: invited.user.id, email: invited.user.email });
+  return created({ id: invitedUserId, email: invited.email });
 });
