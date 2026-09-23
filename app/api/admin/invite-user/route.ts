@@ -9,6 +9,7 @@ import type { AuthUser, Capability, Role } from '@/lib/auth/types';
 import type { Database } from '@/lib/supabase/database.types';
 import { sendInvitationEmail } from '@/lib/email/resend';
 import { buildAuthConfirmLink } from '@/lib/auth/email-links';
+import { opsInviteBlock } from '@/lib/users/invite-rules';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,22 +36,19 @@ async function currentUser(): Promise<AuthUser | null> {
 export const POST = withRoute(async (req: NextRequest) => {
   const user = await currentUser();
   if (!user) throw Errors.unauthenticated();
-  if (!userHasCapability(user, 'users.invite')) throw Errors.forbidden();
 
   const body = await req.json().catch(() => null);
   const parsed = inviteUserSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  let mappedRole = parsed.data.role;
-  if ((mappedRole as string) === 'admin') {
-    mappedRole = 'super_admin';
+  if (!userHasCapability(user, 'users.invite', parsed.data.unit_id)) throw Errors.forbidden();
+  const blocked = opsInviteBlock(parsed.data.role);
+  if (blocked) throw Errors.forbidden(blocked);
+  if (user.role !== 'super_admin' && parsed.data.unit_id !== user.homeUnitId) {
+    throw Errors.forbidden('Cannot invite into other units');
   }
-
-  if ((user.role as string) !== 'admin' && (user.role as string) !== 'super_admin') {
-    if ((mappedRole as string) === 'admin' || (mappedRole as string) === 'super_admin' || (mappedRole as string) === 'unit_admin') throw Errors.forbidden();
-    if (parsed.data.unit_id && parsed.data.unit_id !== user.homeUnitId) throw Errors.forbidden();
-  }
-  const targetUnit = parsed.data.unit_id ?? (((user.role as string) === 'unit_admin' || (user.role as string) === 'mess_secretary') ? user.homeUnitId : null);
+  const targetUnit = parsed.data.unit_id;
+  const mappedRole = parsed.data.role;
 
   const admin = createServiceClient();
   const { data: invited, error: invErr } = await admin.auth.admin.generateLink({

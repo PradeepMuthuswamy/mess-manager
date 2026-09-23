@@ -30,6 +30,9 @@ export function ProfileTab({
     : isUnitManager
       ? ['user', 'manager', 'mess_secretary', 'mess_havildar', 'bar_nco', 'property_nco']
       : ['user', 'manager'];
+  const roleOptions = isEditing
+    ? displayRoles
+    : displayRoles.filter((r) => r !== 'super_admin' && r !== 'unit_admin');
 
   const formatRoleLabel = (r: string) => {
     switch (r) {
@@ -118,7 +121,7 @@ export function ProfileTab({
             disabled={isEditing && !isSuperAdmin}
             className="w-full h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-none disabled:opacity-50"
           >
-            {displayRoles.map((r) => (
+            {roleOptions.map((r) => (
               <option key={r} value={r}>
                 {formatRoleLabel(r)}
               </option>
@@ -134,9 +137,12 @@ export function ProfileTab({
           value={unitId || ''}
           onChange={(e) => dispatch(updateFormField({ field: 'unitId', value: e.target.value || null }))}
           disabled={!isSuperAdmin}
+          required
           className="w-full h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-none disabled:opacity-50"
         >
-          <option value="">Global (All Units)</option>
+          <option value="" disabled>
+            Select a unit
+          </option>
           {units.map((u) => (
             <option key={u.id} value={u.id}>
               {u.name}

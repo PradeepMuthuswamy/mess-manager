@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
 import { requireApiUser } from '@/lib/api/auth';
+import { userHasCapability } from '@/lib/auth/capabilities';
+import { opsInviteBlock } from '@/lib/users/invite-rules';
 import { inviteUserSchema, listUsersQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
@@ -47,7 +49,16 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = inviteUserSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const targetUnit = parsed.data.unit_id ?? (ctx.user.role === 'unit_admin' ? ctx.user.homeUnitId : null);
+  if (!userHasCapability(ctx.user, 'users.invite', parsed.data.unit_id)) {
+    throw Errors.forbidden('Requires capability: users.invite');
+  }
+  const blocked = opsInviteBlock(parsed.data.role);
+  if (blocked) throw Errors.forbidden(blocked);
+  if (ctx.user.role !== 'super_admin' && parsed.data.unit_id !== ctx.user.homeUnitId) {
+    throw Errors.forbidden('Cannot invite into other units');
+  }
+
+  const targetUnit = parsed.data.unit_id;
 
   const { data: invited, error: invErr } = await ctx.admin.auth.admin.generateLink({
     type: 'invite',
