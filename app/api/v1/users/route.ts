@@ -102,6 +102,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     });
   } catch (err) {
     console.error('Failed to send invitation email via Resend in API:', err);
+    throw Errors.internal('Could not send the invitation email.');
   }
 
   // Apply capability template if provided

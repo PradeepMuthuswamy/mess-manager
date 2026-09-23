@@ -93,6 +93,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     });
   } catch (err) {
     console.error('Failed to send invitation email via Resend in Admin API:', err);
+    throw Errors.internal('Could not send the invitation email.');
   }
 
   if (parsed.data.capability_template_id) {

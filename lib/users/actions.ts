@@ -124,7 +124,7 @@ export async function inviteUserAction(input: {
     });
   } catch (err) {
     console.error('Failed to send invitation email via Resend:', err);
-    // Do not return error since profile and user were successfully provisioned in DB
+    return { error: 'Could not send the invitation email.' };
   }
 
   // Provision capabilities if template is provided
