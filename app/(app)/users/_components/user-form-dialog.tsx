@@ -105,6 +105,10 @@ export function UserFormDialog({
       dispatch(reduxSetError('Email is required.'));
       return;
     }
+    if (!isEditing && !unitId) {
+      dispatch(reduxSetError('Select a unit.'));
+      return;
+    }
 
     startTransition(async () => {
       if (isEditing && user) {
@@ -180,7 +184,7 @@ export function UserFormDialog({
             <Button
               type="submit"
               form="user-form"
-              disabled={isPending || (!isEditing && !email)}
+              disabled={isPending || (!isEditing && (!email || !unitId))}
               className="press"
             >
               {isPending ? 'Saving...' : isEditing ? 'Save Changes' : 'Send Invite'}

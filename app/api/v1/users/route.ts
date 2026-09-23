@@ -2,11 +2,13 @@ import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
 import { requireApiUser } from '@/lib/api/auth';
+import { userHasCapability } from '@/lib/auth/capabilities';
+import { opsInviteBlock } from '@/lib/users/invite-rules';
 import { inviteUserSchema, listUsersQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { sendInvitationEmail } from '@/lib/email/resend';
-import { buildAuthConfirmLink } from '@/lib/auth/email-links';
+import { issueAuthConfirmLink } from '@/lib/auth/email-links';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -47,28 +49,37 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = inviteUserSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const targetUnit = parsed.data.unit_id ?? (ctx.user.role === 'unit_admin' ? ctx.user.homeUnitId : null);
+  if (!userHasCapability(ctx.user, 'users.invite', parsed.data.unit_id)) {
+    throw Errors.forbidden('Requires capability: users.invite');
+  }
+  const blocked = opsInviteBlock(parsed.data.role);
+  if (blocked) throw Errors.forbidden(blocked);
+  if (ctx.user.role !== 'super_admin' && parsed.data.unit_id !== ctx.user.homeUnitId) {
+    throw Errors.forbidden('Cannot invite into other units');
+  }
 
-  const { data: invited, error: invErr } = await ctx.admin.auth.admin.generateLink({
+  const targetUnit = parsed.data.unit_id;
+
+  const invited = await issueAuthConfirmLink(ctx.admin, {
     type: 'invite',
     email: parsed.data.email,
-    options: {
-      data: {
-        ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-        role: parsed.data.role,
-        unit_id: targetUnit,
-      },
+    next: '/accept-invite',
+    data: {
+      ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
+      role: parsed.data.role,
+      unit_id: targetUnit,
     },
   });
-  if (invErr || !invited?.user || !invited?.properties?.hashed_token) {
-    throw Errors.conflict(invErr?.message ?? 'Could not invite');
+  if (invited.error || !invited.link || !invited.userId) {
+    throw Errors.conflict(invited.error?.message ?? 'Could not invite');
   }
+  const invitedUserId = invited.userId;
 
   await ctx.admin.from('profiles').update({
     role: parsed.data.role,
     unit_id: targetUnit,
     ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-  }).eq('id', invited.user.id);
+  }).eq('id', invitedUserId);
 
   // Get unit name for custom invite email
   let unitName = 'Officers\' Mess';
@@ -81,16 +92,13 @@ export const POST = withRoute(async (req: NextRequest) => {
     await sendInvitationEmail({
       email: parsed.data.email,
       fullName: parsed.data.full_name || undefined,
-      inviteLink: buildAuthConfirmLink({
-        type: 'invite',
-        hashedToken: invited.properties.hashed_token,
-        next: '/accept-invite',
-      }),
+      inviteLink: invited.link,
       unitName,
       role: parsed.data.role,
     });
   } catch (err) {
     console.error('Failed to send invitation email via Resend in API:', err);
+    throw Errors.internal('Could not send the invitation email.');
   }
 
   // Apply capability template if provided
@@ -102,7 +110,7 @@ export const POST = withRoute(async (req: NextRequest) => {
       .single();
     if (tpl) {
       const rows = (tpl.capabilities as string[]).map((c) => ({
-        user_id: invited.user!.id,
+        user_id: invitedUserId,
         capability: c as never,
         unit_id: targetUnit,
       }));
@@ -112,14 +120,14 @@ export const POST = withRoute(async (req: NextRequest) => {
   // Apply explicit capabilities[] if provided
   if (parsed.data.capabilities && parsed.data.capabilities.length && targetUnit) {
     const rows = parsed.data.capabilities.map((c) => ({
-      user_id: invited.user!.id,
+      user_id: invitedUserId,
       capability: c as never,
       unit_id: targetUnit,
     }));
     await ctx.admin.from('user_capabilities').upsert(rows);
   }
 
-  const body = { id: invited.user.id, email: invited.user.email };
+  const body = { id: invitedUserId, email: invited.email };
   if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, body);
-  return created(body, `/api/v1/users/${invited.user.id}`);
+  return created(body, `/api/v1/users/${invitedUserId}`);
 });

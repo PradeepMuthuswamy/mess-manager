@@ -45,7 +45,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   if (parsed.data.rank !== undefined) update.rank = parsed.data.rank;
   if (parsed.data.is_active !== undefined) update.is_active = parsed.data.is_active;
   if (parsed.data.role !== undefined) {
-    update.role = ((parsed.data.role as string) === 'admin' ? 'super_admin' : parsed.data.role) as Database["public"]["Enums"]["user_role"];
+    update.role = parsed.data.role;
   }
   if (parsed.data.unit_id !== undefined) update.unit_id = parsed.data.unit_id;
 
