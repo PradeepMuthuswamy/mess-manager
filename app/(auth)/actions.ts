@@ -13,7 +13,7 @@ import {
 } from '@/lib/schemas/auth';
 
 import { sendPasswordResetEmail, sendMagicLinkEmail } from '@/lib/email/resend';
-import { buildAuthConfirmLink } from '@/lib/auth/email-links';
+import { issueAuthConfirmLink } from '@/lib/auth/email-links';
 
 export type ActionState = {
   error?: string;
@@ -96,29 +96,26 @@ export async function forgotPasswordAction(
   // Admin accounts reset their password via the Admin Console; respond
   // identically either way to avoid account enumeration.
   if (profile && profile.role !== 'super_admin') {
-    const { data: recovery, error: recoveryErr } = await admin.auth.admin.generateLink({
+    const recovery = await issueAuthConfirmLink(admin, {
       type: 'recovery',
       email: parsed.data.email,
+      next: '/reset-password',
     });
 
-    if (recoveryErr) {
-      console.error('Error generating reset link:', recoveryErr);
+    if (recovery.error) {
+      console.error('Error generating reset link:', recovery.error);
       return { ok: true };
     }
 
     // Use hashed_token + our /auth/confirm route instead of action_link:
     // action_link returns the session in a URL fragment the server
     // can never read, stranding the user on the landing page.
-    if (recovery?.properties?.hashed_token) {
+    if (recovery.link) {
       try {
         await sendPasswordResetEmail({
           email: parsed.data.email,
           fullName: profile.full_name ?? undefined,
-          resetLink: buildAuthConfirmLink({
-            type: 'recovery',
-            hashedToken: recovery.properties.hashed_token,
-            next: '/reset-password',
-          }),
+          resetLink: recovery.link,
         });
       } catch (err) {
         console.error('Failed to send reset email via Resend:', err);
@@ -228,24 +225,21 @@ export async function sendMagicLinkAction(
     return { ok: true };
   }
 
-  const { data: linkData, error } = await admin.auth.admin.generateLink({
+  const linkData = await issueAuthConfirmLink(admin, {
     type: 'magiclink',
     email,
+    next: '/dashboard',
   });
 
-  if (error || !linkData?.properties?.hashed_token) {
-    return { error: error?.message ?? 'Could not generate magic link.' };
+  if (linkData.error || !linkData.link) {
+    return { error: linkData.error?.message ?? 'Could not generate magic link.' };
   }
 
   try {
     await sendMagicLinkEmail({
       email,
       fullName: profile.full_name ?? undefined,
-      magicLink: buildAuthConfirmLink({
-        type: 'magiclink',
-        hashedToken: linkData.properties.hashed_token,
-        next: '/dashboard',
-      }),
+      magicLink: linkData.link,
     });
   } catch (err) {
     console.error('Failed to send magic link email:', err);

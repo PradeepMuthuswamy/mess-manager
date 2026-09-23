@@ -15,10 +15,14 @@ export const roleEnum = z.enum([
 ]);
 export type Role = z.infer<typeof roleEnum>;
 
-const preprocessedRole = z.preprocess(
-  (val) => (val === 'admin' ? 'super_admin' : val),
-  roleEnum
-);
+/**
+ * There is no `admin` role. Older forms still send that alias for `super_admin`.
+ */
+export function normalizeRoleAlias<T>(role: T): T | 'super_admin' {
+  return role === 'admin' ? 'super_admin' : role;
+}
+
+const preprocessedRole = z.preprocess(normalizeRoleAlias, roleEnum);
 
 export const inviteUserSchema = z.object({
   email: z.string().email(),

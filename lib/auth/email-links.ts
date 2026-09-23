@@ -42,3 +42,78 @@ export function buildAuthConfirmLink(opts: {
   });
   return `${siteUrl}/auth/confirm?${params.toString()}`;
 }
+
+export type IssuedAuthConfirmLink = {
+  error: { message: string } | null;
+  /** First-party /auth/confirm URL, or null when generateLink failed. */
+  link: string | null;
+  userId: string | null;
+  email: string | undefined;
+};
+
+type AuthLinkClient = {
+  auth: {
+    admin: {
+      generateLink: (
+        params:
+          | {
+              type: 'invite';
+              email: string;
+              options?: { data?: { [key: string]: string | number | boolean | null | undefined } };
+            }
+          | { type: 'recovery' | 'magiclink'; email: string },
+      ) => Promise<{
+        data: {
+          user: { id: string; email?: string } | null;
+          properties: { hashed_token?: string } | null;
+        } | null;
+        error: { message: string } | null;
+      }>;
+    };
+  };
+};
+
+/**
+ * generateLink + first-party /auth/confirm URL.
+ * Callers still decide who may request the link, which origin to use,
+ * and which error to show.
+ */
+export async function issueAuthConfirmLink(
+  admin: AuthLinkClient,
+  opts: {
+    type: 'invite' | 'recovery' | 'magiclink';
+    email: string;
+    next: string;
+    data?: { [key: string]: string | number | boolean | null | undefined };
+    baseUrl?: string;
+  },
+): Promise<IssuedAuthConfirmLink> {
+  const { data, error } = await admin.auth.admin.generateLink(
+    opts.type === 'invite'
+      ? {
+          type: 'invite',
+          email: opts.email,
+          options: { data: opts.data ?? {} },
+        }
+      : { type: opts.type, email: opts.email },
+  );
+
+  const hashedToken = data?.properties?.hashed_token;
+  const userId = data?.user?.id ?? null;
+  const email = data?.user?.email;
+  if (error || !hashedToken) {
+    return { error, link: null, userId, email };
+  }
+
+  return {
+    error: null,
+    userId,
+    email,
+    link: buildAuthConfirmLink({
+      type: opts.type,
+      hashedToken,
+      next: opts.next,
+      baseUrl: opts.baseUrl,
+    }),
+  };
+}

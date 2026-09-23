@@ -7,7 +7,8 @@ import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
 import type { Role, Capability } from '@/lib/auth/types';
 import { sendInvitationEmail } from '@/lib/email/resend';
-import { buildAuthConfirmLink } from '@/lib/auth/email-links';
+import { issueAuthConfirmLink } from '@/lib/auth/email-links';
+import { normalizeRoleAlias } from '@/lib/schemas/users';
 
 const USERS_PATH = '/users';
 
@@ -58,10 +59,7 @@ export async function inviteUserAction(input: {
   const caller = await requireUser();
   await requireCapability('users.invite', input.unit_id);
 
-  let targetRole: any = input.role;
-  if ((targetRole as string) === 'admin') {
-    targetRole = 'super_admin';
-  }
+  const targetRole = normalizeRoleAlias(input.role);
 
   // Authorization checks for role & unit scoping
   if (caller.role !== 'super_admin') {
@@ -78,28 +76,28 @@ export async function inviteUserAction(input: {
   const targetUnit = input.unit_id ?? (caller.role === 'unit_admin' ? caller.homeUnitId : null);
 
   const admin = createServiceClient();
-  const { data: invited, error: invErr } = await admin.auth.admin.generateLink({
+  const invited = await issueAuthConfirmLink(admin, {
     type: 'invite',
     email: input.email,
-    options: {
-      data: {
-        ...(input.full_name ? { full_name: input.full_name } : {}),
-        role: targetRole,
-        unit_id: targetUnit,
-      },
+    next: '/accept-invite',
+    data: {
+      ...(input.full_name ? { full_name: input.full_name } : {}),
+      role: targetRole,
+      unit_id: targetUnit,
     },
   });
 
-  if (invErr || !invited?.user || !invited?.properties?.hashed_token) {
-    return { error: invErr?.message ?? 'Could not trigger invitation.' };
+  if (invited.error || !invited.link || !invited.userId) {
+    return { error: invited.error?.message ?? 'Could not trigger invitation.' };
   }
+  const invitedUserId = invited.userId;
 
   // Update profile with specific details
   const { error: profErr } = await admin.from('profiles').update({
     role: targetRole,
     unit_id: targetUnit,
     ...(input.full_name ? { full_name: input.full_name } : {}),
-  }).eq('id', invited.user.id);
+  }).eq('id', invitedUserId);
 
   if (profErr) {
     return { error: profErr.message };
@@ -116,11 +114,7 @@ export async function inviteUserAction(input: {
     await sendInvitationEmail({
       email: input.email,
       fullName: input.full_name,
-      inviteLink: buildAuthConfirmLink({
-        type: 'invite',
-        hashedToken: invited.properties.hashed_token,
-        next: '/accept-invite',
-      }),
+      inviteLink: invited.link,
       unitName,
       role: targetRole,
     });
@@ -138,7 +132,7 @@ export async function inviteUserAction(input: {
       .single();
     if (tpl) {
       const rows = (tpl.capabilities as string[]).map((c) => ({
-        user_id: invited.user!.id,
+        user_id: invitedUserId,
         capability: c as never,
         unit_id: targetUnit,
       }));
@@ -149,7 +143,7 @@ export async function inviteUserAction(input: {
   // Provision explicit capabilities if provided
   if (input.capabilities && input.capabilities.length && targetUnit) {
     const rows = input.capabilities.map((c) => ({
-      user_id: invited.user!.id,
+      user_id: invitedUserId,
       capability: c as never,
       unit_id: targetUnit,
     }));
@@ -157,7 +151,7 @@ export async function inviteUserAction(input: {
   }
 
   revalidatePath(USERS_PATH);
-  return { ok: true, data: { id: invited.user.id, email: invited.user.email } };
+  return { ok: true, data: { id: invitedUserId, email: invited.email } };
 }
 
 export async function updateUserAction(
@@ -198,10 +192,7 @@ export async function updateUserAction(
     return { error: 'You can only edit users within your own unit.' };
   }
 
-  let mappedRole: any = input.role;
-  if (mappedRole === 'admin') {
-    mappedRole = 'super_admin';
-  }
+  const mappedRole = normalizeRoleAlias(input.role);
 
   if (mappedRole !== undefined || input.unit_id !== undefined) {
     const finalRole = mappedRole !== undefined ? mappedRole : target.role;
@@ -228,7 +219,7 @@ export async function updateUserAction(
 
   // Sync auth user app_metadata if role or unit changes
   if (mappedRole !== undefined || input.unit_id !== undefined) {
-    const updateData: any = {};
+    const updateData: { role?: Role; unit_id?: string | null } = {};
     if (mappedRole !== undefined) {
       updateData.role = mappedRole;
     }
