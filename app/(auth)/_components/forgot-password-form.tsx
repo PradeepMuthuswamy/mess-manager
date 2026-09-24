@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import Link from 'next/link';
 import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
@@ -7,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FormError } from '@/components/shared/form-error';
+import { toast } from 'sonner';
+import { useActionResult } from '@/hooks/use-action-result';
 import { forgotPasswordAction, type ActionState } from '../actions';
 
 const INITIAL: ActionState = {};
@@ -19,13 +22,17 @@ function SubmitButton() {
       className="w-full transition-ds press"
       disabled={pending}
     >
-      {pending ? 'Sending…' : 'Send reset link'}
+      {savingLabel(pending, 'Send reset link')}
     </Button>
   );
 }
 
 export function ForgotPasswordForm() {
   const [state, formAction] = useActionState(forgotPasswordAction, INITIAL);
+  useActionResult(state, {
+    onOk: () => toast.success('If that email is on file, a reset link is on its way.'),
+    onError: (message) => toast.error(message),
+  });
 
   if (state.ok) {
     return (

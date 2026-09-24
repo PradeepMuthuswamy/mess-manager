@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
+import { savingLabel } from '@/components/shared/save-submit';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -154,6 +155,8 @@ export function StockTable({
   const [extraItems, setExtraItems] = useState<MasterItemPick[]>([]);
   const [localSearch, setLocalSearch] = useState(q);
   const [prevQ, setPrevQ] = useState(q);
+  const [deactivatingId, setDeactivatingId] = useState<string | null>(null);
+  const [, startDeactivate] = useTransition();
 
   if (q !== prevQ) {
     setLocalSearch(q);
@@ -368,20 +371,29 @@ export function StockTable({
                               Adjust quantity
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              onClick={async () => {
-                                const fd = new FormData();
-                                fd.append('id', row.id ?? '');
-                                const res = await deactivateLotAction(null, fd);
-                                if (res?.ok) {
-                                  toast.success('Lot deactivated');
-                                  refresh();
-                                } else {
-                                  toast.error(res?.error ?? 'Could not deactivate');
-                                }
+                              disabled={deactivatingId === row.id}
+                              onClick={() => {
+                                const id = row.id ?? '';
+                                setDeactivatingId(id);
+                                startDeactivate(async () => {
+                                  try {
+                                    const fd = new FormData();
+                                    fd.append('id', id);
+                                    const res = await deactivateLotAction(null, fd);
+                                    if (res?.ok) {
+                                      toast.success('Lot deactivated');
+                                      refresh();
+                                    } else {
+                                      toast.error(res?.error ?? 'Could not deactivate');
+                                    }
+                                  } finally {
+                                    setDeactivatingId(null);
+                                  }
+                                });
                               }}
                               className="text-destructive"
                             >
-                              Deactivate
+                              {savingLabel(deactivatingId === row.id, 'Deactivate')}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>

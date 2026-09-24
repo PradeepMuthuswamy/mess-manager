@@ -12,6 +12,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { Booking } from '@/lib/guest-rooms/types';
+import { bookingActionKey } from '@/lib/redux/guest-rooms/slice';
+import { savingLabel } from '@/components/shared/save-submit';
 import { formatHost, settlementLabel } from './folio-helpers';
 
 interface BookingDetailsDialogProps {
@@ -57,6 +59,8 @@ export function BookingDetailsDialog({
   const isPending = Object.keys(pendingActions).some((key) =>
     key.endsWith(`:${booking.id}`),
   );
+  const actionPending = (action: string) =>
+    Boolean(pendingActions[bookingActionKey(action, booking.id)]);
 
   const nights = Math.max(
     1,
@@ -259,7 +263,9 @@ export function BookingDetailsDialog({
               title="Delete Booking"
             >
               <Trash2 className="size-3.5" />
-              <span className="ml-1.5 text-xs">Delete</span>
+              <span className="ml-1.5 text-xs">
+                {savingLabel(actionPending('delete'), 'Delete')}
+              </span>
             </Button>
           </div>
 
@@ -273,8 +279,13 @@ export function BookingDetailsDialog({
                   onClick={() => onCancel(booking.id)}
                   className="text-destructive hover:bg-destructive/5 h-8 text-xs cursor-pointer"
                 >
-                  <XCircle className="mr-1.5 size-3.5" />
-                  Cancel
+                  {savingLabel(
+                    actionPending('cancel'),
+                    <>
+                      <XCircle className="mr-1.5 size-3.5" />
+                      Cancel
+                    </>,
+                  )}
                 </Button>
                 <Button
                   size="sm"
@@ -282,8 +293,13 @@ export function BookingDetailsDialog({
                   onClick={() => onCheckIn(booking.id)}
                   className="h-8 text-xs cursor-pointer font-medium"
                 >
-                  <LogIn className="mr-1.5 size-3.5" />
-                  Check-in
+                  {savingLabel(
+                    actionPending('check-in'),
+                    <>
+                      <LogIn className="mr-1.5 size-3.5" />
+                      Check-in
+                    </>,
+                  )}
                 </Button>
               </>
             )}
@@ -297,7 +313,7 @@ export function BookingDetailsDialog({
                   onClick={() => onUndoCheckIn(booking.id)}
                   className="h-8 text-xs cursor-pointer"
                 >
-                  Undo Check-in
+                  {savingLabel(actionPending('undo-check-in'), 'Undo Check-in')}
                 </Button>
                 <Button
                   variant="outline"
@@ -330,7 +346,7 @@ export function BookingDetailsDialog({
                   onClick={() => onUndoCheckOut(booking.id)}
                   className="h-8 text-xs cursor-pointer"
                 >
-                  Undo Check-out
+                  {savingLabel(actionPending('undo-check-out'), 'Undo Check-out')}
                 </Button>
                 <Button
                   size="sm"

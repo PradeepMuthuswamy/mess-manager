@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import {
   Dialog,
@@ -21,7 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { markBillPaidAction } from '@/lib/billing/actions';
-import { CreditCard, Loader2 } from 'lucide-react';
+import { CreditCard } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface BillPaymentDialogProps {
@@ -118,8 +120,7 @@ export function BillPaymentDialog({ billId, totalAmount, billNumber }: BillPayme
               Cancel
             </Button>
             <Button type="submit" disabled={isPending} className="gap-1.5">
-              {isPending && <Loader2 className="size-4 animate-spin" />}
-              Confirm Payment
+              {savingLabel(isPending, 'Confirm Payment')}
             </Button>
           </DialogFooter>
         </form>

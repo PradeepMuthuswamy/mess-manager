@@ -1,7 +1,8 @@
 'use client';
 
-import { useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
+import { savingLabel } from '@/components/shared/save-submit';
 import { Badge } from '@/components/ui/badge';
 import { approveMealCutAction, rejectMealCutAction } from '@/lib/messing/actions';
 import { MESSING_MEAL_TYPE_LABEL, type MessingMealType } from '@/lib/schemas/messing';
@@ -17,6 +18,7 @@ export function MealCutQueue({
   cuts: RequestedMealCutView[];
 }) {
   const [isPending, startTransition] = useTransition();
+  const [busy, setBusy] = useState<string | null>(null);
 
   if (cuts.length === 0) {
     return <p className="text-sm text-muted-foreground">No messing requests waiting.</p>;
@@ -45,14 +47,19 @@ export function MealCutQueue({
               size="sm"
               disabled={isPending}
               onClick={() => {
+                setBusy(`${cut.id}:approve`);
                 startTransition(async () => {
-                  const res = await approveMealCutAction({ id: cut.id, unit_id: unitId });
-                  if ('error' in res) toast.error(res.error);
-                  else toast.success('Messing approved');
+                  try {
+                    const res = await approveMealCutAction({ id: cut.id, unit_id: unitId });
+                    if ('error' in res) toast.error(res.error);
+                    else toast.success('Messing approved');
+                  } finally {
+                    setBusy(null);
+                  }
                 });
               }}
             >
-              Approve
+              {savingLabel(busy === `${cut.id}:approve`, 'Approve')}
             </Button>
             <Button
               size="sm"
@@ -61,18 +68,23 @@ export function MealCutQueue({
               onClick={() => {
                 const reason = window.prompt('Reject reason (optional)');
                 if (reason === null) return;
+                setBusy(`${cut.id}:reject`);
                 startTransition(async () => {
-                  const res = await rejectMealCutAction({
-                    id: cut.id,
-                    unit_id: unitId,
-                    reason: reason.trim() || undefined,
-                  });
-                  if ('error' in res) toast.error(res.error);
-                  else toast.success('Messing rejected');
+                  try {
+                    const res = await rejectMealCutAction({
+                      id: cut.id,
+                      unit_id: unitId,
+                      reason: reason.trim() || undefined,
+                    });
+                    if ('error' in res) toast.error(res.error);
+                    else toast.success('Messing rejected');
+                  } finally {
+                    setBusy(null);
+                  }
                 });
               }}
             >
-              Reject
+              {savingLabel(busy === `${cut.id}:reject`, 'Reject')}
             </Button>
           </div>
         </div>

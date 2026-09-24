@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
@@ -102,7 +103,7 @@ export function WaitlistQueue({
                           )
                         }
                       >
-                        {offering ? 'Offering…' : 'Offer'}
+                        {savingLabel(offering, 'Offer')}
                       </Button>
                     )}
                     {row.status === 'offered' && (
@@ -146,7 +147,7 @@ export function WaitlistQueue({
                             );
                           }}
                         >
-                          {booking ? 'Booking…' : 'Book room'}
+                          {savingLabel(booking, 'Book room')}
                         </Button>
                       </>
                     )}

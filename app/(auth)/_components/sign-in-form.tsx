@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import Link from 'next/link';
 import { useState, useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
@@ -7,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FormError } from '@/components/shared/form-error';
+import { toast } from 'sonner';
+import { useActionResult } from '@/hooks/use-action-result';
 import { signInAction, sendMagicLinkAction, type ActionState } from '../actions';
 
 const INITIAL: ActionState = {};
@@ -19,7 +22,7 @@ function SubmitButton({ label }: { label: string }) {
       className="w-full transition-ds press font-semibold"
       disabled={pending}
     >
-      {pending ? 'Processing…' : label}
+      {savingLabel(pending, label)}
     </Button>
   );
 }
@@ -31,6 +34,11 @@ export function SignInForm({ next }: { next?: string }) {
     mode === 'password' ? signInAction : sendMagicLinkAction,
     INITIAL
   );
+  useActionResult(state, {
+    onOk: () =>
+      toast.success('If your account exists, a magic link is on its way.'),
+    onError: (message) => toast.error(message),
+  });
 
   if (mode === 'magiclink' && state.ok) {
     return (

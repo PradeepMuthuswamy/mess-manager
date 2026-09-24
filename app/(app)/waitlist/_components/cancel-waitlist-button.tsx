@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useRouter } from 'next/navigation';
 import { useTransition } from 'react';
 import { Button } from '@/components/ui/button';
@@ -28,7 +30,7 @@ export function CancelWaitlistButton({ id, unitId }: { id: string; unitId: strin
         });
       }}
     >
-      Cancel
+      {savingLabel(pending, 'Cancel')}
     </Button>
   );
 }

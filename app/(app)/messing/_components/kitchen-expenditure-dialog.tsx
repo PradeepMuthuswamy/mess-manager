@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import {
   Dialog,
@@ -22,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { recordDailyKitchenExpenditureAction } from '@/lib/messing/actions';
-import { UtensilsCrossed, Calculator, Loader2 } from 'lucide-react';
+import { UtensilsCrossed, Calculator } from 'lucide-react';
 import { toast } from 'sonner';
 
 type SourcingCategory = 'LOCAL_PURCHASE' | 'CANTEEN' | 'OTHER';
@@ -227,8 +229,7 @@ export function KitchenExpenditureDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={isPending} className="gap-1.5">
-              {isPending && <Loader2 className="size-4 animate-spin" />}
-              Save kitchen log
+              {savingLabel(isPending, 'Save kitchen log')}
             </Button>
           </DialogFooter>
         </form>

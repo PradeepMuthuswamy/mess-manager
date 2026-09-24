@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
@@ -78,7 +79,7 @@ export function PartyGuestsForm({
         </div>
         <div className="sm:col-span-2">
           <Button type="submit" size="sm" disabled={pending}>
-            {pending ? 'Adding…' : 'Add guest'}
+            {savingLabel(pending, 'Add guest')}
           </Button>
         </div>
       </form>

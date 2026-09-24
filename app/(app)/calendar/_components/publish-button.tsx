@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
@@ -50,8 +52,13 @@ export function PublishButton({
         }}
         disabled={pending}
       >
-        <Send className="size-4" />
-        {pending ? 'Publishing…' : published ? 'Publish again' : `Publish ${label}`}
+        {savingLabel(
+          pending,
+          <>
+            <Send className="size-4" />
+            {published ? 'Publish again' : `Publish ${label}`}
+          </>,
+        )}
       </Button>
     </div>
   );

@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useRouter } from 'next/navigation';
 import { useTransition } from 'react';
 import { Button } from '@/components/ui/button';
@@ -74,7 +75,7 @@ export function PartyLifecycleButtons({
           disabled={pending}
           onClick={() => run(() => submitPartyBudgetAction(payload), 'Budget submitted')}
         >
-          {pending ? 'Working…' : 'Submit budget'}
+          {savingLabel(pending, 'Submit budget')}
         </Button>
       ) : null}
       {showApprove ? (
@@ -84,7 +85,7 @@ export function PartyLifecycleButtons({
           disabled={pending}
           onClick={() => run(() => approvePartyBudgetAction(payload), 'Budget approved')}
         >
-          {pending ? 'Working…' : 'Approve budget'}
+          {savingLabel(pending, 'Approve budget')}
         </Button>
       ) : null}
       {showFinalize ? (
@@ -95,7 +96,7 @@ export function PartyLifecycleButtons({
           disabled={pending}
           onClick={() => run(() => finalizePartyAction(payload), 'Party finalized')}
         >
-          {pending ? 'Working…' : 'Finalize party'}
+          {savingLabel(pending, 'Finalize party')}
         </Button>
       ) : null}
     </div>

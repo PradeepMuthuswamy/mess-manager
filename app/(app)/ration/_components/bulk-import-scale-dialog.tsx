@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useMemo, useState, useTransition } from 'react';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
 import { Button } from '@/components/ui/button';
@@ -104,9 +106,10 @@ export function BulkImportScaleDialog({
             disabled={pending || hasFatal || validRows.length === 0}
             className="transition-ds press"
           >
-            {pending
-              ? 'Importing…'
-              : `Import ${validRows.length} item${validRows.length === 1 ? '' : 's'}`}
+            {savingLabel(
+              pending,
+              `Import ${validRows.length} item${validRows.length === 1 ? '' : 's'}`,
+            )}
           </Button>
         </>
       }

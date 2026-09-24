@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useMemo, useRef, useState, useTransition } from 'react';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
 import { Button } from '@/components/ui/button';
@@ -214,9 +216,10 @@ export function MasterBulkImportDialog({
             }
             className="transition-ds press"
           >
-            {isPending
-              ? 'Importing...'
-              : `Import ${validRows.length} item${validRows.length === 1 ? '' : 's'}`}
+            {savingLabel(
+              isPending,
+              `Import ${validRows.length} item${validRows.length === 1 ? '' : 's'}`,
+            )}
           </Button>
         </>
       }

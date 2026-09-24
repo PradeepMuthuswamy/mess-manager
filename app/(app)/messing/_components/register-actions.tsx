@@ -1,13 +1,13 @@
 'use client';
 
-import { useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
+import { savingLabel } from '@/components/shared/save-submit';
 import {
   submitDailyRegisterAction,
   approveDailyRegisterAction,
   rejectDailyRegisterAction,
 } from '@/lib/messing/actions';
-import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface RegisterActionsProps {
@@ -26,16 +26,26 @@ export function RegisterActions({
   canApprove,
 }: RegisterActionsProps) {
   const [isPending, startTransition] = useTransition();
+  const [busy, setBusy] = useState<string | null>(null);
 
   const payload = { unit_id: unitId, expenditure_date: date };
 
-  const run = (fn: () => Promise<{ ok: true } | { error: string }>, success: string) => {
+  const run = (
+    key: string,
+    fn: () => Promise<{ ok: true } | { error: string }>,
+    success: string,
+  ) => {
+    setBusy(key);
     startTransition(async () => {
-      const res = await fn();
-      if ('error' in res) {
-        toast.error(res.error);
-      } else {
-        toast.success(success);
+      try {
+        const res = await fn();
+        if ('error' in res) {
+          toast.error(res.error);
+        } else {
+          toast.success(success);
+        }
+      } finally {
+        setBusy(null);
       }
     });
   };
@@ -46,10 +56,9 @@ export function RegisterActions({
         <Button
           size="sm"
           disabled={isPending}
-          onClick={() => run(() => submitDailyRegisterAction(payload), 'Register submitted')}
+          onClick={() => run('submit', () => submitDailyRegisterAction(payload), 'Register submitted')}
         >
-          {isPending && <Loader2 className="size-4 animate-spin" />}
-          Submit register
+          {savingLabel(busy === 'submit', 'Submit register')}
         </Button>
       )}
       {canApprove && status === 'submitted' && (
@@ -57,10 +66,9 @@ export function RegisterActions({
           <Button
             size="sm"
             disabled={isPending}
-            onClick={() => run(() => approveDailyRegisterAction(payload), 'Register approved')}
+            onClick={() => run('approve', () => approveDailyRegisterAction(payload), 'Register approved')}
           >
-            {isPending && <Loader2 className="size-4 animate-spin" />}
-            Approve
+            {savingLabel(busy === 'approve', 'Approve')}
           </Button>
           <Button
             size="sm"
@@ -70,6 +78,7 @@ export function RegisterActions({
               const reason = window.prompt('Reject reason (optional)');
               if (reason === null) return;
               run(
+                'reject',
                 () =>
                   rejectDailyRegisterAction({
                     ...payload,
@@ -79,7 +88,7 @@ export function RegisterActions({
               );
             }}
           >
-            Reject
+            {savingLabel(busy === 'reject', 'Reject')}
           </Button>
         </>
       )}

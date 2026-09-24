@@ -1,11 +1,14 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useActionState, useState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FormError } from '@/components/shared/form-error';
+import { toast } from 'sonner';
+import { useActionResult } from '@/hooks/use-action-result';
 import { acceptInviteAction, type ActionState } from '../actions';
 
 const INITIAL: ActionState = {};
@@ -18,13 +21,16 @@ function SubmitButton() {
       className="w-full transition-ds press"
       disabled={pending}
     >
-      {pending ? 'Setting up…' : 'Accept invite'}
+      {savingLabel(pending, 'Accept invite')}
     </Button>
   );
 }
 
 export function AcceptInviteForm() {
   const [state, formAction] = useActionState(acceptInviteAction, INITIAL);
+  useActionResult(state, {
+    onError: (message) => toast.error(message),
+  });
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [clientError, setClientError] = useState<string | undefined>();
@@ -32,12 +38,16 @@ export function AcceptInviteForm() {
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     if (password !== confirm) {
       e.preventDefault();
-      setClientError('Passwords do not match.');
+      const message = 'Passwords do not match.';
+      setClientError(message);
+      toast.error(message);
       return;
     }
     if (password.length < 8) {
       e.preventDefault();
-      setClientError('Password must be at least 8 characters.');
+      const message = 'Password must be at least 8 characters.';
+      setClientError(message);
+      toast.error(message);
       return;
     }
     setClientError(undefined);
