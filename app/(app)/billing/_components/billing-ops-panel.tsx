@@ -33,7 +33,8 @@ import {
 } from '@/lib/billing/actions';
 import { deriveStandardBillingCycle } from '@/lib/billing/compute';
 import type { MessBillingPeriodRow, MessSubscriptionRow } from '@/lib/billing/types';
-import { Play, Send, Plus, Calendar, ShieldCheck, Loader2, Ban, PartyPopper, Receipt } from 'lucide-react';
+import { savingLabel } from '@/components/shared/save-submit';
+import { Play, Send, Plus, Calendar, ShieldCheck, Ban, PartyPopper, Receipt } from 'lucide-react';
 import { toast } from 'sonner';
 
 export type BillingMemberOption = {
@@ -69,6 +70,18 @@ export function BillingOpsPanel({
   canFinalize,
 }: BillingOpsPanelProps) {
   const [isPending, startTransition] = useTransition();
+  const [busy, setBusy] = useState<string | null>(null);
+
+  function runBusy(key: string, work: () => Promise<void>) {
+    setBusy(key);
+    startTransition(async () => {
+      try {
+        await work();
+      } finally {
+        setBusy(null);
+      }
+    });
+  }
   const [showNewPeriod, setShowNewPeriod] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
   const [showMiscModal, setShowMiscModal] = useState(false);
@@ -110,7 +123,7 @@ export function BillingOpsPanel({
 
   const handleCreatePeriod = (e: React.FormEvent) => {
     e.preventDefault();
-    startTransition(async () => {
+    runBusy('period', async () => {
       const res = await createBillingPeriodAction({
         unit_id: unitId,
         name: periodName,
@@ -131,7 +144,7 @@ export function BillingOpsPanel({
 
   const handleRunBilling = () => {
     if (!currentPeriod) return;
-    startTransition(async () => {
+    runBusy('run', async () => {
       const res = await runMonthlyBillingAction({
         unit_id: unitId,
         billing_period_id: currentPeriod.id,
@@ -150,7 +163,7 @@ export function BillingOpsPanel({
 
   const handlePublishBills = () => {
     if (!currentPeriod) return;
-    startTransition(async () => {
+    runBusy('publish', async () => {
       const res = await publishBillingPeriodAction({
         billing_period_id: currentPeriod.id,
       });
@@ -165,7 +178,7 @@ export function BillingOpsPanel({
 
   const handleAddSubscription = (e: React.FormEvent) => {
     e.preventDefault();
-    startTransition(async () => {
+    runBusy('subscription', async () => {
       const res = await createSubscriptionAction({
         unit_id: unitId,
         name: subName,
@@ -183,7 +196,7 @@ export function BillingOpsPanel({
   };
 
   const handleDeactivateSubscription = (subscriptionId: string, name: string) => {
-    startTransition(async () => {
+    runBusy(`sub:${subscriptionId}`, async () => {
       const res = await deactivateSubscriptionAction(subscriptionId);
       if ('error' in res) {
         toast.error(res.error);
@@ -195,7 +208,7 @@ export function BillingOpsPanel({
 
   const handleCreateMiscDebit = (e: React.FormEvent) => {
     e.preventDefault();
-    startTransition(async () => {
+    runBusy('debit', async () => {
       const res = await createMiscDebitAction({
         unit_id: unitId,
         profile_id: miscProfileId,
@@ -220,7 +233,7 @@ export function BillingOpsPanel({
 
   const handleCreatePartyCharge = (e: React.FormEvent) => {
     e.preventDefault();
-    startTransition(async () => {
+    runBusy('charge', async () => {
       const res = await createPartyChargeAction({
         unit_id: unitId,
         profile_id: partyProfileId,
@@ -315,8 +328,7 @@ export function BillingOpsPanel({
                       Cancel
                     </Button>
                     <Button type="submit" disabled={isPending}>
-                      {isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-                      Open Billing Period
+                      {savingLabel(busy === 'period', 'Open Billing Period')}
                     </Button>
                   </DialogFooter>
                 </form>
@@ -372,7 +384,7 @@ export function BillingOpsPanel({
                       Cancel
                     </Button>
                     <Button type="submit" disabled={isPending}>
-                      Save Subscription
+                      {savingLabel(busy === 'subscription', 'Save Subscription')}
                     </Button>
                   </DialogFooter>
                 </form>
@@ -476,8 +488,7 @@ export function BillingOpsPanel({
                       Cancel
                     </Button>
                     <Button type="submit" disabled={isPending || !miscProfileId}>
-                      {isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-                      Record debit
+                      {savingLabel(busy === 'debit', 'Record debit')}
                     </Button>
                   </DialogFooter>
                 </form>
@@ -549,8 +560,7 @@ export function BillingOpsPanel({
                       Cancel
                     </Button>
                     <Button type="submit" disabled={isPending || !partyProfileId}>
-                      {isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-                      Record charge
+                      {savingLabel(busy === 'charge', 'Record charge')}
                     </Button>
                   </DialogFooter>
                 </form>
@@ -581,8 +591,13 @@ export function BillingOpsPanel({
                 disabled={runDisabled}
                 className="gap-1.5"
               >
-                {isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                Run Monthly Billing Engine
+                {savingLabel(
+                  busy === 'run',
+                  <>
+                    <Play className="size-4" />
+                    Run Monthly Billing Engine
+                  </>,
+                )}
               </Button>
 
               {canFinalize && currentPeriod.status === 'draft' && (
@@ -593,8 +608,13 @@ export function BillingOpsPanel({
                   disabled={isPending}
                   className="gap-1.5 bg-success text-success-foreground hover:bg-success/90"
                 >
-                  <Send className="size-4" />
-                  Publish Bills to Officers
+                  {savingLabel(
+                    busy === 'publish',
+                    <>
+                      <Send className="size-4" />
+                      Publish Bills to Officers
+                    </>,
+                  )}
                 </Button>
               )}
             </div>
@@ -621,8 +641,13 @@ export function BillingOpsPanel({
                     disabled={isPending}
                     onClick={() => handleDeactivateSubscription(s.id, s.name)}
                   >
-                    <Ban className="mr-0.5 size-3" />
-                    Deactivate
+                    {savingLabel(
+                      busy === `sub:${s.id}`,
+                      <>
+                        <Ban className="mr-0.5 size-3" />
+                        Deactivate
+                      </>,
+                    )}
                   </button>
                 )}
               </Badge>

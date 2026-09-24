@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
@@ -94,7 +95,7 @@ export function NewScaleDialog({
               disabled={pending}
               className="transition-ds press"
             >
-              {pending ? 'Creating…' : 'Create scale'}
+              {savingLabel(pending, 'Create scale')}
             </Button>
           </>
         }

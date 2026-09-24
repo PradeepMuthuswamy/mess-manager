@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -50,7 +51,7 @@ export function PublishBulletinForm({ unitId }: { unitId: string }) {
         />
       </div>
       <Button type="submit" size="sm" disabled={pending}>
-        {pending ? 'Publishing…' : 'Publish bulletin'}
+        {savingLabel(pending, 'Publish bulletin')}
       </Button>
     </form>
   );

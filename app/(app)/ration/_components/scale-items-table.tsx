@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -309,7 +310,7 @@ export function ScaleItemsTable({
               }}
               disabled={removePending}
             >
-              {removePending ? 'Removing…' : 'Remove'}
+              {savingLabel(removePending, 'Remove')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -606,7 +607,7 @@ function AddItemRow({
       </TableCell>
       <TableCell className="px-3 py-2 text-right">
         <Button size="sm" onClick={handleAdd} disabled={pending || !selected}>
-          {pending ? 'Adding…' : 'Add'}
+          {savingLabel(pending, 'Add')}
         </Button>
       </TableCell>
     </TableRow>

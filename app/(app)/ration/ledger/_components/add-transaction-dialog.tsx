@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
@@ -344,7 +346,7 @@ export function AddTransactionDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={isPending}>
-              {isPending ? 'Logging...' : 'Save Transaction'}
+              {savingLabel(isPending, 'Save Transaction')}
             </Button>
           </div>
         </form>

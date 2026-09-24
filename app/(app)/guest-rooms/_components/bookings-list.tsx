@@ -37,6 +37,8 @@ import type { Booking } from '@/lib/guest-rooms/types';
 import { Input } from '@/components/ui/input';
 import { EmptyState } from '@/components/shared/empty-state';
 import { cn } from '@/lib/utils';
+import { bookingActionKey } from '@/lib/redux/guest-rooms/slice';
+import { savingLabel, SAVING_LABEL } from '@/components/shared/save-submit';
 
 interface BookingsListProps {
   bookings: Booking[];
@@ -333,7 +335,7 @@ export function BookingsList({
                           >
                             <MoreHorizontal className="h-3.5 w-3.5" />
                             <span className="sr-only">
-                              {isPending ? 'Updating' : `Open menu for ${booking.guest_name}`}
+                              {isPending ? SAVING_LABEL : `Open menu for ${booking.guest_name}`}
                             </span>
                           </Button>
                         </DropdownMenuTrigger>
@@ -347,26 +349,44 @@ export function BookingsList({
                             Edit Booking
                           </DropdownMenuItem>
                           <DropdownMenuItem
+                            disabled={isPending}
                             onClick={() => onDeleteBooking?.(booking.id)}
                             className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                           >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete Booking
+                            {savingLabel(
+                              Boolean(pendingActions[bookingActionKey('delete', booking.id)]),
+                              <>
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete Booking
+                              </>,
+                            )}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           {booking.status === "confirmed" && (
                             <>
                               <DropdownMenuItem
+                                disabled={isPending}
                                 onClick={() => onCheckIn?.(booking.id)}
                               >
-                                <LogIn className="mr-2 h-4 w-4" />
-                                Check-in
+                                {savingLabel(
+                                  Boolean(pendingActions[bookingActionKey('check-in', booking.id)]),
+                                  <>
+                                    <LogIn className="mr-2 h-4 w-4" />
+                                    Check-in
+                                  </>,
+                                )}
                               </DropdownMenuItem>
                               <DropdownMenuItem
+                                disabled={isPending}
                                 onClick={() => onCancel?.(booking.id)}
                               >
-                                <XCircle className="mr-2 h-4 w-4 text-destructive" />
-                                <span className="text-destructive">Cancel Booking</span>
+                                {savingLabel(
+                                  Boolean(pendingActions[bookingActionKey('cancel', booking.id)]),
+                                  <>
+                                    <XCircle className="mr-2 h-4 w-4 text-destructive" />
+                                    <span className="text-destructive">Cancel Booking</span>
+                                  </>,
+                                )}
                               </DropdownMenuItem>
                             </>
                           )}
@@ -379,19 +399,31 @@ export function BookingsList({
                                 Check-out
                               </DropdownMenuItem>
                               <DropdownMenuItem
+                                disabled={isPending}
                                 onClick={() => onUndoCheckIn?.(booking.id)}
                               >
-                                <XCircle className="mr-2 h-4 w-4" />
-                                Undo Check-in
+                                {savingLabel(
+                                  Boolean(pendingActions[bookingActionKey('undo-check-in', booking.id)]),
+                                  <>
+                                    <XCircle className="mr-2 h-4 w-4" />
+                                    Undo Check-in
+                                  </>,
+                                )}
                               </DropdownMenuItem>
                             </>
                           )}
                           {booking.status === "checked_out" && (
                             <DropdownMenuItem
+                              disabled={isPending}
                               onClick={() => onUndoCheckOut?.(booking.id)}
                             >
-                              <XCircle className="mr-2 h-4 w-4" />
-                              Undo Check-out
+                              {savingLabel(
+                                Boolean(pendingActions[bookingActionKey('undo-check-out', booking.id)]),
+                                <>
+                                  <XCircle className="mr-2 h-4 w-4" />
+                                  Undo Check-out
+                                </>,
+                              )}
                             </DropdownMenuItem>
                           )}
                           {(booking.status === "checked_in" || booking.status === "checked_out") && (

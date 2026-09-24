@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { savingLabel, SAVING_LABEL } from '@/components/shared/save-submit';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -51,6 +52,7 @@ export function AttendanceRoster({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const [busy, setBusy] = useState<'save' | 'finalize' | 'reopen' | null>(null);
   const finalized = view.status === 'finalized';
 
   const initial = useMemo(() => {
@@ -84,47 +86,63 @@ export function AttendanceRoster({
         person_id: mem.person_id,
         reason: draft[memberKey(mem)]?.reason?.trim() || undefined,
       }));
+    setBusy('save');
     startTransition(async () => {
-      const res = await saveAttendanceAction({
-        unit_id: unitId,
-        attendance_date: date,
-        absent,
-      });
-      if ('ok' in res) {
-        toast.success('Attendance saved');
-        router.refresh();
-      } else {
-        toast.error(res.error ?? 'Could not save');
+      try {
+        const res = await saveAttendanceAction({
+          unit_id: unitId,
+          attendance_date: date,
+          absent,
+        });
+        if ('ok' in res) {
+          toast.success('Attendance saved');
+          router.refresh();
+        } else {
+          toast.error(res.error ?? 'Could not save');
+        }
+      } finally {
+        setBusy(null);
       }
     });
   }
 
   function finalize() {
+    setBusy('finalize');
     startTransition(async () => {
-      const res = await finalizeAttendanceAction({
-        unit_id: unitId,
-        attendance_date: date,
-      });
-      if ('ok' in res) {
-        toast.success('Attendance finalized');
-        router.refresh();
-      } else {
-        toast.error(res.error ?? 'Could not finalize');
+      try {
+        const res = await finalizeAttendanceAction({
+          unit_id: unitId,
+          attendance_date: date,
+        });
+        if ('ok' in res) {
+          if (res.warning) toast.warning(res.warning);
+          else toast.success('Attendance finalized');
+          router.refresh();
+        } else {
+          toast.error(res.error ?? 'Could not finalize');
+        }
+      } finally {
+        setBusy(null);
       }
     });
   }
 
   function reopen() {
+    setBusy('reopen');
     startTransition(async () => {
-      const res = await reopenAttendanceAction({
-        unit_id: unitId,
-        attendance_date: date,
-      });
-      if ('ok' in res) {
-        toast.success('Attendance reopened');
-        router.refresh();
-      } else {
-        toast.error(res.error ?? 'Could not reopen');
+      try {
+        const res = await reopenAttendanceAction({
+          unit_id: unitId,
+          attendance_date: date,
+        });
+        if ('ok' in res) {
+          toast.success('Attendance reopened');
+          router.refresh();
+        } else {
+          toast.error(res.error ?? 'Could not reopen');
+        }
+      } finally {
+        setBusy(null);
       }
     });
   }
@@ -155,17 +173,17 @@ export function AttendanceRoster({
         <ManageDiningDialog candidates={candidates} disabled={pending} />
         {!finalized && (
           <Button onClick={save} disabled={pending} size="sm">
-            Save
+            {savingLabel(busy === 'save', 'Save')}
           </Button>
         )}
         {canFinalize &&
           (finalized ? (
             <Button variant="outline" onClick={reopen} disabled={pending} size="sm">
-              Reopen
+              {savingLabel(busy === 'reopen', 'Reopen')}
             </Button>
           ) : (
             <Button variant="outline" onClick={finalize} disabled={pending} size="sm">
-              Finalize
+              {savingLabel(busy === 'finalize', 'Finalize')}
             </Button>
           ))}
       </div>
@@ -263,19 +281,26 @@ function ManageDiningDialog({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   function toggle(c: DiningCandidate, next: boolean) {
+    const key = `${c.person_type}:${c.person_id}`;
+    setBusyKey(key);
     startTransition(async () => {
-      const res = await setDiningInAction({
-        person_type: c.person_type,
-        person_id: c.person_id,
-        dining_in: next,
-      });
-      if ('ok' in res) {
-        toast.success(`${c.name} ${next ? 'added' : 'removed'}`);
-        router.refresh();
-      } else {
-        toast.error(res.error ?? 'Could not update');
+      try {
+        const res = await setDiningInAction({
+          person_type: c.person_type,
+          person_id: c.person_id,
+          dining_in: next,
+        });
+        if ('ok' in res) {
+          toast.success(`${c.name} ${next ? 'added' : 'removed'}`);
+          router.refresh();
+        } else {
+          toast.error(res.error ?? 'Could not update');
+        }
+      } finally {
+        setBusyKey(null);
       }
     });
   }
@@ -319,11 +344,16 @@ function ManageDiningDialog({
                         : `Dependant${c.sponsor_name ? ` · ${c.sponsor_name}` : ''}`}
                     </div>
                   </div>
-                  <Switch
-                    checked={c.dining_in}
-                    disabled={pending}
-                    onCheckedChange={(v) => toggle(c, v)}
-                  />
+                  <div className="flex items-center gap-2">
+                    {busyKey === `${c.person_type}:${c.person_id}` ? (
+                      <span className="text-xs text-muted-foreground">{SAVING_LABEL}</span>
+                    ) : null}
+                    <Switch
+                      checked={c.dining_in}
+                      disabled={pending}
+                      onCheckedChange={(v) => toggle(c, v)}
+                    />
+                  </div>
                 </div>
               ))}
             </div>

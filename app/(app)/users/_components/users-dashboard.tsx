@@ -18,6 +18,7 @@ import {
 
 import { useAppContext } from '@/lib/auth/context';
 import { Button } from '@/components/ui/button';
+import { savingLabel } from '@/components/shared/save-submit';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -76,6 +77,7 @@ export function UsersDashboard({
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
   const [isPending, startTransition] = useTransition();
+  const [busy, setBusy] = useState<string | null>(null);
 
   // Keep state synced when server component feeds new props
   useEffect(() => {
@@ -90,15 +92,21 @@ export function UsersDashboard({
   };
 
   const handleToggleActive = async (userId: string, currentStatus: boolean) => {
+    const key = `${userId}:${currentStatus ? 'deactivate' : 'activate'}`;
+    setBusy(key);
     startTransition(async () => {
-      const targetStatus = !currentStatus;
-      const res = await toggleUserActiveAction(userId, targetStatus);
-      if (res.ok) {
-        toast.success(targetStatus ? 'User account activated.' : 'User account deactivated.');
-        handleRefresh();
-        router.refresh();
-      } else {
-        toast.error(res.error || 'Failed to toggle account status.');
+      try {
+        const targetStatus = !currentStatus;
+        const res = await toggleUserActiveAction(userId, targetStatus);
+        if (res.ok) {
+          toast.success(targetStatus ? 'User account activated.' : 'User account deactivated.');
+          handleRefresh();
+          router.refresh();
+        } else {
+          toast.error(res.error || 'Failed to toggle account status.');
+        }
+      } finally {
+        setBusy(null);
       }
     });
   };
@@ -111,14 +119,19 @@ export function UsersDashboard({
     ) {
       return;
     }
+    setBusy(`${userId}:delete`);
     startTransition(async () => {
-      const res = await deleteUserAction(userId);
-      if (res.ok) {
-        toast.success('User deleted successfully.');
-        handleRefresh();
-        router.refresh();
-      } else {
-        toast.error(res.error || 'Failed to delete user.');
+      try {
+        const res = await deleteUserAction(userId);
+        if (res.ok) {
+          toast.success('User deleted successfully.');
+          handleRefresh();
+          router.refresh();
+        } else {
+          toast.error(res.error || 'Failed to delete user.');
+        }
+      } finally {
+        setBusy(null);
       }
     });
   };
@@ -406,26 +419,37 @@ export function UsersDashboard({
                               )}
                               {canManage && (
                                 <DropdownMenuItem
+                                  disabled={isPending}
                                   onClick={() => handleToggleActive(u.id, u.is_active)}
                                   className={u.is_active ? 'text-destructive' : 'text-success'}
                                 >
-                                  {u.is_active ? (
-                                    <>
-                                      <UserX className="size-4 mr-2" /> Deactivate
-                                    </>
-                                  ) : (
-                                    <>
-                                      <UserCheck className="size-4 mr-2" /> Activate
-                                    </>
-                                  )}
+                                  {u.is_active
+                                    ? savingLabel(
+                                        busy === `${u.id}:deactivate`,
+                                        <>
+                                          <UserX className="size-4 mr-2" /> Deactivate
+                                        </>,
+                                      )
+                                    : savingLabel(
+                                        busy === `${u.id}:activate`,
+                                        <>
+                                          <UserCheck className="size-4 mr-2" /> Activate
+                                        </>,
+                                      )}
                                 </DropdownMenuItem>
                               )}
                               {canManage && (
                                 <DropdownMenuItem
+                                  disabled={isPending}
                                   onClick={() => handleDeleteUser(u.id, u.email)}
                                   className="text-destructive font-semibold"
                                 >
-                                  <Trash2 className="size-4 mr-2" /> Delete Account
+                                  {savingLabel(
+                                    busy === `${u.id}:delete`,
+                                    <>
+                                      <Trash2 className="size-4 mr-2" /> Delete Account
+                                    </>,
+                                  )}
                                 </DropdownMenuItem>
                               )}
                             </>

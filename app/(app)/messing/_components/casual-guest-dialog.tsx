@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import {
   Dialog,
@@ -22,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { recordGuestMealAction } from '@/lib/messing/actions';
-import { UserPlus, Loader2 } from 'lucide-react';
+import { UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import type { MessingMealType } from '@/lib/schemas/messing';
 
@@ -164,8 +166,7 @@ export function CasualGuestDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={isPending} className="gap-1.5">
-              {isPending && <Loader2 className="size-4 animate-spin" />}
-              Charge to My Mess Bill
+              {savingLabel(isPending, 'Charge to My Mess Bill')}
             </Button>
           </DialogFooter>
         </form>

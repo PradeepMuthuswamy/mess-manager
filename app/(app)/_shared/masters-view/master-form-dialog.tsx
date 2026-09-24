@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useActionState, useState, useTransition } from 'react';
 import { useActionResult } from '@/hooks/use-action-result';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
@@ -280,7 +281,7 @@ function CreateForm({
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
         <Button type="submit" disabled={pending} className="transition-ds press">
-          {pending ? 'Creating...' : 'Create product'}
+          {savingLabel(pending, 'Create product')}
         </Button>
       </div>
     </form>
@@ -506,7 +507,7 @@ function AdoptForm({
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
         <Button type="submit" disabled={pending} className="transition-ds press">
-          {pending ? 'Adopting...' : 'Adopt variant'}
+          {savingLabel(pending, 'Adopt variant')}
         </Button>
       </div>
     </form>
