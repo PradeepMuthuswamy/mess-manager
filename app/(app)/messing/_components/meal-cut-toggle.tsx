@@ -94,7 +94,7 @@ export function MealCutToggle({ unitId, date, mealType, cutStatus }: MealCutTogg
         className="h-8 gap-1.5 text-xs text-destructive border-destructive/20 hover:bg-destructive/5"
       >
         <X className="size-3.5" />
-        Place messing
+        Mark absent
       </Button>
     </div>
   );

@@ -391,7 +391,7 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
     );
 
   if (error) {
-    return { error: `Failed to place messing: ${error.message}` };
+    return { error: `Failed to mark absent: ${error.message}` };
   }
 
   revalidateMessing();
