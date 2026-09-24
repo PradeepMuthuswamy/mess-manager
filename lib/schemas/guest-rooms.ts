@@ -89,9 +89,8 @@ export const updateBookingSchema = z.object({
   guest_email: z.string().trim().nullable().optional(),
   check_in_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   check_out_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
-  actual_check_in: z.string().datetime().nullable().optional(),
-  actual_check_out: z.string().datetime().nullable().optional(),
-  status: bookingStatusSchema.optional(),
+  // status, actual_check_in, actual_check_out removed — lifecycle fields
+  // must only be modified through dedicated check-in/check-out actions.
   booking_category: bookingCategorySchema.optional(),
   host_profile_id: z.string().uuid().nullable().optional(),
   settlement_type: settlementTypeSchema.optional(),
@@ -134,6 +133,21 @@ export const createBillOrderSchema = z.object({
   note: z.string().trim().max(500).nullable().optional(),
 }).openapi('CreateBillOrderInput');
 
+export const updateStayAndRatesSchema = z.object({
+  checkIn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  checkOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  nightlyRate: z.coerce.number().nonnegative('Rate must be non-negative'),
+  foodRate: z.coerce.number().nonnegative('Rate must be non-negative'),
+}).refine(data => new Date(data.checkOut) > new Date(data.checkIn), {
+  message: 'Check-out date must be after check-in date',
+  path: ['checkOut'],
+}).openapi('UpdateStayAndRatesInput');
+
+export const updateBillItemSchema = z.object({
+  amount: z.coerce.number().nonnegative('Amount must be non-negative'),
+  quantity: z.coerce.number().positive('Quantity must be positive'),
+}).openapi('UpdateBillItemInput');
+
 export const finalizeBillSchema = z.object({
   status: z.enum(['finalized', 'paid']),
 }).openapi('FinalizeBillInput');
@@ -157,6 +171,8 @@ export type PatchRoomBillInput = z.infer<typeof patchRoomBillSchema>;
 export type CreateBillOrderInput = z.infer<typeof createBillOrderSchema>;
 export type FinalizeBillInput = z.infer<typeof finalizeBillSchema>;
 export type RoomTypeInput = z.infer<typeof roomTypeSchema>;
+export type UpdateStayAndRatesInput = z.infer<typeof updateStayAndRatesSchema>;
+export type UpdateBillItemInput = z.infer<typeof updateBillItemSchema>;
 
 /** Folio food total from unit tariff (`units.guest_food_per_night`), not a hardcoded 900. */
 export function guestFoodAmount(nights: number, ratePerNight: number): number {

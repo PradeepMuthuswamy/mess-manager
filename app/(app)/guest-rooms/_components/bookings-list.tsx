@@ -55,11 +55,11 @@ interface BookingsListProps {
   onViewBill?: (booking: Booking) => void;
 }
 
-type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive';
+type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive' | 'info' | 'success';
 
 const STATUS_BADGE: Record<Booking["status"], { label: string; variant: BadgeVariant }> = {
-  confirmed:   { label: "Confirmed",   variant: "secondary"   },
-  checked_in:  { label: "Checked In",  variant: "default"     },
+  confirmed:   { label: "Confirmed",   variant: "info"        },
+  checked_in:  { label: "Checked In",  variant: "success"     },
   checked_out: { label: "Checked Out", variant: "outline"     },
   cancelled:   { label: "Cancelled",   variant: "destructive" },
 }

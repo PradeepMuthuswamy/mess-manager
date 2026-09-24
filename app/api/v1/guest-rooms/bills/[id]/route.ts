@@ -6,7 +6,6 @@ import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { patchRoomBillSchema } from '@/lib/schemas/guest-rooms';
-import { updateBillItemAction } from '@/lib/guest-rooms/actions';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -91,17 +90,14 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
     const existing = itemsById.get(item.id);
     if (!existing) throw Errors.notFound('Bill item not found');
 
-    const res = await updateBillItemAction(
-      item.id,
-      item.amount ?? Number(existing.amount),
-      Number(existing.quantity),
-    );
-    if ('error' in res) throw Errors.badRequest(res.error);
+    const updatePayload: { amount?: number; description?: string } = {};
+    if (item.amount !== undefined) updatePayload.amount = item.amount;
+    if (item.description !== undefined) updatePayload.description = item.description;
 
-    if (item.description !== undefined) {
+    if (Object.keys(updatePayload).length > 0) {
       const { error } = await ctx.supabase
         .from('room_bill_items')
-        .update({ description: item.description })
+        .update(updatePayload)
         .eq('id', item.id)
         .eq('bill_id', id);
       if (error) throw Errors.internal(error.message);

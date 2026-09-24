@@ -162,7 +162,7 @@ export function AttendanceCalendar({
                     </span>
                     {/* Status badge */}
                     <Badge
-                      variant={isFinalized ? 'default' : 'outline'}
+                      variant={isFinalized ? 'success' : 'warning'}
                       className="w-fit px-1.5 py-0 text-[10px] leading-4"
                     >
                       {isFinalized ? 'Final' : 'Draft'}

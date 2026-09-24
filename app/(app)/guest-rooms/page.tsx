@@ -1,4 +1,3 @@
-import { getCurrentUser } from '@/lib/auth/get-current-user';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { GuestRoomsDashboard } from './_components/guest-rooms-dashboard';
 import { EmptyState } from '@/components/shared/empty-state';
@@ -14,8 +13,7 @@ import { WaitlistQueue } from './_components/waitlist-queue';
 import { userHasCapability } from '@/lib/auth/capabilities';
 
 export default async function GuestRoomsPage() {
-  await requireCapability('rooms.read');
-  const user = await getCurrentUser();
+  const user = await requireCapability('rooms.read');
 
   if (!user || !user.activeUnitId) {
     return (

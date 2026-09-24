@@ -27,6 +27,6 @@ export const GET = withRoute(async (req: NextRequest) => {
     throw Errors.forbidden('Requires capability: rooms.read');
   }
 
-  const data = await getRooms(unit_id);
+  const data = await getRooms(unit_id, ctx.supabase);
   return ok({ data });
 });

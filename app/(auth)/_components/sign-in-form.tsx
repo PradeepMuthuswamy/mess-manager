@@ -35,7 +35,7 @@ export function SignInForm({ next }: { next?: string }) {
   if (mode === 'magiclink' && state.ok) {
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-emerald-800 dark:text-emerald-400">
+        <div className="rounded-lg border border-success/20 bg-success/5 p-4 text-sm text-success">
           <p className="font-semibold text-base mb-1">Check your inbox 📬</p>
           <p className="opacity-90">If your account exists, we have sent a secure magic link to sign in instantly.</p>
         </div>

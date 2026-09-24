@@ -146,7 +146,7 @@ export function AttendanceRoster({
           </span>
         </Badge>
         <Badge
-          variant={finalized ? 'default' : 'outline'}
+          variant={finalized ? 'success' : 'warning'}
           className="text-xs"
         >
           {finalized ? 'Finalized' : 'Draft'}

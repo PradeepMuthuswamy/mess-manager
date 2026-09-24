@@ -4,7 +4,7 @@ import { Errors } from '@/lib/api/errors';
 import { requireApiUser } from '@/lib/api/auth';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
-import { checkInAction } from '@/lib/guest-rooms/actions';
+import { getBookingSummaryById } from '@/lib/guest-rooms/queries';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,12 +18,30 @@ export const POST = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
-  if (!userHasCapability(ctx.user, 'rooms.booking.write')) {
+  // Peek booking to find unit_id for capability check
+  const { data: booking, error: peekErr } = await ctx.supabase
+    .from('bookings')
+    .select('unit_id, status')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (peekErr) throw Errors.internal(peekErr.message);
+  if (!booking) throw Errors.notFound('Booking not found');
+
+  if (!userHasCapability(ctx.user, 'rooms.booking.write', booking.unit_id)) {
     throw Errors.forbidden('Requires capability: rooms.booking.write');
   }
 
-  const res = await checkInAction(id);
-  if ('error' in res) throw Errors.badRequest(res.error);
+  // Atomic check-in via RPC with the authenticated Bearer client
+  const { error: rpcErr } = await ctx.supabase.rpc('check_in_booking', {
+    p_booking_id: id,
+  });
 
-  return ok({ data: res.data ?? { ok: true } });
+  if (rpcErr) {
+    const msg = rpcErr.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-in failed';
+    throw Errors.badRequest(msg);
+  }
+
+  const updated = await getBookingSummaryById(id, ctx.supabase);
+  return ok({ data: updated });
 });

@@ -113,7 +113,10 @@ export async function createRoomAction(input: unknown) {
     }));
 
     const { error: invError } = await supabase.from('room_furniture').insert(rows);
-    if (invError) return { error: invError.message };
+    if (invError) {
+      await supabase.from('rooms').delete().eq('id', newRoom.id);
+      return { error: invError.message };
+    }
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
@@ -211,6 +214,15 @@ export async function createBookingAction(input: CreateBookingInput) {
   await requireCapability('rooms.booking.write', parsed.data.unit_id);
 
   const supabase = await createClient();
+
+  // H4: Verify room belongs to this unit
+  const { data: room } = await supabase
+    .from('rooms')
+    .select('id')
+    .eq('id', parsed.data.room_id)
+    .eq('unit_id', parsed.data.unit_id)
+    .maybeSingle();
+  if (!room) return { error: 'Room not found in this unit' };
   
   const available = await isRoomAvailable(supabase, parsed.data.room_id, parsed.data.check_in_date, parsed.data.check_out_date);
   if (!available) return { error: 'Room is not available for the selected dates' };
@@ -224,92 +236,44 @@ export async function createBookingAction(input: CreateBookingInput) {
     .select('id, room_id')
     .single();
 
-  if (error) return { error: error.message };
+  // C1: Handle exclusion constraint violation (concurrent double-booking)
+  if (error) {
+    if (error.code === '23P01') {
+      return { error: 'Room is not available for the selected dates (conflict detected)' };
+    }
+    return { error: error.message };
+  }
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(data.id, [data.room_id]);
 }
 
-type BookingWithRoom = Database['public']['Tables']['bookings']['Row'] & {
-  room: { room_type: string; nightly_rate: number } | null;
-};
-
 export async function checkInAction(bookingId: string) {
+  // Peek the booking to discover unit_id for the capability check (RLS-gated).
   const supabase = await createClient();
-  const { data, error: fetchErr } = await supabase
+  const { data: peek } = await supabase
     .from('bookings')
-    .select('*, room:rooms(room_type, nightly_rate)')
+    .select('unit_id, room_id')
     .eq('id', bookingId)
-    .single();
+    .maybeSingle();
 
-  if (fetchErr || !data) return { error: 'Booking not found' };
-  
-  const booking = data as unknown as BookingWithRoom;
-  await requireCapability('rooms.booking.write', booking.unit_id);
+  if (!peek) return { error: 'Booking not found' };
+  await requireCapability('rooms.booking.write', peek.unit_id);
 
-  if (booking.status !== 'confirmed') return { error: 'Only confirmed bookings can be checked in' };
-  if (!booking.room) return { error: 'Room not found for this booking' };
+  // C2: Atomic check-in — booking status + bill + tariff items in one
+  // PG transaction via a SECURITY DEFINER function.
+  const { error } = await supabase.rpc('check_in_booking', {
+    p_booking_id: bookingId,
+  });
 
-  const { data: unit, error: unitErr } = await supabase
-    .from('units')
-    .select('guest_food_per_night')
-    .eq('id', booking.unit_id)
-    .single();
-
-  if (unitErr || !unit) return { error: unitErr?.message ?? 'Unit not found' };
-
-  // 1. Update booking status
-  const { error: updErr } = await supabase
-    .from('bookings')
-    .update({
-      status: 'checked_in',
-      actual_check_in: new Date().toISOString()
-    })
-    .eq('id', bookingId);
-
-  if (updErr) return { error: updErr.message };
-
-  // 2. Create draft bill
-  const { data: bill, error: billErr } = await supabase
-    .from('room_bills')
-    .insert({
-      unit_id: booking.unit_id,
-      booking_id: bookingId,
-      status: 'draft'
-    })
-    .select('id')
-    .single();
-
-  if (billErr) return { error: billErr.message };
-
-  // 3. Tariff lines — rent + food. Fail the check-in if either insert fails.
-  const nights = Math.max(1, Math.ceil((new Date(booking.check_out_date).getTime() - new Date(booking.check_in_date).getTime()) / (1000 * 60 * 60 * 24)));
-  const foodRate = Number(unit.guest_food_per_night);
-
-  const { error: itemsErr } = await supabase.from('room_bill_items').insert([
-    {
-      bill_id: bill.id,
-      category: 'room_rent',
-      description: `Room Rent - ${booking.room.room_type} (${nights} nights)`,
-      amount: Number(booking.room.nightly_rate),
-      quantity: nights,
-      variant_id: null,
-    },
-    {
-      bill_id: bill.id,
-      category: 'food',
-      description: `Food Bill (all meals) (${nights} days)`,
-      amount: foodRate,
-      quantity: nights,
-      variant_id: null,
-      meal_type: null,
-    },
-  ]);
-
-  if (itemsErr) return { error: itemsErr.message };
+  if (error) {
+    // Surface the PG exception message cleanly
+    const msg = error.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-in failed';
+    return { error: msg };
+  }
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return changedBooking(bookingId, [booking.room_id]);
+  return changedBooking(bookingId, [peek.room_id]);
 }
 
 export async function addBillItemAction(billId: string, input: CreateBillItemInput) {
@@ -326,6 +290,17 @@ export async function addBillItemAction(billId: string, input: CreateBillItemInp
   if (bill.status !== 'draft') return { error: 'Cannot add items to a finalized bill' };
 
   await requireCapability('rooms.booking.write', bill.unit_id);
+
+  // M4: If order_id is specified, ensure it belongs to this bill
+  if (parsed.data.order_id) {
+    const { data: order } = await supabase
+      .from('room_bill_orders')
+      .select('id')
+      .eq('id', parsed.data.order_id)
+      .eq('bill_id', billId)
+      .maybeSingle();
+    if (!order) return { error: 'Order not found for this bill' };
+  }
 
   const { error } = await supabase.from('room_bill_items').insert({
     bill_id: billId,
@@ -542,74 +517,37 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
     };
   }
 
+  // Sync bar chits before finalizing (complex query logic stays in app layer)
   const syncResult = await syncBarChitsToRoomBillAction(bookingId);
   if ('error' in syncResult) return { error: syncResult.error };
 
-  const { data: items, error: itemsErr } = await supabase
-    .from('room_bill_items')
-    .select('amount, quantity')
-    .eq('bill_id', bill.id);
-  if (itemsErr) return { error: itemsErr.message };
-
-  const total = (items ?? []).reduce(
-    (sum, item) => sum + Number(item.amount) * Number(item.quantity),
-    0,
-  );
-
+  // Generate folio number
   const now = new Date();
   const yearMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
   const folioSuffix = bill.id.replace(/-/g, '').slice(0, 6).toUpperCase();
   const folioNumber = `FOLIO-${yearMonth}-${folioSuffix}`;
 
-  const isDirect = settlementType === 'DIRECT_SETTLEMENT';
-  const outcomeStatus = isDirect ? 'paid' : 'transferred_to_mess_bill';
-  const paidAmount = isDirect ? (options.paid_amount ?? total) : 0;
-  const paidAt = isDirect ? now.toISOString() : null;
-  const paymentMethod = isDirect ? (options.payment_method ?? 'cash') : null;
-  const paymentReference = isDirect ? (options.payment_reference ?? null) : null;
+  // C2: Atomic checkout — booking update + bill finalization in one PG
+  // transaction via a SECURITY DEFINER function.
+  const { error: rpcErr } = await supabase.rpc('finalize_checkout', {
+    p_booking_id: bookingId,
+    p_settlement_type: settlementType,
+    p_host_profile_id: hostId ?? null,
+    p_folio_number: folioNumber,
+    p_paid_amount: options.paid_amount ?? null,
+    p_payment_method: options.payment_method ?? null,
+    p_payment_ref: options.payment_reference ?? null,
+  });
 
-  const { data: updatedBooking, error: bookingUpdErr } = await supabase
-    .from('bookings')
-    .update({
-      status: 'checked_out',
-      settlement_type: settlementType,
-      ...(settlementType === 'CHARGE_TO_HOST' ? { host_profile_id: hostId } : {}),
-      actual_check_out: now.toISOString(),
-      updated_at: now.toISOString(),
-    })
-    .eq('id', bookingId)
-    .select('id')
-    .single();
-
-  if (bookingUpdErr || !updatedBooking) {
-    return { error: bookingUpdErr?.message ?? 'Failed to update booking' };
-  }
-
-  const { data: updatedBill, error: billUpdErr } = await supabase
-    .from('room_bills')
-    .update({
-      status: outcomeStatus,
-      total_amount: total,
-      settlement_type: settlementType,
-      payment_status: outcomeStatus,
-      paid_amount: paidAmount,
-      paid_at: paidAt,
-      payment_method: paymentMethod,
-      payment_reference: paymentReference,
-      folio_number: folioNumber,
-      updated_at: now.toISOString(),
-    })
-    .eq('id', bill.id)
-    .select('id')
-    .single();
-
-  if (billUpdErr || !updatedBill) {
-    return { error: billUpdErr?.message ?? 'Failed to update bill' };
+  if (rpcErr) {
+    const msg = rpcErr.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-out failed';
+    return { error: msg };
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(bookingId, [booking.room_id]);
 }
+
 
 export async function cancelBookingAction(bookingId: string) {
   const supabase = await createClient();
@@ -721,6 +659,11 @@ export async function updateStayAndRatesAction(
     foodRate: number;
   }
 ) {
+  // C3: Validate input with Zod (date ordering, non-negative rates)
+  const { updateStayAndRatesSchema } = await import('@/lib/schemas/guest-rooms');
+  const parsed = updateStayAndRatesSchema.safeParse(input);
+  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
+
   const supabase = await createClient();
   
   // 1. Fetch bill and associated booking and room details
@@ -741,15 +684,33 @@ export async function updateStayAndRatesAction(
   // 3. Ensure bill is draft
   if (bill.status !== 'draft') return { error: 'Stay and rates can only be edited for draft bills' };
 
+  // C3: Check availability if dates changed
+  const datesChanged =
+    parsed.data.checkIn !== booking.check_in_date ||
+    parsed.data.checkOut !== booking.check_out_date;
+
+  if (datesChanged) {
+    const available = await isRoomAvailable(
+      supabase,
+      booking.room_id,
+      parsed.data.checkIn,
+      parsed.data.checkOut,
+      booking.id, // exclude current booking
+    );
+    if (!available) {
+      return { error: 'Room is not available for the updated dates' };
+    }
+  }
+
   // 4. Calculate stay nights
-  const nights = Math.max(1, Math.ceil((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / (1000 * 60 * 60 * 24)));
+  const nights = Math.max(1, Math.ceil((new Date(parsed.data.checkOut).getTime() - new Date(parsed.data.checkIn).getTime()) / (1000 * 60 * 60 * 24)));
 
   // 5. Update the booking dates
   const { error: bookingErr } = await supabase
     .from('bookings')
     .update({
-      check_in_date: input.checkIn,
-      check_out_date: input.checkOut,
+      check_in_date: parsed.data.checkIn,
+      check_out_date: parsed.data.checkOut,
       updated_at: new Date().toISOString()
     })
     .eq('id', booking.id);
@@ -768,7 +729,7 @@ export async function updateStayAndRatesAction(
     bill_id: billId,
     category: 'room_rent',
     description: `Room Rent - ${booking.room?.room_type || 'Stay'} (${nights} nights)`,
-    amount: input.nightlyRate,
+    amount: parsed.data.nightlyRate,
     quantity: nights,
     variant_id: null
   };
@@ -792,7 +753,7 @@ export async function updateStayAndRatesAction(
     bill_id: billId,
     category: 'food',
     description: `Food Bill (all meals) (${nights} days)`,
-    amount: input.foodRate,
+    amount: parsed.data.foodRate,
     quantity: nights,
     variant_id: null,
     meal_type: null
@@ -867,13 +828,24 @@ export async function deleteBookingAction(bookingId: string) {
   const supabase = await createClient();
   const { data: booking } = await supabase
     .from('bookings')
-    .select('unit_id, room_id')
+    .select('unit_id, room_id, status')
     .eq('id', bookingId)
     .single();
   if (!booking) return { error: 'Booking not found' };
   await requireCapability('rooms.booking.write', booking.unit_id);
 
-  // 1. Get any bills associated with this booking
+  // H2: Only confirmed or cancelled bookings can be deleted.
+  // checked_in / checked_out bookings carry financial records (bills,
+  // payments) that must not be silently cascaded away.
+  if (booking.status === 'checked_in' || booking.status === 'checked_out') {
+    return {
+      error:
+        'Cannot delete a booking that has been checked in or out. Cancel it first, or use the undo action to revert the lifecycle step.',
+    };
+  }
+
+  // 1. Get any bills associated with this booking (shouldn't exist for
+  //    confirmed/cancelled, but clean up defensively).
   const { data: bills } = await supabase.from('room_bills').select('id').eq('booking_id', bookingId);
   const billIds = bills?.map(b => b.id) || [];
 
@@ -1012,6 +984,10 @@ export async function updateBillItemAction(
   amount: number,
   quantity: number
 ) {
+  const { updateBillItemSchema } = await import('@/lib/schemas/guest-rooms');
+  const parsed = updateBillItemSchema.safeParse({ amount, quantity });
+  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
+
   const supabase = await createClient();
   const { data: peek } = await supabase
     .from('room_bill_items')
@@ -1030,8 +1006,8 @@ export async function updateBillItemAction(
   const { error } = await supabase
     .from('room_bill_items')
     .update({
-      amount: amount,
-      quantity: quantity
+      amount: parsed.data.amount,
+      quantity: parsed.data.quantity
     })
     .eq('id', itemId);
 

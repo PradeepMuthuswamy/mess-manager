@@ -19,11 +19,11 @@ import { EmptyState } from '@/components/shared/empty-state';
 // Derived occupancy status: Badge variant + label. Tokens only.
 const STATUS_META: Record<
   RoomCurrentStatus,
-  { label: string; variant: "default" | "secondary" | "outline" | "destructive" }
+  { label: string; variant: "default" | "secondary" | "outline" | "destructive" | "success" | "warning" | "info" }
 > = {
-  vacant:         { label: "Vacant",         variant: "secondary"   },
-  reserved:       { label: "Reserved",       variant: "outline"     },
-  occupied:       { label: "Occupied",       variant: "default"     },
+  vacant:         { label: "Vacant",         variant: "success"     },
+  reserved:       { label: "Reserved",       variant: "info"        },
+  occupied:       { label: "Occupied",       variant: "warning"     },
   maintenance:    { label: "Maintenance",    variant: "destructive" },
   out_of_service: { label: "Out of service", variant: "destructive" },
 };

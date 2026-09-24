@@ -142,10 +142,10 @@ export function BarClient({
         <Card className="hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
             <CardTitle className="text-sm font-medium text-muted-foreground">Sales Today</CardTitle>
-            <TrendingUp className="size-4 text-emerald-600 dark:text-emerald-400" />
+            <TrendingUp className="size-4 text-success" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+            <div className="text-2xl font-bold text-success">
               ₹{stats.salesToday.toFixed(2)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
@@ -157,7 +157,7 @@ export function BarClient({
         <Card className="hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
             <CardTitle className="text-sm font-medium text-muted-foreground">Log Activity</CardTitle>
-            <Receipt className="size-4 text-sky-500" />
+            <Receipt className="size-4 text-info" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{recentChits.length}</div>
@@ -168,7 +168,7 @@ export function BarClient({
         <Card className="hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
             <CardTitle className="text-sm font-medium text-muted-foreground">Active Stock</CardTitle>
-            <Martini className="size-4 text-indigo-500" />
+            <Martini className="size-4 text-primary" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.totalInventoryItems}</div>
@@ -181,13 +181,13 @@ export function BarClient({
             <CardTitle className="text-sm font-medium text-muted-foreground">Low Stock Alerts</CardTitle>
             <AlertTriangle className={cn(
               "size-4",
-              stats.lowStockCount > 0 ? "text-amber-500 animate-pulse" : "text-muted-foreground"
+              stats.lowStockCount > 0 ? "text-warning animate-pulse" : "text-muted-foreground"
             )} />
           </CardHeader>
           <CardContent>
             <div className={cn(
               "text-2xl font-bold",
-              stats.lowStockCount > 0 ? "text-amber-500" : "text-foreground"
+              stats.lowStockCount > 0 ? "text-warning" : "text-foreground"
             )}>
               {stats.lowStockCount}
             </div>
@@ -370,7 +370,7 @@ export function BarClient({
                             </div>
                           </TableCell>
                           <TableCell className="text-right pr-6 py-3">
-                            <div className={cn("font-bold text-sm", isLow ? "text-amber-500" : "text-foreground")}>
+                            <div className={cn("font-bold text-sm", isLow ? "text-warning" : "text-foreground")}>
                               {displayQty}
                             </div>
                             <div className="text-xs text-muted-foreground mt-0.5">

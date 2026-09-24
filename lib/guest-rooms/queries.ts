@@ -1,5 +1,9 @@
 import 'server-only';
 import { createClient } from '@/lib/supabase/server';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Database } from '@/lib/supabase/database.types';
+
+type Sb = SupabaseClient<Database>;
 
 export type {
   Room,
@@ -115,8 +119,8 @@ function toUnitTariff(
   return asOne(raw);
 }
 
-export async function getRooms(unitId: string) {
-  const supabase = await createClient();
+export async function getRooms(unitId: string, client?: Sb) {
+  const supabase = client ?? (await createClient());
   // Read from the v_rooms_current view so each row carries derived
   // `current_status` and `current_booking_id` alongside the operational
   // `status` column. Occupancy is never stored on rooms — it's computed.
@@ -130,8 +134,8 @@ export async function getRooms(unitId: string) {
   return data as Room[];
 }
 
-export async function getBookings(unitId: string, from: string, to: string) {
-  const supabase = await createClient();
+export async function getBookings(unitId: string, from: string, to: string, client?: Sb) {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('bookings')
     .select(BOOKING_LIST_SELECT)
@@ -156,8 +160,8 @@ export async function getBookings(unitId: string, from: string, to: string) {
   });
 }
 
-export async function getBookingSummaryById(id: string): Promise<Booking> {
-  const supabase = await createClient();
+export async function getBookingSummaryById(id: string, client?: Sb): Promise<Booking> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('bookings')
     .select(BOOKING_LIST_SELECT)
@@ -177,10 +181,10 @@ export async function getBookingSummaryById(id: string): Promise<Booking> {
   };
 }
 
-export async function getRoomsByIds(unitId: string, ids: string[]) {
+export async function getRoomsByIds(unitId: string, ids: string[], client?: Sb) {
   if (ids.length === 0) return [];
 
-  const supabase = await createClient();
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('v_rooms_current')
     .select('*')
@@ -200,8 +204,8 @@ type RawBookingWithBill = Omit<Booking, 'bill' | 'unit'> & {
     | null;
 };
 
-export async function getBookingById(id: string): Promise<BookingWithBill> {
-  const supabase = await createClient();
+export async function getBookingById(id: string, client?: Sb): Promise<BookingWithBill> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('bookings')
     .select(BOOKING_BILL_SELECT)
@@ -220,8 +224,8 @@ export async function getBookingById(id: string): Promise<BookingWithBill> {
   };
 }
 
-export async function getRoomBillById(id: string): Promise<RoomBillDetail> {
-  const supabase = await createClient();
+export async function getRoomBillById(id: string, client?: Sb): Promise<RoomBillDetail> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('room_bills')
     .select(ROOM_BILL_DETAIL_SELECT)
@@ -251,8 +255,8 @@ export async function getRoomBillById(id: string): Promise<RoomBillDetail> {
   };
 }
 
-export async function getGuestFoodPerNight(unitId: string): Promise<number> {
-  const supabase = await createClient();
+export async function getGuestFoodPerNight(unitId: string, client?: Sb): Promise<number> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('units')
     .select('guest_food_per_night')
@@ -263,8 +267,8 @@ export async function getGuestFoodPerNight(unitId: string): Promise<number> {
   return data.guest_food_per_night;
 }
 
-export async function getAvailableRooms(unitId: string, checkIn: string, checkOut: string) {
-  const supabase = await createClient();
+export async function getAvailableRooms(unitId: string, checkIn: string, checkOut: string, client?: Sb) {
+  const supabase = client ?? (await createClient());
 
   // Only operational state 'available' is bookable. 'maintenance' and
   // 'out_of_service' rooms are filtered out at the source.
@@ -292,8 +296,8 @@ export async function getAvailableRooms(unitId: string, checkIn: string, checkOu
   return rawRooms.filter(room => !bookedIds.has(room.id)) as Room[];
 }
 
-export async function getUnitFurniture(unitId: string): Promise<UnitFurniture[]> {
-  const supabase = await createClient();
+export async function getUnitFurniture(unitId: string, client?: Sb): Promise<UnitFurniture[]> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('unit_furniture')
     .select('*')
@@ -304,8 +308,8 @@ export async function getUnitFurniture(unitId: string): Promise<UnitFurniture[]>
   return (data ?? []) as UnitFurniture[];
 }
 
-export async function getRoomInventory(roomId: string): Promise<RoomFurniture[]> {
-  const supabase = await createClient();
+export async function getRoomInventory(roomId: string, client?: Sb): Promise<RoomFurniture[]> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('room_furniture')
     .select('*, furniture:unit_furniture(name, kind)')
@@ -318,8 +322,8 @@ export async function getRoomInventory(roomId: string): Promise<RoomFurniture[]>
   return (data ?? []) as unknown as RoomFurniture[];
 }
 
-export async function getDailyBookingStats(unitId: string, from: string, to: string) {
-  const supabase = await createClient();
+export async function getDailyBookingStats(unitId: string, from: string, to: string, client?: Sb) {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('bookings')
     .select('check_in_date, check_out_date')
@@ -347,8 +351,8 @@ export async function getDailyBookingStats(unitId: string, from: string, to: str
   return stats;
 }
 
-export async function listHostProfiles(unitId: string): Promise<HostProfile[]> {
-  const supabase = await createClient();
+export async function listHostProfiles(unitId: string, client?: Sb): Promise<HostProfile[]> {
+  const supabase = client ?? (await createClient());
   const { data, error } = await supabase
     .from('profiles')
     .select('id, full_name, rank, service_no')

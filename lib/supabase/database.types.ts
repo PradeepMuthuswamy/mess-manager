@@ -2914,6 +2914,24 @@ export type Database = {
           payload: Json
         }[]
       }
+      check_in_booking: {
+        Args: {
+          p_booking_id: string
+        }
+        Returns: Json
+      }
+      finalize_checkout: {
+        Args: {
+          p_booking_id: string
+          p_folio_number?: string | null
+          p_host_profile_id?: string | null
+          p_paid_amount?: number | null
+          p_payment_method?: string | null
+          p_payment_ref?: string | null
+          p_settlement_type: Database["public"]["Enums"]["guest_settlement_type"]
+        }
+        Returns: Json
+      }
       set_ration_scale_item: {
         Args: {
           p_auth_qty: number

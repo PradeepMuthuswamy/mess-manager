@@ -10,6 +10,22 @@ import { formatStayDate } from '@/lib/waitlist/types';
 
 export const dynamic = 'force-dynamic';
 
+function waitlistBadgeVariant(status: string): 'outline' | 'warning' | 'info' | 'success' | 'destructive' {
+  switch (status) {
+    case 'booked':
+      return 'success';
+    case 'offered':
+      return 'info';
+    case 'requested':
+      return 'warning';
+    case 'cancelled':
+    case 'expired':
+      return 'outline';
+    default:
+      return 'outline';
+  }
+}
+
 export default async function WaitlistPage() {
   const user = await requireUser();
   const unitId = user.activeUnitId ?? user.homeUnitId;
@@ -67,7 +83,7 @@ export default async function WaitlistPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="capitalize">
+                    <Badge variant={waitlistBadgeVariant(row.status)} className="capitalize">
                       {row.status}
                     </Badge>
                     {(row.status === 'requested' || row.status === 'offered') && (

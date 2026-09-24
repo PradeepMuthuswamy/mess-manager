@@ -47,3 +47,8 @@ next-env.d.ts
 
 # Visual brainstorm companion artifacts
 .superpowers/
+
+# Agent swarm runs
+.agents/
+ORIGINAL_REQUEST.md
+scripts/test_challenger_prototypes.mjs

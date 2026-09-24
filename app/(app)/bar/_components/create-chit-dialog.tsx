@@ -369,7 +369,7 @@ export function CreateChitDialog({
                     <div className="space-y-1.5 pt-1 border-t border-muted/50 w-full">
                       <div className="flex justify-between text-[11px] font-medium">
                         <span className="text-muted-foreground">Rate:</span>
-                        <span className="text-sky-600 dark:text-sky-400 font-semibold">
+                        <span className="text-primary font-semibold">
                           {item.volume_ml > 0 
                             ? `₹${(item.rate / (item.volume_ml / 30)).toFixed(0)}/peg`
                             : `₹${item.rate.toFixed(0)}`}
@@ -377,7 +377,7 @@ export function CreateChitDialog({
                       </div>
                       <div className="flex justify-between text-[10px]">
                         <span className="text-muted-foreground">Stock:</span>
-                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                        <span className="text-success font-medium">
                           {item.volume_ml > 0
                             ? `${item.qty} btl (${Math.floor(item.qty * (item.volume_ml / 30))} pegs)`
                             : `${item.qty} units`}
@@ -689,7 +689,7 @@ export function CreateChitDialog({
             <div className="space-y-3 pt-3 border-t shrink-0">
               <div className="flex justify-between items-center bg-muted/40 p-2.5 rounded-lg border">
                 <span className="font-semibold text-xs">Total Chit Amount</span>
-                <span className="font-bold text-base text-emerald-600 dark:text-emerald-400">
+                <span className="font-bold text-base text-success font-mono">
                   ₹{totalAmount.toFixed(2)}
                 </span>
               </div>

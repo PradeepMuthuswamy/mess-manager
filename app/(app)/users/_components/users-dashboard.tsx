@@ -181,21 +181,21 @@ export function UsersDashboard({
   const getRoleBadgeClasses = (role: string) => {
     switch (role) {
       case 'super_admin':
-        return 'bg-red-500/10 text-red-500 border-red-500/20';
+        return 'bg-destructive/10 text-destructive border-destructive/20';
       case 'unit_admin':
-        return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
+        return 'bg-warning/10 text-warning border-warning/20';
       case 'mess_secretary':
-        return 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20';
+        return 'bg-primary/10 text-primary border-primary/20';
       case 'mess_havildar':
-        return 'bg-purple-500/10 text-purple-500 border-purple-500/20';
+        return 'bg-chart-5/10 text-chart-5 border-chart-5/20';
       case 'bar_nco':
-        return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
+        return 'bg-success/10 text-success border-success/20';
       case 'property_nco':
-        return 'bg-pink-500/10 text-pink-500 border-pink-500/20';
+        return 'bg-chart-3/10 text-chart-3 border-chart-3/20';
       case 'manager':
-        return 'bg-sky-500/10 text-sky-500 border-sky-500/20';
+        return 'bg-info/10 text-info border-info/20';
       default:
-        return 'bg-slate-500/10 text-slate-500 border-slate-500/20';
+        return 'bg-muted text-muted-foreground border-border';
     }
   };
 
@@ -311,7 +311,7 @@ export function UsersDashboard({
                     {/* User profile with Avatar */}
                     <TableCell className="px-3 py-3">
                       <div className="flex items-center gap-3">
-                        <Avatar className="size-9 bg-slate-200">
+                        <Avatar className="size-9 bg-muted">
                           <AvatarFallback className="text-xs font-semibold">
                             {initials}
                           </AvatarFallback>
@@ -375,8 +375,8 @@ export function UsersDashboard({
                         variant={u.is_active ? 'secondary' : 'destructive'}
                         className={`text-[10px] ${
                           u.is_active
-                            ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
-                            : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                            ? 'bg-success/10 text-success border-success/20'
+                            : 'bg-destructive/10 text-destructive border-destructive/20'
                         }`}
                       >
                         {u.is_active ? 'Active' : 'Deactivated'}
@@ -407,7 +407,7 @@ export function UsersDashboard({
                               {canManage && (
                                 <DropdownMenuItem
                                   onClick={() => handleToggleActive(u.id, u.is_active)}
-                                  className={u.is_active ? 'text-destructive' : 'text-emerald-600'}
+                                  className={u.is_active ? 'text-destructive' : 'text-success'}
                                 >
                                   {u.is_active ? (
                                     <>
