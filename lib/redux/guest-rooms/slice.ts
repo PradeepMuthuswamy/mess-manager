@@ -400,17 +400,11 @@ export const selectIsRequestLoading = (state: RootState, key: string) =>
 export const selectIsBookingRangeLoaded = (state: RootState, key: string) =>
   state.guestRooms.loadedBookingRanges[key] === true;
 
-export const selectIsActionPending = (state: RootState, key: string) =>
-  state.guestRooms.pendingActions[key] === true;
-
 export const selectPendingActions = (state: RootState) =>
   state.guestRooms.pendingActions;
 
 export const selectBookingDetail = (state: RootState, bookingId: string | null) =>
   bookingId ? state.guestRooms.bookingDetailsById[bookingId] ?? null : null;
-
-export const selectRoomInventory = (state: RootState, roomId: string | null) =>
-  roomId ? state.guestRooms.roomInventoryByRoomId[roomId] ?? null : null;
 
 export const selectAvailability = (
   state: RootState,
@@ -430,39 +424,6 @@ export const selectVisibleBookings = createSelector(
       (booking) =>
         booking.check_out_date >= from && booking.check_in_date <= to,
     ),
-);
-
-export const selectFilteredBookings = createSelector(
-  [bookingSelectors.selectAll, selectGuestRoomsUi],
-  (bookings, ui) => {
-    const query = ui.bookingSearch.toLowerCase().trim();
-    if (!query) return bookings;
-    return bookings.filter((booking) => {
-      return [
-        booking.guest_name,
-        booking.guest_rank,
-        booking.guest_phone,
-        booking.guest_email,
-        booking.room?.name,
-        booking.status.replace('_', ' '),
-      ]
-        .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(query));
-    });
-  },
-);
-
-export const selectFilteredRooms = createSelector(
-  [roomSelectors.selectAll, selectGuestRoomsUi],
-  (rooms, ui) => {
-    const query = ui.roomSearch.toLowerCase().trim();
-    if (!query) return rooms;
-    return rooms.filter((room) =>
-      [room.name, room.room_type, room.current_status, room.status]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query)),
-    );
-  },
 );
 
 function dateBetween(date: string, start: string, end: string) {

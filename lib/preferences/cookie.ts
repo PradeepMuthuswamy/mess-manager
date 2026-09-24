@@ -3,7 +3,7 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { DEFAULT_UI_PREFERENCES, type UiPreferences } from './types';
 
-export const UI_PREF_COOKIE = 'ui_prefs';
+const UI_PREF_COOKIE = 'ui_prefs';
 
 function isModalStyle(v: unknown): v is UiPreferences['modal_style'] {
   return v === 'dialog' || v === 'sheet';

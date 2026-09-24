@@ -1,6 +1,6 @@
 import { requireUser } from '@/lib/auth/require-role';
 import { requireCapability } from '@/lib/auth/require-capability';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import { fetchUnitUsersAction, fetchCapabilityTemplatesAction } from '@/lib/users/actions';
 import { UsersDashboard } from './_components/users-dashboard';
 
@@ -10,16 +10,16 @@ export default async function UsersPage() {
   const user = await requireUser();
   await requireCapability('users.read', user.activeUnitId);
 
-  const supabase = await createClient();
-  const [usersRes, templatesRes, unitsRes] = await Promise.all([
+  const unitsCol = await getCollection('units');
+  const [usersRes, templatesRes, rawUnits] = await Promise.all([
     fetchUnitUsersAction(user.activeUnitId),
     fetchCapabilityTemplatesAction(),
-    supabase.from('units').select('id, name').eq('is_active', true),
+    unitsCol.find({ is_active: { $ne: false } }).sort({ name: 1 }).toArray(),
   ]);
 
   const initialUsers = usersRes.ok && usersRes.data ? usersRes.data : [];
   const templates = templatesRes.ok && templatesRes.data ? templatesRes.data : [];
-  const units = unitsRes.data ?? [];
+  const units = rawUnits.map((u: Record<string, unknown>) => ({ id: u.id, name: u.name }));
 
   return (
     <section className="space-y-6">
@@ -33,9 +33,9 @@ export default async function UsersPage() {
       </div>
 
       <UsersDashboard
-        initialUsers={initialUsers as any[]}
+        initialUsers={initialUsers as Record<string, unknown>[]}
         initialUnits={units}
-        initialTemplates={templates as any[]}
+        initialTemplates={templates as Record<string, unknown>[]}
       />
     </section>
   );

@@ -12,7 +12,5 @@ export const POST = withRoute(async (req: NextRequest) => {
   const body = await req.json().catch(() => null);
   const parsed = resetPasswordSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
-  const { error } = await ctx.supabase.auth.updateUser({ password: parsed.data.password });
-  if (error) throw Errors.badRequest(error.message);
-  return ok({ ok: true });
+  throw Errors.badRequest('Password reset should use the BetterAuth native endpoints.');
 });

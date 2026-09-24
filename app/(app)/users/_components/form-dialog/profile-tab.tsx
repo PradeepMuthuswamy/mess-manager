@@ -7,10 +7,13 @@ import { Input } from '@/components/ui/input';
 import type { Role } from '@/lib/auth/types';
 import { FUNCTIONAL_ROLES } from '../user-form-dialog';
 
+import type { AppUser } from '@/lib/auth/types';
+import type { UnitOption } from '@/lib/users/types';
+
 interface ProfileTabProps {
   isEditing: boolean;
-  units: any[];
-  currentUser: any;
+  units: UnitOption[];
+  currentUser: AppUser;
 }
 
 export function ProfileTab({

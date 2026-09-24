@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { FormError } from '@/components/shared/form-error';
 import { createMasterItemAction } from '@/lib/masters/actions';
 import { CATEGORY_META, slugFromCategory } from '@/lib/masters/categories';
-import type { InventoryCategory } from '@/lib/masters/categories';
+import type { Category } from '@/lib/masters/categories';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { useAppContext } from '@/lib/auth/context';
@@ -58,12 +58,12 @@ export function AddMasterItemDialog({
   onCreated,
 }: {
   open: boolean;
-  category: InventoryCategory;
+  category: Category;
   onClose: () => void;
   onCreated: (item: {
     id: string;
     name: string;
-    category: InventoryCategory;
+    category: Category;
     uom: string;
   }) => void;
 }) {

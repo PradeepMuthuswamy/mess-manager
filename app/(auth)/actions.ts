@@ -1,19 +1,25 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
-import { createClient } from '@/lib/supabase/server';
+import { cookies, headers } from 'next/headers';
+import { hashPassword } from 'better-auth/crypto';
+import { auth } from '@/lib/auth/auth';
 import { AUTH_FLOW_GATE_COOKIE } from '@/lib/auth/flow-gate';
-import { createServiceClient } from '@/lib/supabase/service';
 import {
   signInSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
   acceptInviteSchema,
 } from '@/lib/schemas/auth';
-
 import { sendPasswordResetEmail, sendMagicLinkEmail } from '@/lib/email/resend';
-import { issueAuthConfirmLink } from '@/lib/auth/email-links';
+import {
+  generateVerificationToken,
+  buildAuthConfirmLink,
+  verifyAuthToken,
+  markTokenUsed,
+} from '@/lib/auth/email-links';
+import { getDb } from '@/lib/mongo';
+import { ObjectId } from 'mongodb';
 
 export type ActionState = {
   error?: string;
@@ -22,7 +28,6 @@ export type ActionState = {
 
 function safeNextPath(value: FormDataEntryValue | null): string {
   if (typeof value !== 'string') return '/dashboard';
-  // Only allow relative paths that start with a single '/'
   if (!value.startsWith('/') || value.startsWith('//')) return '/dashboard';
   return value;
 }
@@ -39,37 +44,53 @@ export async function signInAction(
     return { error: 'Please enter a valid email and password.' };
   }
 
-  const supabase = await createClient();
-  const { data: signedIn, error } = await supabase.auth.signInWithPassword({
-    email: parsed.data.email,
-    password: parsed.data.password,
-  });
-  if (error) {
-    return { error: error.message };
-  }
-
-  // App segregation: admin accounts manage the platform from the Admin
-  // Console and may not hold a session in the ops app.
-  if (signedIn.user) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', signedIn.user.id)
-      .maybeSingle();
-    if (profile?.role === 'super_admin') {
-      await supabase.auth.signOut();
-      return { error: 'Admin accounts must sign in via the Admin Console.' };
-    }
-  }
-
+  const reqHeaders = await headers();
   const next = safeNextPath(formData.get('next'));
+
+  try {
+    const res = await auth.api.signInEmail({
+      body: {
+        email: parsed.data.email,
+        password: parsed.data.password,
+      },
+      headers: reqHeaders,
+    });
+
+    if (res && 'twoFactorRedirect' in res && (res as Record<string, unknown>).twoFactorRedirect) {
+      redirect(`/mfa/verify?next=${encodeURIComponent(next)}`);
+    }
+
+    if (res && 'user' in res && res.user) {
+      const db = await getDb();
+      const userId = res.user.id;
+      const filter = ObjectId.isValid(userId)
+        ? { $or: [{ _id: new ObjectId(userId) }, { id: userId }] }
+        : { id: userId };
+
+      const userDoc = await db.collection('users').findOne(filter)
+        || await db.collection('user').findOne(filter);
+
+      const role = userDoc?.role ?? (res.user as Record<string, unknown>).role;
+      if (role === 'super_admin' || role === 'admin') {
+        await auth.api.signOut({ headers: await headers() });
+        return { error: 'Admin accounts must sign in via the Admin Console.' };
+      }
+    }
+  } catch (error: unknown) {
+    if (error?.digest?.startsWith('NEXT_REDIRECT') || error?.name === 'NEXT_REDIRECT') {
+      throw error;
+    }
+    return { error: error.message || 'Invalid email or password.' };
+  }
+
   redirect(next);
 }
 
 export async function signOutAction(): Promise<void> {
-  const supabase = await createClient();
-  await supabase.auth.signOut();
-  (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+  const reqHeaders = await headers();
+  await auth.api.signOut({ headers: reqHeaders });
+  const cookieStore = await cookies();
+  cookieStore.delete(AUTH_FLOW_GATE_COOKIE);
   redirect('/sign-in');
 }
 
@@ -81,45 +102,36 @@ export async function forgotPasswordAction(
     email: formData.get('email'),
   });
   if (!parsed.success) {
-    // Do not reveal validation specifics; behave as success to not leak account existence
     return { ok: true };
   }
 
-  const admin = createServiceClient();
+  const email = parsed.data.email.toLowerCase().trim();
+  const db = await getDb();
+  const user = await db.collection('users').findOne({ email })
+    || await db.collection('user').findOne({ email });
 
-  const { data: profile } = await admin
-    .from('profiles')
-    .select('id, full_name, role')
-    .eq('email', parsed.data.email)
-    .maybeSingle();
-
-  // Admin accounts reset their password via the Admin Console; respond
-  // identically either way to avoid account enumeration.
-  if (profile && profile.role !== 'super_admin') {
-    const recovery = await issueAuthConfirmLink(admin, {
+  if (user && user.role !== 'super_admin' && user.role !== 'admin') {
+    const { token } = await generateVerificationToken({
+      identifier: email,
       type: 'recovery',
-      email: parsed.data.email,
+      metadata: { userId: user.id || user._id?.toString() },
+      expiresInMs: 60 * 60 * 1000, // 1 hour
+    });
+
+    const resetLink = buildAuthConfirmLink({
+      type: 'recovery',
+      token,
       next: '/reset-password',
     });
 
-    if (recovery.error) {
-      console.error('Error generating reset link:', recovery.error);
-      return { ok: true };
-    }
-
-    // Use hashed_token + our /auth/confirm route instead of action_link:
-    // action_link returns the session in a URL fragment the server
-    // can never read, stranding the user on the landing page.
-    if (recovery.link) {
-      try {
-        await sendPasswordResetEmail({
-          email: parsed.data.email,
-          fullName: profile.full_name ?? undefined,
-          resetLink: recovery.link,
-        });
-      } catch (err) {
-        console.error('Failed to send reset email via Resend:', err);
-      }
+    try {
+      await sendPasswordResetEmail({
+        email,
+        fullName: user.full_name || user.name || undefined,
+        resetLink,
+      });
+    } catch (err) {
+      console.error('Failed to send reset email via Resend:', err);
     }
   }
 
@@ -130,29 +142,76 @@ export async function resetPasswordAction(
   _prev: ActionState,
   formData: FormData
 ): Promise<ActionState> {
-  const parsed = resetPasswordSchema.safeParse({
-    password: formData.get('password'),
-  });
+  const token = formData.get('token');
+  const password = formData.get('password');
+
+  if (typeof token !== 'string' || !token) {
+    (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+    redirect('/sign-in?error=invalid_link');
+  }
+
+  const parsed = resetPasswordSchema.safeParse({ password });
   if (!parsed.success) {
     return { error: 'Password must be at least 8 characters.' };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.updateUser({
-    password: parsed.data.password,
-  });
-  if (error) {
-    // A recovery session that failed to set a password must not survive —
-    // otherwise the reset link doubles as a sign-in link.
-    await supabase.auth.signOut();
+  const { valid, verification } = await verifyAuthToken(token, 'recovery');
+  if (!valid || !verification) {
     (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+    redirect('/sign-in?error=invalid_link');
+  }
+
+  try {
+    const hashedPassword = await hashPassword(parsed.data.password);
+    const db = await getDb();
+    const email = verification.identifier.toLowerCase();
+
+    // Update users collection
+    await db.collection('users').updateOne(
+      {
+        $or: [
+          { email },
+          ...(verification.metadata?.userId ? [{ id: verification.metadata.userId }] : []),
+        ],
+      },
+      {
+        $set: {
+          password: hashedPassword,
+          status: 'active',
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    // Update or create credential in account collection for Better Auth
+    const userDoc = await db.collection('users').findOne({ email })
+      || await db.collection('user').findOne({ email });
+
+    const userId = userDoc?._id?.toString() || userDoc?.id || verification.metadata?.userId;
+    if (userId) {
+      await db.collection('account').updateOne(
+        { providerId: 'credential', accountId: userId },
+        {
+          $set: {
+            password: hashedPassword,
+            userId,
+            providerId: 'credential',
+            accountId: userId,
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    }
+
+    await markTokenUsed(token);
+    const cookieStore = await cookies();
+    cookieStore.delete(AUTH_FLOW_GATE_COOKIE);
+  } catch (err) {
+    console.error('Password reset update error:', err);
     redirect('/sign-in?error=reset_failed');
   }
 
-  // Success: end the recovery session and require a fresh sign-in with
-  // the new password.
-  await supabase.auth.signOut();
-  (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
   redirect('/sign-in?message=password_updated');
 }
 
@@ -160,45 +219,83 @@ export async function acceptInviteAction(
   _prev: ActionState,
   formData: FormData
 ): Promise<ActionState> {
+  const token = formData.get('token');
   const rawFullName = formData.get('fullName');
+  const password = formData.get('password');
+
+  if (typeof token !== 'string' || !token) {
+    (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+    redirect('/sign-in?error=invalid_link');
+  }
+
   const parsed = acceptInviteSchema.safeParse({
-    password: formData.get('password'),
-    fullName:
-      typeof rawFullName === 'string' && rawFullName.trim().length > 0
-        ? rawFullName
-        : undefined,
+    password,
+    fullName: typeof rawFullName === 'string' && rawFullName.trim().length > 0 ? rawFullName : undefined,
   });
+
   if (!parsed.success) {
     return { error: 'Please enter a valid password (min 8 characters).' };
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError || !user) {
-    return { error: 'Your invite link is no longer valid. Please request a new invite.' };
+  const { valid, verification } = await verifyAuthToken(token, 'invite');
+  if (!valid || !verification) {
+    (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
+    redirect('/sign-in?error=invalid_link');
   }
 
-  const { error: updateError } = await supabase.auth.updateUser({
-    password: parsed.data.password,
-    data: parsed.data.fullName ? { full_name: parsed.data.fullName } : undefined,
-  });
-  if (updateError) {
-    return { error: updateError.message };
+  try {
+    const hashedPassword = await hashPassword(parsed.data.password);
+    const db = await getDb();
+    const email = verification.identifier.toLowerCase();
+
+    const updateFields: Record<string, unknown> = {
+      password: hashedPassword,
+      status: 'active',
+      updatedAt: new Date(),
+    };
+    if (parsed.data.fullName) {
+      updateFields.full_name = parsed.data.fullName;
+      updateFields.name = parsed.data.fullName;
+    }
+
+    await db.collection('users').updateOne(
+      {
+        $or: [
+          { email },
+          ...(verification.metadata?.userId ? [{ id: verification.metadata.userId }] : []),
+        ],
+      },
+      { $set: updateFields }
+    );
+
+    const userDoc = await db.collection('users').findOne({ email })
+      || await db.collection('user').findOne({ email });
+
+    const userId = userDoc?._id?.toString() || userDoc?.id || verification.metadata?.userId;
+    if (userId) {
+      await db.collection('account').updateOne(
+        { providerId: 'credential', accountId: userId },
+        {
+          $set: {
+            password: hashedPassword,
+            userId,
+            providerId: 'credential',
+            accountId: userId,
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    }
+
+    await markTokenUsed(token);
+    const cookieStore = await cookies();
+    cookieStore.delete(AUTH_FLOW_GATE_COOKIE);
+  } catch (err) {
+    console.error('Accept invite error:', err);
+    return { error: 'Failed to accept invite.' };
   }
 
-  if (parsed.data.fullName) {
-    const service = createServiceClient();
-    await service
-      .from('profiles')
-      .update({ full_name: parsed.data.fullName })
-      .eq('id', user.id);
-  }
-
-  // Flow complete — lift the invite-session confinement.
-  (await cookies()).delete(AUTH_FLOW_GATE_COOKIE);
   redirect('/dashboard');
 }
 
@@ -211,35 +308,33 @@ export async function sendMagicLinkAction(
     return { error: 'Please enter a valid email address.' };
   }
 
-  const admin = createServiceClient();
+  const cleanEmail = email.toLowerCase().trim();
+  const db = await getDb();
+  const user = await db.collection('users').findOne({ email: cleanEmail })
+    || await db.collection('user').findOne({ email: cleanEmail });
 
-  const { data: profile } = await admin
-    .from('profiles')
-    .select('id, full_name, role')
-    .eq('email', email)
-    .maybeSingle();
-
-  if (!profile || profile.role === 'super_admin') {
-    // No account, or an admin account (Admin Console only) — return
-    // ok: true either way to prevent account enumeration.
+  if (!user || user.role === 'super_admin' || user.role === 'admin') {
     return { ok: true };
   }
 
-  const linkData = await issueAuthConfirmLink(admin, {
+  const { token } = await generateVerificationToken({
+    identifier: cleanEmail,
     type: 'magiclink',
-    email,
+    metadata: { userId: user.id || user._id?.toString() },
+    expiresInMs: 15 * 60 * 1000, // 15 mins
+  });
+
+  const link = buildAuthConfirmLink({
+    type: 'magiclink',
+    token,
     next: '/dashboard',
   });
 
-  if (linkData.error || !linkData.link) {
-    return { error: linkData.error?.message ?? 'Could not generate magic link.' };
-  }
-
   try {
     await sendMagicLinkEmail({
-      email,
-      fullName: profile.full_name ?? undefined,
-      magicLink: linkData.link,
+      email: cleanEmail,
+      fullName: user.full_name || user.name || undefined,
+      magicLink: link,
     });
   } catch (err) {
     console.error('Failed to send magic link email:', err);

@@ -8,8 +8,6 @@ import {
   bookingUpserted,
   bookingsRangeKey,
   bookingsRangeLoaded,
-  furnitureKey,
-  furnitureLoaded,
   furnitureUpserted,
   pendingActionFinished,
   pendingActionStarted,
@@ -54,7 +52,6 @@ import {
   fetchRoomInventoryAction,
   fetchRoomsAction,
   fetchRoomsByIdsAction,
-  fetchUnitFurnitureAction,
   undoCheckInAction,
   undoCheckOutAction,
   updateBookingAction,
@@ -156,30 +153,6 @@ export function fetchRooms(unitId: string, force = false): AppThunk<Promise<Room
     dispatch(roomsLoaded(rooms));
     dispatch(requestSucceeded(key));
     return rooms;
-  };
-}
-
-export function fetchFurniture(
-  unitId: string,
-  force = false,
-): AppThunk<Promise<UnitFurniture[]>> {
-  return async (dispatch, getState) => {
-    const key = furnitureKey(unitId);
-    if (!force && getState().guestRooms.requests[key]?.status === 'succeeded') {
-      return Object.values(getState().guestRooms.furniture.entities).filter(Boolean);
-    }
-
-    dispatch(requestStarted(key));
-    const result = await fetchUnitFurnitureAction(unitId);
-    if (result.error) {
-      dispatch(requestFailed({ key, error: result.error }));
-      throw new Error(result.error);
-    }
-
-    const furniture = (result.data ?? []) as UnitFurniture[];
-    dispatch(furnitureLoaded(furniture));
-    dispatch(requestSucceeded(key));
-    return furniture;
   };
 }
 

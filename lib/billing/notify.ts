@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import { getCurrentUser } from '@/lib/auth/get-current-user';
 import {
   sendMessBillEmail,
@@ -15,20 +15,30 @@ async function recordBillEmailSend(input: {
   status: 'sent' | 'failed';
   error?: string | null;
 }): Promise<void> {
-  const supabase = await createClient();
-  const { error } = await supabase.from('mess_bill_email_sends').upsert(
-    {
-      bill_id: input.billId,
-      profile_id: input.profileId,
-      billing_period_id: input.periodId,
-      status: input.status,
-      error: input.error ?? null,
-      sent_at: input.status === 'sent' ? new Date().toISOString() : null,
-    },
-    { onConflict: 'bill_id' }
-  );
-  if (error) {
-    console.error('Failed to upsert mess_bill_email_sends:', error.message);
+  try {
+    const col = await getCollection('mess_bill_email_sends');
+    const now = new Date().toISOString();
+    await col.updateOne(
+      { bill_id: input.billId },
+      {
+        $set: {
+          bill_id: input.billId,
+          profile_id: input.profileId,
+          billing_period_id: input.periodId,
+          status: input.status,
+          error: input.error ?? null,
+          sent_at: input.status === 'sent' ? now : null,
+          updated_at: now,
+        },
+        $setOnInsert: {
+          id: crypto.randomUUID(),
+          created_at: now,
+        },
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('Failed to upsert mess_bill_email_sends:', err);
   }
 }
 
@@ -91,7 +101,7 @@ export async function notifyBillsPublished(periodId: string): Promise<void> {
           profileId: bill.profile_id,
           periodId,
           status: 'failed',
-          error: err instanceof Error ? err.message : String(err),
+          error: err instanceof Error ? (err instanceof Error ? err.message : String(err)) : String(err),
         });
       }
     }

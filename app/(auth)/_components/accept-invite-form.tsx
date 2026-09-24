@@ -23,7 +23,13 @@ function SubmitButton() {
   );
 }
 
-export function AcceptInviteForm() {
+export function AcceptInviteForm({
+  token,
+  initialFullName,
+}: {
+  token?: string;
+  initialFullName?: string;
+}) {
   const [state, formAction] = useActionState(acceptInviteAction, INITIAL);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -45,6 +51,7 @@ export function AcceptInviteForm() {
 
   return (
     <form action={formAction} onSubmit={handleSubmit} className="space-y-4">
+      <input type="hidden" name="token" value={token ?? ''} />
       <div className="flex flex-col gap-2">
         <Label htmlFor="fullName">
           Full name{' '}
@@ -56,6 +63,7 @@ export function AcceptInviteForm() {
           type="text"
           autoComplete="name"
           maxLength={120}
+          defaultValue={initialFullName}
         />
       </div>
 

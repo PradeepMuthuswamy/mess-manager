@@ -1,16 +1,22 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
 import type { UnitBulletin } from './types';
 
 export async function listUnitBulletins(unitId: string, limit = 20): Promise<UnitBulletin[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('unit_bulletins')
-    .select('id, unit_id, title, body, published_at, created_by')
-    .eq('unit_id', unitId)
-    .order('published_at', { ascending: false })
-    .limit(limit);
+  const db = await getDb();
+  const docs = await db
+    .collection('unit_bulletins')
+    .find({ unit_id: unitId })
+    .sort({ published_at: -1 })
+    .limit(limit)
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []) as UnitBulletin[];
+  return docs.map((doc: Record<string, unknown>) => ({
+    id: String(doc.id),
+    unit_id: String(doc.unit_id),
+    title: String(doc.title),
+    body: String(doc.body),
+    published_at: String(doc.published_at),
+    created_by: doc.created_by ?? null,
+  }));
 }

@@ -3,7 +3,7 @@ import { requireUser } from '@/lib/auth/require-role';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import { getMessBillDetails } from '@/lib/billing/queries';
 import { resolveBillFormatTemplate } from '@/lib/billing/templates';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import type { MessBillWithDetails } from '@/lib/billing/types';
 import { BillPrintClassic, type BillPrintModel } from '../../_components/bill-print-classic';
 import { BillPrintCompact } from '../../_components/bill-print-compact';
@@ -70,14 +70,9 @@ export default async function BillPrintPage({
     redirect('/billing');
   }
 
-  const supabase = await createClient();
-  const { data: unit } = await supabase
-    .from('units')
-    .select('*')
-    .eq('id', details.unit_id)
-    .maybeSingle();
+  const col = await getCollection('units');
+  const unit = await col.findOne({ id: details.unit_id });
 
-  // Generated types lag `bill_format_template` on units.
   const unitMeta = unit as { name?: string; bill_format_template?: string | null } | null;
   const unitName = unitMeta?.name?.trim() || 'Officers Mess';
   const template = resolveBillFormatTemplate(unitMeta?.bill_format_template);

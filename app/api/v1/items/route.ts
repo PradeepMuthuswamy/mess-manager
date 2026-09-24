@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
@@ -103,8 +102,8 @@ export const POST = withRoute(async (req: NextRequest) => {
     description = rawBody.notes ? String(rawBody.notes) : null;
     const mapped = mapUomToVariant(String(rawBody.uom));
     unit_value = mapped.unit_value;
-    unit_type = mapped.unit_type as any;
-    package_type = mapped.package_type as any;
+    unit_type = mapped.unit_type as 'ML' | 'LITRE' | 'GRAM' | 'KG' | 'PIECE';
+    package_type = mapped.package_type as 'BOTTLE' | 'CAN' | 'PACKET' | 'BOX' | 'LOOSE';
     sku = rawBody.sku ? String(rawBody.sku) : null;
   }
 

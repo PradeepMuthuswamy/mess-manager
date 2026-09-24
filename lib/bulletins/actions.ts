@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
 import { requireRole } from '@/lib/auth/require-role';
 import { bulletinSchema } from '@/lib/schemas/bulletins';
 import type { AuthUser } from '@/lib/auth/types';
@@ -21,15 +22,32 @@ export async function publishBulletinAction(input: unknown): Promise<ActionResul
     return { error: 'You cannot publish to another unit.' };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.from('unit_bulletins').insert({
+  const db = await getDb();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  const bulletinDoc = {
+    id,
     unit_id: parsed.data.unit_id,
     title: parsed.data.title,
     body: parsed.data.body,
+    published_at: now,
     created_by: user.id,
+    created_at: now,
+    updated_at: now,
+  };
+
+  await db.collection('unit_bulletins').insertOne(bulletinDoc);
+
+  await writeAudit({
+    table_name: 'unit_bulletins',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: user.id,
+    active_unit_id: parsed.data.unit_id,
+    new_data: bulletinDoc,
   });
 
-  if (error) return { error: error.message };
   revalidatePath('/dashboard');
   revalidatePath('/bulletins');
   return { ok: true };

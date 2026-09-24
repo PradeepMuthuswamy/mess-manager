@@ -17,6 +17,10 @@ export const GET = withRoute(async (req: NextRequest) => {
     active_unit_id: ctx.user.activeUnitId,
     is_all_units: ctx.user.isAllUnits,
     display_name: ctx.user.displayName,
-    capabilities: ctx.user.capabilities.map((g) => ({ capability: g.capability, unit_id: g.unitId })),
+    capabilities: ctx.user.capabilities.map((c) =>
+      typeof c === 'string'
+        ? { capability: c, unit_id: null }
+        : { capability: (c as never).capability, unit_id: (c as never).unitId ?? null }
+    ),
   });
 });

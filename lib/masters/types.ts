@@ -90,3 +90,78 @@ export type ListMastersOpts = {
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
 };
+
+export interface MongoCategory {
+  _id?: unknown;
+  id: string;
+  name: string;
+  parent_id?: string | null;
+  slug?: string;
+}
+
+export interface MongoProduct {
+  _id?: unknown;
+  id: string;
+  name: string;
+  category_id: string;
+  name_normalized: string;
+  description?: string | null;
+}
+
+export interface MongoVariant {
+  _id?: unknown;
+  id: string;
+  product_id: string;
+  sku: string | null;
+  uom: string;
+  is_active: boolean;
+  pack_size_id: string | null;
+  pack_label: string | null;
+  pack_kind: 'volume' | 'count' | null;
+  volume_ml: number | null;
+  unit_count: number | null;
+  unit_value?: number;
+  unit_type?: string;
+  package_type?: string;
+}
+
+export interface MongoUnitCatalog {
+  _id?: unknown;
+  id: string;
+  unit_id: string;
+  variant_id: string;
+  is_active: boolean;
+  adopted_at?: string;
+  adopted_by?: string;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface MongoUnitMenuRate {
+  _id?: unknown;
+  id: string;
+  unit_id: string;
+  variant_id: string;
+  rate: number;
+  valid_from: string;
+  valid_to: string | null;
+}
+
+export interface MongoRationScale {
+  _id?: unknown;
+  id: string;
+  name: string;
+  rank_class: string;
+  terrain: string;
+  is_active: boolean;
+}
+
+export interface MongoRationScaleItemVersion {
+  _id?: unknown;
+  id: string;
+  scale_id: string;
+  variant_id: string;
+  auth_qty: number;
+  valid_from: string;
+  valid_to: string | null;
+}

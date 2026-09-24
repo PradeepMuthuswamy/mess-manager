@@ -1,4 +1,4 @@
-export type Role = 'user' | 'manager' | 'unit_admin' | 'super_admin' | 'mess_secretary' | 'mess_havildar' | 'bar_nco' | 'property_nco';
+export type Role = 'user' | 'manager' | 'unit_admin' | 'super_admin' | 'admin' | 'mess_secretary' | 'mess_havildar' | 'bar_nco' | 'property_nco';
 
 export const CAPABILITIES = [
   'masters.read','masters.write','masters.write.global',
@@ -73,9 +73,6 @@ export const CAPABILITY_ACTION_LABELS: Record<Capability, string> = {
   'messing.approve':        'Approve the daily messing register',
 };
 
-export function capabilityLabel(cap: Capability) {
-  return CAPABILITY_ACTION_LABELS[cap] ?? cap;
-}
 
 export function capabilityDomain(cap: Capability): string {
   return cap.split('.')[0];
@@ -89,15 +86,11 @@ export function capabilityDomainLabel(cap: Capability): string {
 // A granted capability optionally scoped to a unit.
 export type GrantedCapability = { capability: Capability; unitId: string | null };
 
-export type AuthUser = {
-  id: string;
-  email: string;
-  role: Role;
-  homeUnitId: string | null;
-  activeUnitId: string | null;   // for admin: cookie-driven; otherwise = homeUnitId
-  isAllUnits: boolean;           // true only for admin with no active unit
-  displayName: string | null;
-  capabilities: GrantedCapability[];
-};
+import type { CurrentUser } from './get-current-user';
+
+export type AuthUser = CurrentUser;
+export type { CurrentUser };
 
 export const ACTIVE_UNIT_COOKIE = 'active_unit_id';
+export type Session = typeof import('./auth').auth.$Infer.Session;
+export type User = typeof import('./auth').auth.$Infer.User;

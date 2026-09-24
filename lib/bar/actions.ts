@@ -1,12 +1,11 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
 import { createBarChitSchema, type CreateBarChitInput } from '@/lib/schemas';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Database } from '@/lib/supabase/database.types';
 
 type ActionResult = {
   ok?: boolean;
@@ -19,10 +18,21 @@ type ActionResult = {
  * Shared between Server Action and REST API.
  */
 export async function createBarChitCore(
-  supabase: SupabaseClient<Database>,
-  userId: string,
-  data: CreateBarChitInput
+  clientOrUserId: unknown,
+  userIdOrData: unknown,
+  maybeData?: CreateBarChitInput,
 ): Promise<ActionResult> {
+  let userId: string;
+  let data: CreateBarChitInput;
+
+  if (typeof clientOrUserId === 'string') {
+    userId = clientOrUserId;
+    data = userIdOrData as CreateBarChitInput;
+  } else {
+    userId = userIdOrData as string;
+    data = maybeData as CreateBarChitInput;
+  }
+
   const { unit_id, date, consumer_type, profile_id, guest_name, booking_id, items } = data;
 
   if (consumer_type === 'member' && !profile_id) {
@@ -32,10 +42,16 @@ export async function createBarChitCore(
     return { error: 'Guest name is required for guests' };
   }
 
+  const db = await getDb();
+  const variantsCol = db.collection('product_variants');
+  const invCol = db.collection('unit_inventory');
+  const chitsCol = db.collection('bar_chits');
+  const chitItemsCol = db.collection('bar_chit_items');
+
   // Normalize peg quantities/rates to bottle units
   const normalizedItems = [];
   for (const item of items) {
-    const adopted = await isAdoptedVariant(supabase, unit_id, item.variant_id);
+    const adopted = await isAdoptedVariant(unit_id, item.variant_id);
     if (!adopted) {
       return { error: `${item.name} is not an adopted catalog item for this unit` };
     }
@@ -44,7 +60,7 @@ export async function createBarChitCore(
     let rate = item.rate;
 
     if (rate == null || rate === 0) {
-      const menuRate = await getLatestMenuRate(supabase, unit_id, item.variant_id, date);
+      const menuRate = await getLatestMenuRate(unit_id, item.variant_id, date);
       if (menuRate == null || menuRate === 0) {
         return { error: `No menu rate set for ${item.name}` };
       }
@@ -52,17 +68,12 @@ export async function createBarChitCore(
     }
 
     if (item.unit === 'peg') {
-      const { data: variant, error: varErr } = await supabase
-        .from('product_variants')
-        .select('unit_value, unit_type, package_type')
-        .eq('id', item.variant_id)
-        .single();
-
-      if (varErr || !variant) {
-        return { error: `Failed to retrieve details for ${item.name}: ${varErr?.message ?? 'Not found'}` };
+      const variant = await variantsCol.findOne({ id: item.variant_id });
+      if (!variant) {
+        return { error: `Failed to retrieve details for ${item.name}: Not found` };
       }
 
-      const unitValue = Number(variant.unit_value);
+      const unitValue = Number(variant.unit_value ?? 0);
       let volumeMl = 0;
       if (variant.unit_type === 'ML') {
         volumeMl = unitValue;
@@ -92,22 +103,21 @@ export async function createBarChitCore(
 
   // 1. Validate stock availability for each item first (FIFO check)
   for (const item of normalizedItems) {
-    const { data: lots, error: lotsErr } = await supabase
-      .from('unit_inventory')
-      .select('qty_packs')
-      .eq('unit_id', unit_id)
-      .eq('variant_id', item.variant_id)
-      .eq('is_active', true)
-      .gt('qty_packs', 0);
+    const lots = await invCol
+      .find({
+        unit_id,
+        variant_id: item.variant_id,
+        is_active: { $ne: false },
+        qty_packs: { $gt: 0 },
+      })
+      .toArray();
 
-    if (lotsErr) {
-      return { error: `Database error checking stock for ${item.name}: ${lotsErr.message}` };
-    }
-
-    const totalAvailable = (lots ?? []).reduce((sum, lot) => sum + Number(lot.qty_packs), 0);
+    const totalAvailable = lots.reduce((sum, lot) => sum + Number(lot.qty_packs ?? 0), 0);
     // Allow slight floating point tolerance on stock checks
     if (totalAvailable + 0.0001 < item.quantity) {
-      return { error: `Insufficient stock for ${item.name}. Requested: ${item.quantity.toFixed(3)} bottles, Available: ${totalAvailable.toFixed(3)} bottles` };
+      return {
+        error: `Insufficient stock for ${item.name}. Requested: ${item.quantity.toFixed(3)} bottles, Available: ${totalAvailable.toFixed(3)} bottles`,
+      };
     }
   }
 
@@ -115,65 +125,78 @@ export async function createBarChitCore(
   const total_amount = normalizedItems.reduce((sum, item) => sum + item.quantity * item.rate, 0);
 
   // 3. Create the chit header
-  const { data: chit, error: chitErr } = await supabase
-    .from('bar_chits')
-    .insert({
-      unit_id,
-      date,
-      profile_id: consumer_type === 'member' ? profile_id : null,
-      guest_name: consumer_type === 'guest' ? guest_name : null,
-      booking_id: consumer_type === 'guest' ? booking_id : null,
-      total_amount,
-      status: 'pending',
-      created_by: userId,
-    })
-    .select('id')
-    .single();
+  const now = new Date().toISOString();
+  const chitId = crypto.randomUUID();
 
-  if (chitErr || !chit) {
-    return { error: `Failed to create bar chit: ${chitErr?.message}` };
-  }
+  const chitDoc = {
+    id: chitId,
+    unit_id,
+    date,
+    profile_id: consumer_type === 'member' ? profile_id : null,
+    guest_name: consumer_type === 'guest' ? guest_name : null,
+    booking_id: consumer_type === 'guest' ? booking_id : null,
+    total_amount,
+    status: 'pending',
+    created_by: userId,
+    created_at: now,
+    updated_at: now,
+  };
 
-  const chitId = chit.id;
+  await chitsCol.insertOne(chitDoc);
+  await writeAudit({
+    table_name: 'bar_chits',
+    row_pk: chitId,
+    op: 'INSERT',
+    changed_by: userId,
+    active_unit_id: unit_id,
+    new_data: chitDoc,
+  });
 
   // 4. Insert chit items and deplete inventory
   for (const item of normalizedItems) {
     // A. Insert bar_chit_item
     const itemAmount = item.quantity * item.rate;
-    const { error: lineErr } = await supabase
-      .from('bar_chit_items')
-      .insert({
-        chit_id: chitId,
-        variant_id: item.variant_id,
-        quantity: item.quantity,
-        rate: item.rate,
-        amount: itemAmount,
-      });
+    const itemId = crypto.randomUUID();
+    const itemDoc = {
+      id: itemId,
+      chit_id: chitId,
+      variant_id: item.variant_id,
+      quantity: item.quantity,
+      rate: item.rate,
+      amount: itemAmount,
+      created_at: now,
+      updated_at: now,
+    };
 
-    if (lineErr) {
-      // Clean up header in case of failure (transaction fallback)
-      await supabase.from('bar_chits').delete().eq('id', chitId);
-      return { error: `Failed to insert line item for ${item.name}: ${lineErr.message}` };
+    try {
+      await chitItemsCol.insertOne(itemDoc);
+      await writeAudit({
+        table_name: 'bar_chit_items',
+        row_pk: itemId,
+        op: 'INSERT',
+        changed_by: userId,
+        active_unit_id: unit_id,
+        new_data: itemDoc,
+      });
+    } catch (lineErr: unknown) {
+      // Clean up header in case of failure
+      await chitsCol.deleteOne({ id: chitId });
+      return { error: `Failed to insert line item for ${item.name}: ${(lineErr instanceof Error ? lineErr.message : String(lineErr))}` };
     }
 
     // B. Deplete inventory lots (FIFO)
     let remainingToDeplete = item.quantity;
 
     // Fetch lots sorted by acquired_on ascending (or created_at if null) to ensure FIFO
-    const { data: lots, error: fetchLotsErr } = await supabase
-      .from('unit_inventory')
-      .select('id, qty_packs')
-      .eq('unit_id', unit_id)
-      .eq('variant_id', item.variant_id)
-      .eq('is_active', true)
-      .gt('qty_packs', 0)
-      .order('acquired_on', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true });
-
-    if (fetchLotsErr || !lots) {
-      await supabase.from('bar_chits').delete().eq('id', chitId);
-      return { error: `Failed to retrieve inventory lots for depletion: ${fetchLotsErr?.message}` };
-    }
+    const lots = await invCol
+      .find({
+        unit_id,
+        variant_id: item.variant_id,
+        is_active: { $ne: false },
+        qty_packs: { $gt: 0 },
+      })
+      .sort({ acquired_on: 1, created_at: 1 })
+      .toArray();
 
     // Prioritize depletion of the explicitly selected lot
     if (item.lot_id) {
@@ -187,41 +210,48 @@ export async function createBarChitCore(
     for (const lot of lots) {
       if (remainingToDeplete <= 0.0001) break;
 
-      const currentLotQty = Number(lot.qty_packs);
+      const currentLotQty = Number(lot.qty_packs ?? 0);
 
       if (currentLotQty <= remainingToDeplete + 0.0001) {
-        // Fully deplete this lot (subtract remainingToDeplete, but round off if within tolerance)
+        // Fully deplete this lot
         remainingToDeplete = Math.max(0, remainingToDeplete - currentLotQty);
-        
-        // Deactivate lot
-        const { error: updateLotErr } = await supabase
-          .from('unit_inventory')
-          .update({
-            qty_packs: 0,
-            is_active: false,
-          })
-          .eq('id', lot.id);
 
-        if (updateLotErr) {
-          await supabase.from('bar_chits').delete().eq('id', chitId);
-          return { error: `Failed to update inventory lot ${lot.id}: ${updateLotErr.message}` };
-        }
+        const patch = {
+          qty_packs: 0,
+          is_active: false,
+          updated_at: now,
+        };
+
+        await invCol.updateOne({ id: lot.id }, { $set: patch });
+        await writeAudit({
+          table_name: 'unit_inventory',
+          row_pk: lot.id,
+          op: 'UPDATE',
+          changed_by: userId,
+          active_unit_id: unit_id,
+          old_data: lot,
+          new_data: { ...lot, ...patch },
+        });
       } else {
         // Partially deplete this lot
         const newLotQty = currentLotQty - remainingToDeplete;
         remainingToDeplete = 0;
 
-        const { error: updateLotErr } = await supabase
-          .from('unit_inventory')
-          .update({
-            qty_packs: newLotQty,
-          })
-          .eq('id', lot.id);
+        const patch = {
+          qty_packs: newLotQty,
+          updated_at: now,
+        };
 
-        if (updateLotErr) {
-          await supabase.from('bar_chits').delete().eq('id', chitId);
-          return { error: `Failed to update inventory lot ${lot.id}: ${updateLotErr.message}` };
-        }
+        await invCol.updateOne({ id: lot.id }, { $set: patch });
+        await writeAudit({
+          table_name: 'unit_inventory',
+          row_pk: lot.id,
+          op: 'UPDATE',
+          changed_by: userId,
+          active_unit_id: unit_id,
+          old_data: lot,
+          new_data: { ...lot, ...patch },
+        });
       }
     }
   }
@@ -230,40 +260,39 @@ export async function createBarChitCore(
 }
 
 async function isAdoptedVariant(
-  supabase: SupabaseClient<Database>,
   unitId: string,
   variantId: string,
 ): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('unit_catalog')
-    .select('id')
-    .eq('unit_id', unitId)
-    .eq('variant_id', variantId)
-    .eq('is_enabled', true)
-    .maybeSingle();
+  const db = await getDb();
+  const doc = await db.collection('unit_catalog').findOne({
+    unit_id: unitId,
+    variant_id: variantId,
+    is_enabled: true,
+  });
 
-  return !error && data != null;
+  return doc != null;
 }
 
 /** Latest committee sale rate as of the chit date. Snapshot this onto bar_chit_items — never rewrite later. */
 async function getLatestMenuRate(
-  supabase: SupabaseClient<Database>,
   unitId: string,
   variantId: string,
   asOfDate: string,
 ): Promise<number | null> {
-  const { data, error } = await supabase
-    .from('unit_menu_rates')
-    .select('rate')
-    .eq('unit_id', unitId)
-    .eq('variant_id', variantId)
-    .lte('effective_from', asOfDate)
-    .order('effective_from', { ascending: false })
+  const db = await getDb();
+  const doc = await db
+    .collection('unit_menu_rates')
+    .find({
+      unit_id: unitId,
+      variant_id: variantId,
+      effective_from: { $lte: asOfDate },
+    })
+    .sort({ effective_from: -1 })
     .limit(1)
-    .maybeSingle();
+    .next();
 
-  if (error || data == null) return null;
-  return Number(data.rate);
+  if (!doc) return null;
+  return Number(doc.rate);
 }
 
 export async function createBarChitAction(
@@ -272,11 +301,11 @@ export async function createBarChitAction(
 ): Promise<ActionResult> {
   // 1. Authenticate user
   const user = await requireUser();
-  
+
   // 2. Validate input payload
   const parsed = createBarChitSchema.safeParse(payload);
   if (!parsed.success) {
-    return { error: 'Invalid input data: ' + parsed.error.issues.map(i => i.message).join(', ') };
+    return { error: 'Invalid input data: ' + parsed.error.issues.map((i) => i.message).join(', ') };
   }
 
   const { unit_id } = parsed.data;
@@ -284,10 +313,8 @@ export async function createBarChitAction(
   // 3. Verify user capability
   await requireCapability('bar.write', unit_id);
 
-  const supabase = await createClient();
-
   // 4. Run core logic
-  const res = await createBarChitCore(supabase, user.id, parsed.data);
+  const res = await createBarChitCore(user.id, parsed.data);
 
   if (res.ok) {
     // 5. Revalidate paths
@@ -309,32 +336,34 @@ export async function finalizeBarChitAction(input: {
   const id = parseChitId(input);
   if (!id) return { error: 'Chit id is required' };
 
-  const supabase = await createClient();
-  const { data: chit, error: loadErr } = await supabase
-    .from('bar_chits')
-    .select('id, unit_id, status')
-    .eq('id', id)
-    .maybeSingle();
+  const db = await getDb();
+  const chitsCol = db.collection('bar_chits');
+  const chit = await chitsCol.findOne({ id });
 
-  if (loadErr) return { error: loadErr.message };
   if (!chit) return { error: 'Bar chit not found' };
 
+  const user = await requireUser();
   await requireCapability('bar.finalize', chit.unit_id);
 
   if (chit.status !== 'pending') {
     return { error: 'Only pending chits can be finalized' };
   }
 
-  const { data: updated, error: updateErr } = await supabase
-    .from('bar_chits')
-    .update({ status: 'finalized' })
-    .eq('id', chit.id)
-    .eq('status', 'pending')
-    .select('id')
-    .maybeSingle();
+  const now = new Date().toISOString();
+  await chitsCol.updateOne(
+    { id: chit.id, status: 'pending' },
+    { $set: { status: 'finalized', updated_at: now } },
+  );
 
-  if (updateErr) return { error: updateErr.message };
-  if (!updated) return { error: 'Only pending chits can be finalized' };
+  await writeAudit({
+    table_name: 'bar_chits',
+    row_pk: chit.id,
+    op: 'UPDATE',
+    changed_by: user.id,
+    active_unit_id: chit.unit_id,
+    old_data: chit,
+    new_data: { ...chit, status: 'finalized', updated_at: now },
+  });
 
   revalidatePath('/bar');
   return { ok: true, id: chit.id };
@@ -347,46 +376,45 @@ export async function reopenBarChitAction(input: {
   const id = parseChitId(input);
   if (!id) return { error: 'Chit id is required' };
 
-  const supabase = await createClient();
-  const { data: chit, error: loadErr } = await supabase
-    .from('bar_chits')
-    .select('id, unit_id, status, date')
-    .eq('id', id)
-    .maybeSingle();
+  const db = await getDb();
+  const chitsCol = db.collection('bar_chits');
+  const chit = await chitsCol.findOne({ id });
 
-  if (loadErr) return { error: loadErr.message };
   if (!chit) return { error: 'Bar chit not found' };
 
+  const user = await requireUser();
   await requireCapability('bar.finalize', chit.unit_id);
 
   if (chit.status !== 'finalized') {
     return { error: 'Only finalized chits can be reopened' };
   }
 
-  const { data: publishedPeriod, error: periodErr } = await supabase
-    .from('mess_billing_periods')
-    .select('id')
-    .eq('unit_id', chit.unit_id)
-    .in('status', ['published', 'closed'])
-    .lte('start_date', chit.date)
-    .gte('end_date', chit.date)
-    .maybeSingle();
+  const publishedPeriod = await db.collection('mess_billing_periods').findOne({
+    unit_id: chit.unit_id,
+    status: { $in: ['published', 'closed'] },
+    start_date: { $lte: chit.date },
+    end_date: { $gte: chit.date },
+  });
 
-  if (periodErr) return { error: periodErr.message };
   if (publishedPeriod) {
     return { error: 'Cannot reopen a chit after the billing period has been published' };
   }
 
-  const { data: updated, error: updateErr } = await supabase
-    .from('bar_chits')
-    .update({ status: 'pending' })
-    .eq('id', chit.id)
-    .eq('status', 'finalized')
-    .select('id')
-    .maybeSingle();
+  const now = new Date().toISOString();
+  await chitsCol.updateOne(
+    { id: chit.id, status: 'finalized' },
+    { $set: { status: 'pending', updated_at: now } },
+  );
 
-  if (updateErr) return { error: updateErr.message };
-  if (!updated) return { error: 'Only finalized chits can be reopened' };
+  await writeAudit({
+    table_name: 'bar_chits',
+    row_pk: chit.id,
+    op: 'UPDATE',
+    changed_by: user.id,
+    active_unit_id: chit.unit_id,
+    old_data: chit,
+    new_data: { ...chit, status: 'pending', updated_at: now },
+  });
 
   revalidatePath('/bar');
   return { ok: true, id: chit.id };

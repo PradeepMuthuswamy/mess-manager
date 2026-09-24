@@ -2,7 +2,7 @@ import type { AuthUser, Capability } from '@/lib/auth/types';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { ModuleId } from './modules';
 
-export const WIDGET_IDS = [
+const WIDGET_IDS = [
   'member-messing',
   'member-bills',
   'president-kpis',

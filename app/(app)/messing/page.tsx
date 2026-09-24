@@ -1,6 +1,5 @@
 import { requireCapability } from '@/lib/auth/require-capability';
 import { userHasCapability } from '@/lib/auth/capabilities';
-import { createClient } from '@/lib/supabase/server';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -74,13 +73,12 @@ export default async function MessingPage({
   const prevDate = format(subDays(parseISO(date), 1), 'yyyy-MM-dd');
   const nextDate = format(addDays(parseISO(date), 1), 'yyyy-MM-dd');
 
-  const supabase = await createClient();
   const canWriteAttendance = userHasCapability(user, 'attendance.write', unitId);
   const canApproveRegister = userHasCapability(user, 'messing.approve', unitId);
 
   let presentCount = 0;
   try {
-    const attendance = await getAttendanceDay(unitId, date, supabase);
+    const attendance = await getAttendanceDay(unitId, date);
     presentCount = attendance.present_count;
   } catch {
     presentCount = 0;

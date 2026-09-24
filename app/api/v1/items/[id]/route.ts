@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
@@ -39,7 +38,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const body = await req.json().catch(() => null);
   if (!body) throw Errors.validation({ formErrors: ['Missing body'] });
 
-  const productUpdate: Record<string, any> = {};
+  const productUpdate: Record<string, unknown> = {};
   if (body.name !== undefined) productUpdate.name = body.name;
   if (body.description !== undefined) productUpdate.description = body.description;
   if (body.category_id !== undefined) productUpdate.category_id = body.category_id;
@@ -55,7 +54,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
     if (prodUpErr) throw Errors.internal(prodUpErr.message);
   }
 
-  const variantUpdate: Record<string, any> = {};
+  const variantUpdate: Record<string, unknown> = {};
   if (body.sku !== undefined) variantUpdate.sku = body.sku;
   if (body.is_active !== undefined) variantUpdate.is_active = body.is_active;
   if (body.unit_value !== undefined) variantUpdate.unit_value = body.unit_value;

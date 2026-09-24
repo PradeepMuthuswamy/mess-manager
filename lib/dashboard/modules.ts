@@ -1,5 +1,6 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
+import { cache } from 'react';
+import { getCollection } from '@/lib/mongo';
 
 export const MODULE_IDS = [
   'attendance',
@@ -15,7 +16,7 @@ export type ModuleId = (typeof MODULE_IDS)[number];
 
 const MODULE_ID_SET = new Set<string>(MODULE_IDS);
 
-export function isModuleId(value: string): value is ModuleId {
+function isModuleId(value: string): value is ModuleId {
   return MODULE_ID_SET.has(value);
 }
 
@@ -32,25 +33,25 @@ type UnitEnabledModulesRow = {
  * If `units.enabled_modules` is absent (column not yet in schema, null, or
  * non-array), every known module is treated as enabled.
  */
-export async function getEnabledModules(unitId: string): Promise<ModuleId[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('units')
-    .select('enabled_modules')
-    .eq('id', unitId)
-    .maybeSingle();
+export const getEnabledModules = cache(async (unitId: string): Promise<ModuleId[]> => {
+  try {
+    const col = await getCollection('units');
+    const data = await col.findOne({ id: unitId }, { projection: { enabled_modules: 1 } });
 
-  if (error || !data) {
+    if (!data) {
+      return defaultEnabledModules();
+    }
+
+    const raw = (data as UnitEnabledModulesRow).enabled_modules;
+    if (!Array.isArray(raw)) {
+      return defaultEnabledModules();
+    }
+
+    const enabled = new Set(
+      raw.filter((value): value is string => typeof value === 'string').filter(isModuleId),
+    );
+    return MODULE_IDS.filter((id) => enabled.has(id));
+  } catch {
     return defaultEnabledModules();
   }
-
-  const raw = (data as UnitEnabledModulesRow).enabled_modules;
-  if (!Array.isArray(raw)) {
-    return defaultEnabledModules();
-  }
-
-  const enabled = new Set(
-    raw.filter((value): value is string => typeof value === 'string').filter(isModuleId),
-  );
-  return MODULE_IDS.filter((id) => enabled.has(id));
-}
+});

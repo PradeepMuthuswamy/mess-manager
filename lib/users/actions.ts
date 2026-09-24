@@ -1,13 +1,18 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
-import { createServiceClient } from '@/lib/supabase/service';
+import { getCollection } from '@/lib/mongo';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
+import { writeAudit } from '@/lib/audit/write-audit';
 import type { Role, Capability } from '@/lib/auth/types';
+import type {
+  UserDoc,
+  UserCapabilityDoc,
+  CapabilityTemplateDoc,
+  DependantDoc,
+} from '@/lib/users/types';
 import { sendInvitationEmail } from '@/lib/email/resend';
-import { issueAuthConfirmLink } from '@/lib/auth/email-links';
 import { inviteUserSchema, roleEnum } from '@/lib/schemas/users';
 import { opsInviteBlock } from '@/lib/users/invite-rules';
 
@@ -15,38 +20,69 @@ const USERS_PATH = '/users';
 
 export async function fetchUnitUsersAction(unitId?: string | null) {
   const caller = await requireUser();
-  
+
   // Resolve target unit: unit_admin and mess_secretary are locked to their homeUnitId
-  const targetUnit = (caller.role === 'unit_admin' || caller.role === 'mess_secretary') ? caller.homeUnitId : unitId ?? caller.activeUnitId;
-  
+  const targetUnit =
+    caller.role === 'unit_admin' || caller.role === 'mess_secretary'
+      ? caller.homeUnitId
+      : unitId ?? caller.activeUnitId;
+
   await requireCapability('users.read', targetUnit);
 
-  const supabase = await createClient();
-  let q = supabase
-    .from('profiles')
-    .select('id, email, full_name, role, unit_id, is_active, rank, service_no, display_name, created_at, updated_at, user_capabilities(capability, unit_id)')
-    .order('full_name', { ascending: true });
-
+  const usersCol = await getCollection<UserDoc>('users');
+  const filter: Record<string, unknown> = {};
   if (targetUnit) {
-    q = q.eq('unit_id', targetUnit);
+    filter.unit_id = targetUnit;
   }
 
-  const { data, error } = await q;
-  if (error) return { error: error.message };
+  const users = await usersCol.find(filter).sort({ full_name: 1 }).toArray();
+  const userIds = users.map((u) => u.id);
+
+  const capsCol = await getCollection<UserCapabilityDoc>('user_capabilities');
+  const caps = await capsCol.find({ user_id: { $in: userIds } }).toArray();
+
+  const capsByUser = new Map<string, { capability: Capability; unit_id: string | null }[]>();
+  for (const c of caps) {
+    const list = capsByUser.get(c.user_id) ?? [];
+    list.push({ capability: c.capability, unit_id: c.unit_id });
+    capsByUser.set(c.user_id, list);
+  }
+
+  const data = users.map((u) => ({
+    id: u.id,
+    email: u.email ?? null,
+    full_name: u.full_name ?? null,
+    role: u.role,
+    unit_id: u.unit_id ?? null,
+    is_active: u.is_active ?? true,
+    rank: u.rank ?? null,
+    service_no: u.service_no ?? null,
+    display_name: u.display_name ?? u.full_name ?? null,
+    created_at: u.created_at,
+    updated_at: u.updated_at,
+    user_capabilities: capsByUser.get(u.id) ?? [],
+  }));
 
   return { ok: true, data };
 }
 
 export async function fetchCapabilityTemplatesAction() {
   await requireUser();
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('capability_templates')
-    .select('id, name, description, capabilities, is_system, created_at, updated_at')
-    .order('name', { ascending: true });
+  const col = await getCollection<CapabilityTemplateDoc>('capability_templates');
+  const data = await col.find({}).sort({ name: 1 }).toArray();
 
-  if (error) return { error: error.message };
-  return { ok: true, data };
+  return {
+    ok: true,
+    data: data.map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description ?? null,
+      capabilities: t.capabilities ?? [],
+      is_system: Boolean(t.is_system),
+      created_at: t.created_at,
+      updated_at: t.updated_at,
+    })),
+  };
 }
 
 export async function inviteUserAction(input: {
@@ -72,49 +108,92 @@ export async function inviteUserAction(input: {
   }
 
   const targetRole = parsed.data.role;
-  const targetUnit = parsed.data.unit_id;
+  const targetUnit = parsed.data.unit_id ?? null;
+  const normalizedEmail = input.email.toLowerCase().trim();
 
-  const admin = createServiceClient();
-  const invited = await issueAuthConfirmLink(admin, {
-    type: 'invite',
-    email: input.email,
-    next: '/accept-invite',
-    data: {
-      ...(input.full_name ? { full_name: input.full_name } : {}),
-      role: targetRole,
-      unit_id: targetUnit,
-    },
-  });
+  const usersCol = await getCollection<UserDoc>('users');
+  const existing = await usersCol.findOne({ email: normalizedEmail });
 
-  if (invited.error || !invited.link || !invited.userId) {
-    return { error: invited.error?.message ?? 'Could not trigger invitation.' };
-  }
-  const invitedUserId = invited.userId;
+  const invitedUserId = existing?.id || crypto.randomUUID();
+  const now = new Date().toISOString();
 
-  // Update profile with specific details
-  const { error: profErr } = await admin.from('profiles').update({
+  const userDoc: UserDoc = {
+    id: invitedUserId,
+    email: normalizedEmail,
+    full_name: input.full_name || null,
+    display_name: input.full_name || null,
     role: targetRole,
     unit_id: targetUnit,
-    ...(input.full_name ? { full_name: input.full_name } : {}),
-  }).eq('id', invitedUserId);
+    is_active: true,
+    rank: existing?.rank || null,
+    service_no: existing?.service_no || null,
+    created_at: existing?.created_at || now,
+    updated_at: now,
+  };
 
-  if (profErr) {
-    return { error: profErr.message };
+  if (existing) {
+    await usersCol.updateOne({ id: invitedUserId }, { $set: userDoc });
+  } else {
+    await usersCol.insertOne(userDoc);
   }
+
+  // Provision capabilities if template is provided
+  const capsCol = await getCollection<UserCapabilityDoc>('user_capabilities');
+  if (input.capability_template_id && targetUnit) {
+    const tplCol = await getCollection<CapabilityTemplateDoc>('capability_templates');
+    const tpl = await tplCol.findOne({ id: input.capability_template_id });
+    if (tpl?.capabilities && tpl.capabilities.length) {
+      const rows: UserCapabilityDoc[] = tpl.capabilities.map((c) => ({
+        id: crypto.randomUUID(),
+        user_id: invitedUserId,
+        capability: c as Capability,
+        unit_id: targetUnit,
+        granted_by: caller.id,
+        created_at: now,
+      }));
+      await capsCol.insertMany(rows);
+    }
+  }
+
+  // Provision explicit capabilities if provided
+  if (input.capabilities && input.capabilities.length && targetUnit) {
+    const rows: UserCapabilityDoc[] = input.capabilities.map((c) => ({
+      id: crypto.randomUUID(),
+      user_id: invitedUserId,
+      capability: c as Capability,
+      unit_id: targetUnit,
+      granted_by: caller.id,
+      created_at: now,
+    }));
+    await capsCol.insertMany(rows);
+  }
+
+  await writeAudit({
+    table_name: 'users',
+    row_pk: invitedUserId,
+    op: existing ? 'UPDATE' : 'INSERT',
+    changed_by: caller.id,
+    active_unit_id: targetUnit,
+    new_data: userDoc as unknown as Record<string, unknown>,
+  });
 
   // Get unit name for custom invite email
-  let unitName = 'Officers\' Mess';
+  let unitName = "Officers' Mess";
   if (targetUnit) {
-    const { data: unitData } = await admin.from('units').select('name').eq('id', targetUnit).maybeSingle();
+    const unitsCol = await getCollection('units');
+    const unitData = await unitsCol.findOne({ id: targetUnit });
     if (unitData?.name) unitName = unitData.name;
   }
+
+  const token = crypto.randomUUID();
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
+  const inviteLink = `${siteUrl}/accept-invite?token=${token}&email=${encodeURIComponent(normalizedEmail)}`;
 
   try {
     await sendInvitationEmail({
       email: input.email,
       fullName: input.full_name,
-      // Stays on this app so accept-invite can set the password.
-      inviteLink: invited.link,
+      inviteLink,
       unitName,
       role: targetRole,
     });
@@ -123,35 +202,8 @@ export async function inviteUserAction(input: {
     return { error: 'Could not send the invitation email.' };
   }
 
-  // Provision capabilities if template is provided
-  if (input.capability_template_id && targetUnit) {
-    const { data: tpl } = await admin
-      .from('capability_templates')
-      .select('capabilities')
-      .eq('id', input.capability_template_id)
-      .single();
-    if (tpl) {
-      const rows = (tpl.capabilities as string[]).map((c) => ({
-        user_id: invitedUserId,
-        capability: c as never,
-        unit_id: targetUnit,
-      }));
-      if (rows.length) await admin.from('user_capabilities').upsert(rows);
-    }
-  }
-
-  // Provision explicit capabilities if provided
-  if (input.capabilities && input.capabilities.length && targetUnit) {
-    const rows = input.capabilities.map((c) => ({
-      user_id: invitedUserId,
-      capability: c as never,
-      unit_id: targetUnit,
-    }));
-    await admin.from('user_capabilities').upsert(rows);
-  }
-
   revalidatePath(USERS_PATH);
-  return { ok: true, data: { id: invitedUserId, email: invited.email } };
+  return { ok: true, data: { id: invitedUserId, email: input.email } };
 }
 
 export async function updateUserAction(
@@ -162,21 +214,16 @@ export async function updateUserAction(
     rank?: string;
     role?: Role;
     unit_id?: string | null;
-  }
+  },
 ) {
   const caller = await requireUser();
-  
+
   if (userId === caller.id) {
     return { error: 'You cannot edit your own account details from here.' };
   }
 
-  const supabase = await createClient();
-  const { data: target } = await supabase
-    .from('profiles')
-    .select('unit_id, role')
-    .eq('id', userId)
-    .maybeSingle();
-
+  const usersCol = await getCollection<UserDoc>('users');
+  const target = await usersCol.findOne({ id: userId });
   if (!target) return { error: 'User not found.' };
 
   await requireCapability('users.manage', target.unit_id);
@@ -188,7 +235,10 @@ export async function updateUserAction(
     return { error: 'Only super admin may change user roles or units.' };
   }
 
-  if ((caller.role === 'unit_admin' || caller.role === 'mess_secretary') && target.unit_id !== caller.homeUnitId) {
+  if (
+    (caller.role === 'unit_admin' || caller.role === 'mess_secretary') &&
+    target.unit_id !== caller.homeUnitId
+  ) {
     return { error: 'You can only edit users within your own unit.' };
   }
 
@@ -203,34 +253,25 @@ export async function updateUserAction(
     }
   }
 
-  // Update profile
-  const admin = createServiceClient();
-  const { error: updateErr } = await admin
-    .from('profiles')
-    .update({
-      ...(input.full_name !== undefined ? { full_name: input.full_name || null } : {}),
-      ...(input.service_no !== undefined ? { service_no: input.service_no || null } : {}),
-      ...(input.rank !== undefined ? { rank: input.rank || null } : {}),
-      ...(input.role !== undefined ? { role: input.role } : {}),
-      ...(input.unit_id !== undefined ? { unit_id: input.unit_id } : {}),
-    })
-    .eq('id', userId);
+  const now = new Date().toISOString();
+  const updateFields: Partial<UserDoc> = { updated_at: now };
+  if (input.full_name !== undefined) updateFields.full_name = input.full_name || null;
+  if (input.service_no !== undefined) updateFields.service_no = input.service_no || null;
+  if (input.rank !== undefined) updateFields.rank = input.rank || null;
+  if (input.role !== undefined) updateFields.role = input.role;
+  if (input.unit_id !== undefined) updateFields.unit_id = input.unit_id;
 
-  if (updateErr) return { error: updateErr.message };
+  await usersCol.updateOne({ id: userId }, { $set: updateFields });
 
-  // Sync auth user app_metadata if role or unit changes
-  if (input.role !== undefined || input.unit_id !== undefined) {
-    const updateData: any = {};
-    if (input.role !== undefined) {
-      updateData.role = input.role;
-    }
-    if (input.unit_id !== undefined) {
-      updateData.unit_id = input.unit_id;
-    }
-    await admin.auth.admin.updateUserById(userId, {
-      app_metadata: updateData
-    });
-  }
+  await writeAudit({
+    table_name: 'users',
+    row_pk: userId,
+    op: 'UPDATE',
+    changed_by: caller.id,
+    active_unit_id: target.unit_id,
+    old_data: target as unknown as Record<string, unknown>,
+    new_data: { ...target, ...updateFields } as unknown as Record<string, unknown>,
+  });
 
   revalidatePath(USERS_PATH);
   return { ok: true };
@@ -238,20 +279,15 @@ export async function updateUserAction(
 
 export async function updateUserCapabilitiesAction(
   userId: string,
-  capabilities: { capability: Capability; unitId: string }[]
+  capabilities: { capability: Capability; unitId: string }[],
 ) {
   const caller = await requireUser();
   if (userId === caller.id) {
     return { error: 'You cannot edit your own capability permissions.' };
   }
 
-  const supabase = await createClient();
-  const { data: target } = await supabase
-    .from('profiles')
-    .select('unit_id')
-    .eq('id', userId)
-    .maybeSingle();
-
+  const usersCol = await getCollection<UserDoc>('users');
+  const target = await usersCol.findOne({ id: userId });
   if (!target) return { error: 'User not found.' };
 
   await requireCapability('users.manage', target.unit_id);
@@ -260,7 +296,6 @@ export async function updateUserCapabilitiesAction(
     if (target.unit_id !== caller.homeUnitId) {
       return { error: 'You can only manage users within your own unit.' };
     }
-    // Check that unit_admin or mess_secretary is only granting capabilities scoped to their home unit
     for (const cap of capabilities) {
       if (cap.unitId && cap.unitId !== caller.homeUnitId) {
         return { error: 'Cannot grant capabilities outside your own unit.' };
@@ -268,27 +303,30 @@ export async function updateUserCapabilitiesAction(
     }
   }
 
-  const admin = createServiceClient();
-  
-  // Replace: delete then insert
-  const { error: delErr } = await admin
-    .from('user_capabilities')
-    .delete()
-    .eq('user_id', userId);
+  const capsCol = await getCollection<UserCapabilityDoc>('user_capabilities');
+  await capsCol.deleteMany({ user_id: userId });
 
-  if (delErr) return { error: delErr.message };
-
+  const now = new Date().toISOString();
   if (capabilities.length) {
-    const rows = capabilities.map((c) => ({
+    const rows: UserCapabilityDoc[] = capabilities.map((c) => ({
+      id: crypto.randomUUID(),
       user_id: userId,
-      capability: c.capability as never,
+      capability: c.capability,
       unit_id: c.unitId,
       granted_by: caller.id,
+      created_at: now,
     }));
-    
-    const { error: insErr } = await admin.from('user_capabilities').insert(rows);
-    if (insErr) return { error: insErr.message };
+    await capsCol.insertMany(rows);
   }
+
+  await writeAudit({
+    table_name: 'user_capabilities',
+    row_pk: userId,
+    op: 'UPDATE',
+    changed_by: caller.id,
+    active_unit_id: target.unit_id,
+    new_data: { capabilities } as unknown as Record<string, unknown>,
+  });
 
   revalidatePath(USERS_PATH);
   return { ok: true };
@@ -300,28 +338,31 @@ export async function toggleUserActiveAction(userId: string, is_active: boolean)
     return { error: 'You cannot activate or deactivate your own account.' };
   }
 
-  const supabase = await createClient();
-  const { data: target } = await supabase
-    .from('profiles')
-    .select('unit_id')
-    .eq('id', userId)
-    .maybeSingle();
-
+  const usersCol = await getCollection<UserDoc>('users');
+  const target = await usersCol.findOne({ id: userId });
   if (!target) return { error: 'User not found.' };
 
   await requireCapability('users.manage', target.unit_id);
 
-  if ((caller.role === 'unit_admin' || caller.role === 'mess_secretary') && target.unit_id !== caller.homeUnitId) {
+  if (
+    (caller.role === 'unit_admin' || caller.role === 'mess_secretary') &&
+    target.unit_id !== caller.homeUnitId
+  ) {
     return { error: 'You can only manage users within your own unit.' };
   }
 
-  const admin = createServiceClient();
-  const { error } = await admin
-    .from('profiles')
-    .update({ is_active })
-    .eq('id', userId);
+  const now = new Date().toISOString();
+  await usersCol.updateOne({ id: userId }, { $set: { is_active, updated_at: now } });
 
-  if (error) return { error: error.message };
+  await writeAudit({
+    table_name: 'users',
+    row_pk: userId,
+    op: 'UPDATE',
+    changed_by: caller.id,
+    active_unit_id: target.unit_id,
+    old_data: { is_active: target.is_active },
+    new_data: { is_active },
+  });
 
   revalidatePath(USERS_PATH);
   return { ok: true };
@@ -333,25 +374,35 @@ export async function deleteUserAction(userId: string) {
     return { error: 'You cannot delete your own account.' };
   }
 
-  const supabase = await createClient();
-  const { data: target } = await supabase
-    .from('profiles')
-    .select('unit_id')
-    .eq('id', userId)
-    .maybeSingle();
-
+  const usersCol = await getCollection<UserDoc>('users');
+  const target = await usersCol.findOne({ id: userId });
   if (!target) return { error: 'User not found.' };
 
   await requireCapability('users.manage', target.unit_id);
 
-  if ((caller.role === 'unit_admin' || caller.role === 'mess_secretary') && target.unit_id !== caller.homeUnitId) {
+  if (
+    (caller.role === 'unit_admin' || caller.role === 'mess_secretary') &&
+    target.unit_id !== caller.homeUnitId
+  ) {
     return { error: 'You can only manage users within your own unit.' };
   }
 
-  const admin = createServiceClient();
-  // Deleting user from Auth Admin cascades automatically to profiles table
-  const { error: authDelErr } = await admin.auth.admin.deleteUser(userId);
-  if (authDelErr) return { error: authDelErr.message };
+  await usersCol.deleteOne({ id: userId });
+
+  const capsCol = await getCollection<UserCapabilityDoc>('user_capabilities');
+  await capsCol.deleteMany({ user_id: userId });
+
+  const depsCol = await getCollection<DependantDoc>('dependants');
+  await depsCol.deleteMany({ primary_profile_id: userId });
+
+  await writeAudit({
+    table_name: 'users',
+    row_pk: userId,
+    op: 'DELETE',
+    changed_by: caller.id,
+    active_unit_id: target.unit_id,
+    old_data: target as unknown as Record<string, unknown>,
+  });
 
   revalidatePath(USERS_PATH);
   return { ok: true };

@@ -1,6 +1,5 @@
 'use server';
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';

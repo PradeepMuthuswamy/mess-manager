@@ -1,23 +1,17 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
+import { writeAudit } from '@/lib/audit/write-audit';
 import {
   updateLotSchema,
   adjustQtySchema,
 } from '@/lib/schemas/inventory';
-import type { Database } from '@/lib/supabase/database.types';
-
-type UnitInventoryUpdate = Database['public']['Tables']['unit_inventory']['Update'];
 
 const INVENTORY_WRITE = 'inventory.write';
 
-// Every route that renders a StockTable off `unit_inventory`. Grocery split
-// into its own module (/grocery/stock) but the lot actions are shared, so a
-// save from there must invalidate that route too — revalidating only '/stock'
-// left the grocery page serving a stale RSC cache after a write.
 const STOCK_ROUTES = ['/stock', '/grocery/stock'] as const;
 
 function revalidateStock(): void {
@@ -31,8 +25,6 @@ type ActionResult = {
   details?: unknown;
 };
 
-// Postgres `date` columns expect a 'YYYY-MM-DD' string. zod coerces
-// `acquired_on` to a Date; serialize just the calendar date.
 function toDateString(d: Date | null | undefined): string | null | undefined {
   if (d === undefined) return undefined;
   if (d === null) return null;
@@ -43,22 +35,15 @@ export async function updateLotAction(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
-  // Authenticated session first — never touch the DB for an anon caller.
-  await requireUser();
+  const user = await requireUser();
 
   const id = String(formData.get('id') ?? '');
   if (!id) return { error: 'Missing id' };
 
-  const supabase = await createClient();
-  // Resolve the lot's unit so the capability check is scoped correctly.
-  const { data: existing } = await supabase
-    .from('unit_inventory')
-    .select('unit_id')
-    .eq('id', id)
-    .single();
+  const db = await getDb();
+  const existing = await db.collection('unit_inventory').findOne({ id });
   if (!existing) return { error: 'Lot not found' };
 
-  // FIRST line of defence — never rely on RLS alone.
   await requireCapability(INVENTORY_WRITE, existing.unit_id);
 
   const parsed = updateLotSchema.safeParse({
@@ -73,15 +58,31 @@ export async function updateLotAction(
   });
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const patch: UnitInventoryUpdate = {};
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    updated_at: now,
+    updated_by: user.id,
+  };
   if (parsed.data.pack_size_id !== undefined) patch.variant_id = parsed.data.pack_size_id;
   if (parsed.data.rate !== undefined) patch.rate = parsed.data.rate;
   if (parsed.data.acquired_on !== undefined) patch.acquired_on = toDateString(parsed.data.acquired_on);
   if (parsed.data.source !== undefined) patch.source = parsed.data.source;
   if (parsed.data.is_active !== undefined) patch.is_active = parsed.data.is_active;
 
-  const { error } = await supabase.from('unit_inventory').update(patch).eq('id', id);
-  if (error) return { error: error.message };
+  await db.collection('unit_inventory').updateOne(
+    { id },
+    { $set: patch },
+  );
+
+  await writeAudit({
+    table_name: 'unit_inventory',
+    row_pk: id,
+    op: 'UPDATE',
+    active_unit_id: existing.unit_id,
+    changed_by: user.id,
+    old_data: existing,
+    new_data: { ...existing, ...patch },
+  });
 
   revalidateStock();
   return { ok: true };
@@ -91,8 +92,7 @@ export async function adjustQtyAction(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
-  // Authenticated session first — never touch the DB for an anon caller.
-  await requireUser();
+  const user = await requireUser();
 
   const parsed = adjustQtySchema.safeParse({
     id: formData.get('id'),
@@ -100,22 +100,33 @@ export async function adjustQtyAction(
   });
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase
-    .from('unit_inventory')
-    .select('unit_id')
-    .eq('id', parsed.data.id)
-    .single();
+  const db = await getDb();
+  const existing = await db.collection('unit_inventory').findOne({ id: parsed.data.id });
   if (!existing) return { error: 'Lot not found' };
 
-  // FIRST line of defence — never rely on RLS alone.
   await requireCapability(INVENTORY_WRITE, existing.unit_id);
 
-  const { error } = await supabase
-    .from('unit_inventory')
-    .update({ qty_packs: parsed.data.qty_packs })
-    .eq('id', parsed.data.id);
-  if (error) return { error: error.message };
+  const now = new Date().toISOString();
+  await db.collection('unit_inventory').updateOne(
+    { id: parsed.data.id },
+    {
+      $set: {
+        qty_packs: parsed.data.qty_packs,
+        updated_at: now,
+        updated_by: user.id,
+      },
+    },
+  );
+
+  await writeAudit({
+    table_name: 'unit_inventory',
+    row_pk: parsed.data.id,
+    op: 'UPDATE',
+    active_unit_id: existing.unit_id,
+    changed_by: user.id,
+    old_data: existing,
+    new_data: { ...existing, qty_packs: parsed.data.qty_packs, updated_at: now },
+  });
 
   revalidateStock();
   return { ok: true };
@@ -125,65 +136,43 @@ export async function deactivateLotAction(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
-  // Authenticated session first — never touch the DB for an anon caller.
-  await requireUser();
+  const user = await requireUser();
 
   const id = String(formData.get('id') ?? '');
   if (!id) return { error: 'Missing id' };
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase
-    .from('unit_inventory')
-    .select('unit_id')
-    .eq('id', id)
-    .single();
+  const db = await getDb();
+  const existing = await db.collection('unit_inventory').findOne({ id });
   if (!existing) return { error: 'Lot not found' };
 
-  // FIRST line of defence — never rely on RLS alone.
   await requireCapability(INVENTORY_WRITE, existing.unit_id);
 
-  const { error } = await supabase
-    .from('unit_inventory')
-    .update({ is_active: false })
-    .eq('id', id);
-  if (error) return { error: error.message };
+  const now = new Date().toISOString();
+  await db.collection('unit_inventory').updateOne(
+    { id },
+    {
+      $set: {
+        is_active: false,
+        updated_at: now,
+        updated_by: user.id,
+      },
+    },
+  );
+
+  await writeAudit({
+    table_name: 'unit_inventory',
+    row_pk: id,
+    op: 'UPDATE',
+    active_unit_id: existing.unit_id,
+    changed_by: user.id,
+    old_data: existing,
+    new_data: { ...existing, is_active: false, updated_at: now },
+  });
 
   revalidateStock();
   return { ok: true };
 }
 
-export async function deactivateLotsAction(ids: string[]): Promise<ActionResult> {
-  // Authenticated session first — never touch the DB for an anon caller.
-  await requireUser();
-
-  if (!ids || ids.length === 0) {
-    return { error: 'Missing ids' };
-  }
-
-  const supabase = await createClient();
-  const { data: existing, error: selectError } = await supabase
-    .from('unit_inventory')
-    .select('unit_id')
-    .in('id', ids);
-
-  if (selectError) return { error: selectError.message };
-  if (!existing || existing.length === 0) return { error: 'Lots not found' };
-
-  const distinctUnitIds = Array.from(new Set(existing.map((e) => e.unit_id)));
-  for (const unitId of distinctUnitIds) {
-    await requireCapability(INVENTORY_WRITE, unitId);
-  }
-
-  const { error: updateError } = await supabase
-    .from('unit_inventory')
-    .update({ is_active: false })
-    .in('id', ids);
-
-  if (updateError) return { error: updateError.message };
-
-  revalidateStock();
-  return { ok: true };
-}
 
 export async function createLotsAction(
   lots: Array<{
@@ -195,7 +184,7 @@ export async function createLotsAction(
     source: string | null;
   }>,
 ): Promise<ActionResult> {
-  await requireUser();
+  const user = await requireUser();
   if (!lots || lots.length === 0) return { error: 'No lots provided' };
 
   for (const lot of lots) {
@@ -209,37 +198,69 @@ export async function createLotsAction(
     await requireCapability(INVENTORY_WRITE, unitId);
   }
 
-  const supabase = await createClient();
-
-  // Verify that none of the variants belong to the grocery category.
+  const db = await getDb();
   const variantIds = lots.map((l) => l.variant_id);
-  const { data: variants, error: variantErr } = await supabase
-    .from('v_items_current')
-    .select('id, category')
-    .in('id', variantIds);
 
-  if (variantErr) return { error: variantErr.message };
-  const isGrocery = variants?.some((v) => v.category === 'grocery');
-  if (isGrocery) {
+  // Check if any variant is in grocery category
+  const groceryVariants = await db.collection('product_variants').aggregate([
+    { $match: { id: { $in: variantIds } } },
+    {
+      $lookup: {
+        from: 'products',
+        localField: 'product_id',
+        foreignField: 'id',
+        as: 'product',
+      },
+    },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'categories',
+        localField: 'product.category_id',
+        foreignField: 'id',
+        as: 'category',
+      },
+    },
+    { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+    { $match: { 'category.slug': 'grocery' } },
+  ]).toArray();
+
+  if (groceryVariants.length > 0) {
     return { error: 'Adding stock for grocery items is disabled' };
   }
 
-  const { error } = await supabase
-    .from('unit_inventory')
-    .insert(
-      lots.map((l) => ({
-        unit_id: l.unit_id,
-        variant_id: l.variant_id,
-        qty_packs: l.qty_packs,
-        rate: l.rate,
-        acquired_on: l.acquired_on ? l.acquired_on.slice(0, 10) : null,
-        source: l.source,
-      }))
-    );
+  const now = new Date().toISOString();
+  const docs = lots.map((l) => {
+    const lotId = crypto.randomUUID();
+    return {
+      id: lotId,
+      unit_id: l.unit_id,
+      variant_id: l.variant_id,
+      qty_packs: l.qty_packs,
+      rate: l.rate,
+      acquired_on: l.acquired_on ? l.acquired_on.slice(0, 10) : null,
+      source: l.source ?? null,
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+      created_by: user.id,
+      updated_by: user.id,
+    };
+  });
 
-  if (error) return { error: error.message };
+  await db.collection('unit_inventory').insertMany(docs);
+
+  for (const doc of docs) {
+    await writeAudit({
+      table_name: 'unit_inventory',
+      row_pk: doc.id,
+      op: 'INSERT',
+      active_unit_id: doc.unit_id,
+      changed_by: user.id,
+      new_data: doc,
+    });
+  }
 
   revalidateStock();
   return { ok: true };
 }
-

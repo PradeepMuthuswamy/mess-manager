@@ -1,14 +1,93 @@
 // Shared types for the ration module.
 // NOT marked `server-only` so client components can `import type` from here.
 
-import type { Database } from '@/lib/supabase/database.types';
+import type { RationClass, RationTerrain } from '@/lib/schemas/ration';
 import type { RationStockSource, RationStockTxType } from '@/lib/schemas/ration';
 
-export type RationScaleRow            = Database['public']['Tables']['ration_scales']['Row'];
-export type RationScaleItemVersionRow = Database['public']['Tables']['ration_scale_item_versions']['Row'];
-export type RationScaleItemCurrentRow = Database['public']['Views']['v_ration_scale_items_current']['Row'];
+export type { RationClass, RationTerrain, RationStockSource, RationStockTxType };
 
-export type RationScaleListItem = RationScaleRow & {
+export interface RationScale {
+  id: string;
+  unit_id: string | null;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  rank_class: RationClass;
+  terrain: RationTerrain;
+  created_at: string;
+  updated_at: string;
+  created_by?: string | null;
+  updated_by?: string | null;
+}
+
+export interface RationScaleItemVersion {
+  id: string;
+  scale_id: string;
+  variant_id: string;
+  auth_qty: number;
+  uom: string;
+  notes: string | null;
+  valid_from: string;
+  valid_to: string | null;
+  created_at: string;
+  created_by?: string | null;
+}
+
+export interface RationConsumption {
+  id: string;
+  unit_id: string;
+  consumption_date: string;
+  variant_id: string;
+  quantity: number;
+  created_at: string;
+  updated_at: string;
+  created_by?: string | null;
+  updated_by?: string | null;
+}
+
+export interface RationStockTransaction {
+  id: string;
+  unit_id: string;
+  variant_id: string;
+  transaction_date: string;
+  type: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+  source: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by?: string | null;
+  updated_by?: string | null;
+}
+
+export type RationScaleRow = RationScale;
+export type RationScaleItemVersionRow = RationScaleItemVersion;
+export type RationConsumptionRow = RationConsumption;
+export type RationStockTransactionRow = RationStockTransaction;
+
+export type RationScaleItemCurrentRow = {
+  version_id: string;
+  scale_id: string;
+  variant_id?: string;
+  item_id?: string;
+  unit_id: string | null;
+  scale_name: string;
+  rank_class: RationClass;
+  terrain: RationTerrain;
+  scale_active: boolean;
+  category: string;
+  item_name: string;
+  sku: string | null;
+  auth_qty: number;
+  uom: string;
+  notes: string | null;
+  valid_from: string;
+  created_by: string | null;
+};
+
+export type RationScaleListItem = RationScale & {
   item_count: number;
 };
 
@@ -20,20 +99,12 @@ export type AuthorisationMatrixRow = {
   byScale: Record<string, { auth_qty: number; uom: string; notes: string | null }>;
 };
 
-export type RationClass = Database['public']['Enums']['ration_class'];
-export type RationTerrain = Database['public']['Enums']['ration_terrain'];
-
 export type EligibleItem = {
   id: string;
   name: string;
   category: string;
   uom: string;
 };
-
-export type RationStockTransactionRow = Database['public']['Tables']['ration_stock_transactions']['Row'];
-export type RationConsumptionRow = Database['public']['Tables']['ration_consumptions']['Row'];
-
-export type { RationStockSource, RationStockTxType };
 
 export type ListScalesOpts = {
   unitId: string;

@@ -45,6 +45,8 @@ import {
 } from '@/lib/users/actions';
 import { UserFormDialog } from './user-form-dialog';
 import { capabilityDomainLabel } from '@/lib/auth/types';
+import type { Capability } from '@/lib/auth/types';
+import type { UserRow, UnitOption, TemplateOption } from '@/lib/users/types';
 import { useAppDispatch, useAppSelector } from '@/lib/redux/hooks';
 import {
   selectUsersUi,
@@ -54,9 +56,9 @@ import {
 } from '@/lib/redux/users/slice';
 
 interface UsersDashboardProps {
-  initialUsers: any[];
-  initialUnits: any[];
-  initialTemplates: any[];
+  initialUsers: UserRow[];
+  initialUnits: UnitOption[];
+  initialTemplates: TemplateOption[];
 }
 
 export function UsersDashboard({
@@ -70,7 +72,7 @@ export function UsersDashboard({
   const { isFormOpen, editingUser } = useAppSelector(selectUsersUi);
 
   // State
-  const [users, setUsers] = useState<any[]>(initialUsers);
+  const [users, setUsers] = useState<UserRow[]>(initialUsers);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -123,7 +125,7 @@ export function UsersDashboard({
     });
   };
 
-  const handleOpenEdit = (user: any) => {
+  const handleOpenEdit = (user: UserRow) => {
     dispatch(openEdit({ user }));
   };
 
@@ -292,7 +294,7 @@ export function UsersDashboard({
                 // Get unique domains from user's capabilities
                 const capabilityList = u.user_capabilities || [];
                 const uniqueDomains = Array.from(
-                  new Set(capabilityList.map((uc: any) => capabilityDomainLabel(uc.capability as any)))
+                  new Set(capabilityList.map((uc) => capabilityDomainLabel(uc.capability)))
                 );
 
                 const displayName = u.display_name || u.full_name || u.email;
@@ -351,7 +353,7 @@ export function UsersDashboard({
                         <span className="text-xs text-muted-foreground">No capabilities</span>
                       ) : (
                         <div className="flex flex-wrap items-center gap-1">
-                          {uniqueDomains.slice(0, 3).map((d: any) => (
+                          {uniqueDomains.slice(0, 3).map((d: string) => (
                             <Badge key={d} variant="secondary" className="text-[10px] py-0">
                               {d}
                             </Badge>

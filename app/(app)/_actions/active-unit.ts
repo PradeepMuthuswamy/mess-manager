@@ -3,6 +3,7 @@
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 import { requireRole } from '@/lib/auth/require-role';
+import { getDb } from '@/lib/mongo';
 import { ACTIVE_UNIT_COOKIE } from '@/lib/auth/types';
 
 export async function setActiveUnitAction(unitId: string): Promise<void> {
@@ -13,6 +14,12 @@ export async function setActiveUnitAction(unitId: string): Promise<void> {
   if (unitId === 'all') {
     cookieStore.delete(ACTIVE_UNIT_COOKIE);
   } else {
+    const db = await getDb();
+    const unit = await db
+      .collection('units')
+      .findOne({ id: unitId, is_active: true }, { projection: { id: 1 } });
+    if (!unit) return;
+
     cookieStore.set(ACTIVE_UNIT_COOKIE, unitId, {
       httpOnly: false,
       sameSite: 'lax',

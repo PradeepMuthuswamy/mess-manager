@@ -1,14 +1,24 @@
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { verifyAuthToken } from '@/lib/auth/email-links';
 import { AcceptInviteForm } from '../_components/accept-invite-form';
 
-export default async function AcceptInvitePage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export const dynamic = 'force-dynamic';
 
-  if (!user) {
+export default async function AcceptInvitePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const params = await searchParams;
+  const rawToken = params.token ?? params.token_hash;
+  const token = typeof rawToken === 'string' ? rawToken : undefined;
+
+  if (!token) {
+    redirect('/sign-in?error=invalid_link');
+  }
+
+  const { valid, verification } = await verifyAuthToken(token, 'invite');
+  if (!valid || !verification) {
     redirect('/sign-in?error=invalid_link');
   }
 
@@ -22,7 +32,10 @@ export default async function AcceptInvitePage() {
           Set your password to activate your account.
         </p>
       </div>
-      <AcceptInviteForm />
+      <AcceptInviteForm
+        token={token}
+        initialFullName={verification.metadata?.fullName}
+      />
     </div>
   );
 }

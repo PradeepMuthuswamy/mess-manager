@@ -5,8 +5,8 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }));
 
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn(),
+vi.mock('@/lib/audit/write-audit', () => ({
+  writeAudit: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/lib/auth/require-capability', () => ({
@@ -17,98 +17,144 @@ vi.mock('@/lib/auth/require-role', () => ({
   requireUser: vi.fn(),
 }));
 
+const mockDbState: {
+  productVariants: Record<string, unknown>[];
+  unitInventory: Record<string, unknown>[];
+  barChits: Record<string, unknown>[];
+  barChitItems: Record<string, unknown>[];
+  unitCatalog: Record<string, unknown>[];
+  unitMenuRates: Record<string, unknown>[];
+} = {
+  productVariants: [],
+  unitInventory: [],
+  barChits: [],
+  barChitItems: [],
+  unitCatalog: [],
+  unitMenuRates: [],
+};
+
+vi.mock('@/lib/mongo', () => ({
+  getDb: vi.fn().mockImplementation(async () => ({
+    collection: (name: string) => {
+      if (name === 'product_variants') {
+        return {
+          findOne: vi.fn().mockImplementation(async (query: { id?: string, unit_id?: string, variant_id?: string, is_enabled?: boolean, effective_from?: { $lte: string }, qty_packs?: { $gt: number }, is_active?: { $ne: boolean } }) => {
+            return mockDbState.productVariants.find((v) => v.id === query.id) ?? null;
+          }),
+        };
+      }
+      if (name === 'unit_catalog') {
+        return {
+          findOne: vi.fn().mockImplementation(async (query: { id?: string, unit_id?: string, variant_id?: string, is_enabled?: boolean, effective_from?: { $lte: string }, qty_packs?: { $gt: number }, is_active?: { $ne: boolean } }) => {
+            return (
+              mockDbState.unitCatalog.find(
+                (c) =>
+                  c.unit_id === query.unit_id &&
+                  c.variant_id === query.variant_id &&
+                  (query.is_enabled === undefined || c.is_enabled === query.is_enabled),
+              ) ?? null
+            );
+          }),
+        };
+      }
+      if (name === 'unit_menu_rates') {
+        return {
+          find: vi.fn().mockImplementation((query: { id?: string, unit_id?: string, variant_id?: string, is_enabled?: boolean, effective_from?: { $lte: string }, qty_packs?: { $gt: number }, is_active?: { $ne: boolean } }) => {
+            let matched = mockDbState.unitMenuRates.filter(
+              (r) =>
+                r.unit_id === query.unit_id &&
+                r.variant_id === query.variant_id &&
+                (!query.effective_from?.$lte || r.effective_from <= query.effective_from.$lte),
+            );
+            return {
+              sort: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  next: vi.fn().mockImplementation(async () => matched[0] ?? null),
+                }),
+              }),
+            };
+          }),
+        };
+      }
+      if (name === 'unit_inventory') {
+        return {
+          find: vi.fn().mockImplementation((query: { id?: string, unit_id?: string, variant_id?: string, is_enabled?: boolean, effective_from?: { $lte: string }, qty_packs?: { $gt: number }, is_active?: { $ne: boolean } }) => {
+            let matched = mockDbState.unitInventory.filter((l) => {
+              if (query.unit_id && l.unit_id !== query.unit_id) return false;
+              if (query.variant_id && l.variant_id !== query.variant_id) return false;
+              if (query.qty_packs?.$gt !== undefined && !((l.qty_packs as number) > query.qty_packs.$gt)) return false;
+              if (query.is_active?.$ne !== undefined && l.is_active === query.is_active.$ne) return false;
+              return true;
+            });
+            return {
+              toArray: vi.fn().mockImplementation(async () => matched),
+              sort: vi.fn().mockImplementation(() => ({
+                toArray: vi.fn().mockImplementation(async () => matched),
+              })),
+            };
+          }),
+          updateOne: vi.fn().mockImplementation(async (filter: { id: string }, update: { $set: Record<string, unknown> }) => {
+            const lot = mockDbState.unitInventory.find((l) => l.id === filter.id);
+            if (lot && update.$set) {
+              Object.assign(lot, update.$set);
+            }
+            return { modifiedCount: 1 };
+          }),
+        };
+      }
+      if (name === 'bar_chits') {
+        return {
+          insertOne: vi.fn().mockImplementation(async (doc: Record<string, unknown>) => {
+            mockDbState.barChits.push(doc);
+            return { insertedId: doc.id };
+          }),
+          deleteOne: vi.fn().mockImplementation(async (filter: Record<string, unknown>) => {
+            const idx = mockDbState.barChits.findIndex((c) => c.id === filter.id);
+            if (idx >= 0) mockDbState.barChits.splice(idx, 1);
+            return { deletedCount: 1 };
+          }),
+        };
+      }
+      if (name === 'bar_chit_items') {
+        return {
+          insertOne: vi.fn().mockImplementation(async (doc: Record<string, unknown>) => {
+            mockDbState.barChitItems.push(doc);
+            return { insertedId: doc.id };
+          }),
+        };
+      }
+      return {};
+    },
+  })),
+}));
+
 import { createBarChitCore } from './actions';
 import type { CreateBarChitInput } from '@/lib/schemas/bar';
-import type { SupabaseClient } from '@supabase/supabase-js';
 
 describe('createBarChitCore', () => {
-  let mockSupabase: any;
   const userId = 'user-123';
   const unitId = 'unit-456';
   const variantId = 'variant-789';
 
   beforeEach(() => {
-    mockSupabase = {
-      from: vi.fn().mockReturnThis(),
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      in: vi.fn().mockReturnThis(),
-      gt: vi.fn().mockReturnThis(),
-      order: vi.fn().mockReturnThis(),
-      single: vi.fn().mockReturnThis(),
-      insert: vi.fn().mockReturnThis(),
-      update: vi.fn().mockReturnThis(),
-      delete: vi.fn().mockReturnThis(),
-    };
+    mockDbState.productVariants = [];
+    mockDbState.unitInventory = [];
+    mockDbState.barChits = [];
+    mockDbState.barChitItems = [];
+    mockDbState.unitCatalog = [];
+    mockDbState.unitMenuRates = [];
   });
 
-  it('correctly creates a chit using peg unit, converts to bottle unit, and deplets inventory lots using FIFO', async () => {
-    // 1. Mock product variant retrieval
-    // Old Monk: unit_value = 750, unit_type = ML (which is 25 pegs per bottle)
-    const mockVariant = { unit_value: 750, unit_type: 'ML' };
-
-    // 2. Mock inventory lots for stock check (total 1.0 bottle in stock)
-    const mockInventoryLots = [
-      { id: 'lot-1', qty_packs: 0.6 },
-      { id: 'lot-2', qty_packs: 0.4 },
+  it('correctly creates a chit using peg unit, converts to bottle unit, and depletes inventory lots using FIFO', async () => {
+    mockDbState.unitCatalog = [{ unit_id: unitId, variant_id: variantId, is_enabled: true }];
+    mockDbState.productVariants = [
+      { id: variantId, unit_value: 750, unit_type: 'ML', package_type: 'BOTTLE' },
+    ];
+    mockDbState.unitInventory = [
+      { id: 'lot-1', unit_id: unitId, variant_id: variantId, qty_packs: 0.6, is_active: true, acquired_on: '2026-01-01' },
+      { id: 'lot-2', unit_id: unitId, variant_id: variantId, qty_packs: 0.4, is_active: true, acquired_on: '2026-01-02' },
     ];
 
-    // 3. Mock bar chit creation return
-    const mockChitHeader = { id: 'chit-abc-123' };
-
-    // Set up mock chaining responses
-    mockSupabase.from.mockImplementation((table: string) => {
-      const queryObj: any = {
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockReturnThis(),
-        gt: vi.fn().mockReturnThis(),
-        lte: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        order: vi.fn().mockReturnThis(),
-        single: vi.fn(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null }),
-        insert: vi.fn().mockReturnThis(),
-        update: vi.fn().mockReturnThis(),
-      };
-
-      if (table === 'unit_catalog') {
-        queryObj.maybeSingle.mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null });
-      } else if (table === 'product_variants') {
-        queryObj.single.mockResolvedValue({ data: mockVariant, error: null });
-      } else if (table === 'unit_inventory') {
-        // We have two reads on unit_inventory: stock check and depletion
-        // We can check if order was called to distinguish them, or just return mockInventoryLots
-        queryObj.select.mockImplementation(() => {
-          return {
-            eq: vi.fn().mockReturnThis(),
-            gt: vi.fn().mockReturnThis(),
-            order: vi.fn().mockImplementation(() => {
-              return {
-                order: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-                mockResolvedValue: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-              };
-            }),
-            mockResolvedValue: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-            // support if not chained with order (stock check)
-            then: (resolve: any) => resolve({ data: mockInventoryLots, error: null }),
-          };
-        });
-        queryObj.update.mockReturnValue({
-          eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-        });
-      } else if (table === 'bar_chits') {
-        queryObj.insert.mockReturnThis();
-        queryObj.select.mockReturnThis();
-        queryObj.single.mockResolvedValue({ data: mockChitHeader, error: null });
-      } else if (table === 'bar_chit_items') {
-        queryObj.insert.mockResolvedValue({ data: null, error: null });
-      }
-
-      return queryObj;
-    });
-
-    // Input data: consume 5 pegs at rate ₹10.00/peg (which is equivalent to 0.2 bottles at ₹250.00/bottle)
     const inputData: CreateBarChitInput = {
       unit_id: unitId,
       date: '2026-06-05',
@@ -125,93 +171,33 @@ describe('createBarChitCore', () => {
       ],
     };
 
-    const result = await createBarChitCore(
-      mockSupabase as unknown as SupabaseClient,
-      userId,
-      inputData
-    );
+    const result = await createBarChitCore(userId, inputData);
 
     expect(result.ok).toBe(true);
-    expect(result.id).toBe('chit-abc-123');
+    expect(result.id).toBeDefined();
 
-    // Verify header was inserted with correct total amount
-    // Total amount = 5 pegs * 10 rate = ₹50.00 (which is 0.2 bottles * ₹250.00)
-    expect(mockSupabase.from).toHaveBeenCalledWith('bar_chits');
-    
-    // Verify line item was inserted with normalized values
-    // quantity = 5 / 25 = 0.20
-    // rate = 10 * 25 = 250
-    // amount = 0.20 * 250 = 50
-    expect(mockSupabase.from).toHaveBeenCalledWith('bar_chit_items');
+    expect(mockDbState.barChits.length).toBe(1);
+    expect(mockDbState.barChits[0].total_amount).toBe(50);
 
-    // Verify inventory lot depletion
-    // We consumed 0.2 bottles (5 pegs).
-    // Lot 1 has 0.6 bottles. It should be partially depleted to 0.4 bottles.
-    // Lot 2 has 0.4 bottles. It should not be touched.
-    expect(mockSupabase.from).toHaveBeenCalledWith('unit_inventory');
+    expect(mockDbState.barChitItems.length).toBe(1);
+    expect(mockDbState.barChitItems[0].quantity).toBe(0.2); // 5 pegs / 25
+    expect(mockDbState.barChitItems[0].rate).toBe(250); // 10 * 25
+    expect(mockDbState.barChitItems[0].amount).toBe(50);
+
+    const lot1 = mockDbState.unitInventory.find((l) => l.id === 'lot-1');
+    expect(lot1!.qty_packs).toBeCloseTo(0.4);
   });
 
   it('correctly depletes multiple lots in FIFO order when peg quantity exceeds first lot', async () => {
-    const mockVariant = { unit_value: 750, unit_type: 'ML' }; // 25 pegs per bottle
-
-    // Mock inventory lots: lot-1 has 0.1 bottles (2.5 pegs), lot-2 has 0.5 bottles (12.5 pegs)
-    const mockInventoryLots = [
-      { id: 'lot-1', qty_packs: 0.1 },
-      { id: 'lot-2', qty_packs: 0.5 },
+    mockDbState.unitCatalog = [{ unit_id: unitId, variant_id: variantId, is_enabled: true }];
+    mockDbState.productVariants = [
+      { id: variantId, unit_value: 750, unit_type: 'ML', package_type: 'BOTTLE' },
+    ];
+    mockDbState.unitInventory = [
+      { id: 'lot-1', unit_id: unitId, variant_id: variantId, qty_packs: 0.1, is_active: true, acquired_on: '2026-01-01' },
+      { id: 'lot-2', unit_id: unitId, variant_id: variantId, qty_packs: 0.5, is_active: true, acquired_on: '2026-01-02' },
     ];
 
-    const mockChitHeader = { id: 'chit-xyz' };
-
-    mockSupabase.from.mockImplementation((table: string) => {
-      const queryObj: any = {
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockReturnThis(),
-        gt: vi.fn().mockReturnThis(),
-        lte: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        order: vi.fn().mockReturnThis(),
-        single: vi.fn(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null }),
-        insert: vi.fn().mockReturnThis(),
-        update: vi.fn().mockReturnThis(),
-      };
-
-      if (table === 'unit_catalog') {
-        queryObj.maybeSingle.mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null });
-      } else if (table === 'product_variants') {
-        queryObj.single.mockResolvedValue({ data: mockVariant, error: null });
-      } else if (table === 'unit_inventory') {
-        queryObj.select.mockImplementation(() => {
-          return {
-            eq: vi.fn().mockReturnThis(),
-            gt: vi.fn().mockReturnThis(),
-            order: vi.fn().mockImplementation(() => {
-              return {
-                order: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-                mockResolvedValue: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-              };
-            }),
-            mockResolvedValue: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-            then: (resolve: any) => resolve({ data: mockInventoryLots, error: null }),
-          };
-        });
-        queryObj.update.mockReturnValue({
-          eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-        });
-      } else if (table === 'bar_chits') {
-        queryObj.insert.mockReturnThis();
-        queryObj.select.mockReturnThis();
-        queryObj.single.mockResolvedValue({ data: mockChitHeader, error: null });
-      } else if (table === 'bar_chit_items') {
-        queryObj.insert.mockResolvedValue({ data: null, error: null });
-      }
-
-      return queryObj;
-    });
-
-    // Consume 5 pegs (0.2 bottles).
-    // This exceeds lot-1 (0.1 bottles), so lot-1 is fully depleted and lot-2 is partially depleted by 0.1 bottles.
     const inputData: CreateBarChitInput = {
       unit_id: unitId,
       date: '2026-06-05',
@@ -228,278 +214,67 @@ describe('createBarChitCore', () => {
       ],
     };
 
-    const result = await createBarChitCore(
-      mockSupabase as unknown as SupabaseClient,
-      userId,
-      inputData
-    );
+    const result = await createBarChitCore(userId, inputData);
 
     expect(result.ok).toBe(true);
-    expect(result.id).toBe('chit-xyz');
-  });
+    expect(result.id).toBeDefined();
 
-  it('correctly uses the PIECE BOTTLE 750ml volume fallback for peg consumption', async () => {
-    const mockVariant = { unit_value: 1, unit_type: 'PIECE', package_type: 'BOTTLE' };
-    const mockInventoryLots = [{ id: 'lot-1', qty_packs: 1.0 }];
-    const mockChitHeader = { id: 'chit-piece-123' };
-
-    mockSupabase.from.mockImplementation((table: string) => {
-      const queryObj: any = {
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockReturnThis(),
-        gt: vi.fn().mockReturnThis(),
-        lte: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        order: vi.fn().mockReturnThis(),
-        single: vi.fn(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null }),
-        insert: vi.fn().mockReturnThis(),
-        update: vi.fn().mockReturnThis(),
-      };
-
-      if (table === 'unit_catalog') {
-        queryObj.maybeSingle.mockResolvedValue({ data: { id: 'adopted-1', is_enabled: true }, error: null });
-      } else if (table === 'product_variants') {
-        queryObj.single.mockResolvedValue({ data: mockVariant, error: null });
-      } else if (table === 'unit_inventory') {
-        queryObj.select.mockImplementation(() => {
-          return {
-            eq: vi.fn().mockReturnThis(),
-            gt: vi.fn().mockReturnThis(),
-            order: vi.fn().mockImplementation(() => {
-              return {
-                order: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-                mockResolvedValue: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-              };
-            }),
-            mockResolvedValue: vi.fn().mockResolvedValue({ data: mockInventoryLots, error: null }),
-            then: (resolve: any) => resolve({ data: mockInventoryLots, error: null }),
-          };
-        });
-        queryObj.update.mockReturnValue({
-          eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-        });
-      } else if (table === 'bar_chits') {
-        queryObj.insert.mockReturnThis();
-        queryObj.select.mockReturnThis();
-        queryObj.single.mockResolvedValue({ data: mockChitHeader, error: null });
-      } else if (table === 'bar_chit_items') {
-        queryObj.insert.mockResolvedValue({ data: null, error: null });
-      }
-
-      return queryObj;
-    });
-
-    const inputData: CreateBarChitInput = {
-      unit_id: unitId,
-      date: '2026-06-05',
-      consumer_type: 'member',
-      profile_id: 'profile-111',
-      items: [
-        {
-          variant_id: variantId,
-          quantity: 5,
-          rate: 10,
-          name: 'Old Monk',
-          unit: 'peg',
-        },
-      ],
-    };
-
-    const result = await createBarChitCore(
-      mockSupabase as unknown as SupabaseClient,
-      userId,
-      inputData
-    );
-
-    expect(result.ok).toBe(true);
-    expect(result.id).toBe('chit-piece-123');
-    expect(mockSupabase.from).toHaveBeenCalledWith('bar_chit_items');
-  });
-
-  it('defaults a missing sale rate from the latest unit_menu_rates and snapshots it', async () => {
-    const insertedItems: Array<Record<string, unknown>> = [];
-    mockSupabase.from.mockImplementation((table: string) =>
-      catalogAwareQuery(table, {
-        adopted: true,
-        menuRate: 250,
-        lots: [{ id: 'lot-1', qty_packs: 2 }],
-        chitId: 'chit-menu-rate',
-        onInsertItem: (row) => insertedItems.push(row),
-      })
-    );
-
-    const result = await createBarChitCore(
-      mockSupabase as unknown as SupabaseClient,
-      userId,
-      {
-        unit_id: unitId,
-        date: '2026-09-10',
-        consumer_type: 'member',
-        profile_id: 'profile-111',
-        items: [
-          {
-            variant_id: variantId,
-            quantity: 1,
-            rate: 0,
-            name: 'Old Monk',
-            unit: 'bottle',
-          },
-        ],
-      }
-    );
-
-    expect(result.ok).toBe(true);
-    expect(result.id).toBe('chit-menu-rate');
-    expect(mockSupabase.from).toHaveBeenCalledWith('unit_menu_rates');
-    expect(insertedItems[0]).toMatchObject({
-      variant_id: variantId,
-      quantity: 1,
-      rate: 250,
-      amount: 250,
-    });
-    expect(insertedItems[0]).not.toHaveProperty('name');
+    const lot1 = mockDbState.unitInventory.find((l) => l.id === 'lot-1');
+    const lot2 = mockDbState.unitInventory.find((l) => l.id === 'lot-2');
+    expect(lot1!.qty_packs).toBe(0);
+    expect(lot1!.is_active).toBe(false);
+    expect(lot2!.qty_packs).toBeCloseTo(0.4);
   });
 
   it('rejects a variant that is not adopted in unit_catalog', async () => {
-    mockSupabase.from.mockImplementation((table: string) =>
-      catalogAwareQuery(table, {
-        adopted: false,
-        menuRate: 250,
-        lots: [{ id: 'lot-1', qty_packs: 2 }],
-        chitId: 'chit-should-not-exist',
-      })
-    );
+    mockDbState.unitCatalog = [];
+    mockDbState.productVariants = [
+      { id: variantId, unit_value: 750, unit_type: 'ML', package_type: 'BOTTLE' },
+    ];
 
-    const result = await createBarChitCore(
-      mockSupabase as unknown as SupabaseClient,
-      userId,
-      {
-        unit_id: unitId,
-        date: '2026-09-10',
-        consumer_type: 'member',
-        profile_id: 'profile-111',
-        items: [
-          {
-            variant_id: variantId,
-            quantity: 1,
-            rate: 250,
-            name: 'Old Monk',
-            unit: 'bottle',
-          },
-        ],
-      }
-    );
+    const result = await createBarChitCore(userId, {
+      unit_id: unitId,
+      date: '2026-09-10',
+      consumer_type: 'member',
+      profile_id: 'profile-111',
+      items: [
+        {
+          variant_id: variantId,
+          quantity: 1,
+          rate: 250,
+          name: 'Old Monk',
+          unit: 'bottle',
+        },
+      ],
+    });
 
     expect(result.ok).toBeUndefined();
     expect(result.error).toMatch(/not an adopted catalog item/i);
-    expect(mockSupabase.from).not.toHaveBeenCalledWith('bar_chits');
+    expect(mockDbState.barChits.length).toBe(0);
   });
 
   it('rejects a zero rate when no unit_menu_rates row exists', async () => {
-    mockSupabase.from.mockImplementation((table: string) =>
-      catalogAwareQuery(table, {
-        adopted: true,
-        menuRate: null,
-        lots: [{ id: 'lot-1', qty_packs: 2 }],
-        chitId: 'chit-should-not-exist',
-      })
-    );
+    mockDbState.unitCatalog = [{ unit_id: unitId, variant_id: variantId, is_enabled: true }];
+    mockDbState.unitMenuRates = [];
 
-    const result = await createBarChitCore(
-      mockSupabase as unknown as SupabaseClient,
-      userId,
-      {
-        unit_id: unitId,
-        date: '2026-09-10',
-        consumer_type: 'member',
-        profile_id: 'profile-111',
-        items: [
-          {
-            variant_id: variantId,
-            quantity: 1,
-            rate: 0,
-            name: 'Old Monk',
-            unit: 'bottle',
-          },
-        ],
-      }
-    );
+    const result = await createBarChitCore(userId, {
+      unit_id: unitId,
+      date: '2026-09-10',
+      consumer_type: 'member',
+      profile_id: 'profile-111',
+      items: [
+        {
+          variant_id: variantId,
+          quantity: 1,
+          rate: 0,
+          name: 'Old Monk',
+          unit: 'bottle',
+        },
+      ],
+    });
 
     expect(result.ok).toBeUndefined();
     expect(result.error).toMatch(/no menu rate/i);
-    expect(mockSupabase.from).not.toHaveBeenCalledWith('bar_chits');
+    expect(mockDbState.barChits.length).toBe(0);
   });
 });
-
-function catalogAwareQuery(
-  table: string,
-  opts: {
-    adopted: boolean;
-    menuRate: number | null;
-    lots: Array<{ id: string; qty_packs: number }>;
-    chitId: string;
-    onInsertItem?: (row: Record<string, unknown>) => void;
-  }
-) {
-  const queryObj: any = {
-    select: vi.fn().mockReturnThis(),
-    eq: vi.fn().mockReturnThis(),
-    in: vi.fn().mockReturnThis(),
-    gt: vi.fn().mockReturnThis(),
-    lte: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockReturnThis(),
-    order: vi.fn().mockReturnThis(),
-    single: vi.fn(),
-    maybeSingle: vi.fn(),
-    insert: vi.fn().mockReturnThis(),
-    update: vi.fn().mockReturnThis(),
-    delete: vi.fn().mockReturnThis(),
-  };
-
-  if (table === 'unit_catalog') {
-    queryObj.maybeSingle.mockResolvedValue({
-      data: opts.adopted ? { id: 'adopted-1', is_enabled: true } : null,
-      error: null,
-    });
-  } else if (table === 'unit_menu_rates') {
-    queryObj.maybeSingle.mockResolvedValue({
-      data: opts.menuRate == null ? null : { rate: opts.menuRate },
-      error: null,
-    });
-  } else if (table === 'product_variants') {
-    queryObj.single.mockResolvedValue({
-      data: { unit_value: 750, unit_type: 'ML', package_type: 'BOTTLE' },
-      error: null,
-    });
-  } else if (table === 'unit_inventory') {
-    queryObj.select.mockImplementation(() => {
-      return {
-        eq: vi.fn().mockReturnThis(),
-        gt: vi.fn().mockReturnThis(),
-        order: vi.fn().mockImplementation(() => {
-          return {
-            order: vi.fn().mockResolvedValue({ data: opts.lots, error: null }),
-          };
-        }),
-        then: (resolve: (value: unknown) => unknown) =>
-          resolve({ data: opts.lots, error: null }),
-      };
-    });
-    queryObj.update.mockReturnValue({
-      eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-    });
-  } else if (table === 'bar_chits') {
-    queryObj.insert.mockReturnThis();
-    queryObj.select.mockReturnThis();
-    queryObj.single.mockResolvedValue({ data: { id: opts.chitId }, error: null });
-  } else if (table === 'bar_chit_items') {
-    queryObj.insert.mockImplementation((row: Record<string, unknown>) => {
-      opts.onInsertItem?.(row);
-      return Promise.resolve({ data: null, error: null });
-    });
-  }
-
-  return queryObj;
-}

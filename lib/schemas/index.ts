@@ -4,7 +4,6 @@ export * from './users';
 export * from './items';
 export * from './capabilities';
 export * from './guest-rooms';
-export * from './dependants';
 export * from './ration';
 export * from './attendance';
 export * from './bar';

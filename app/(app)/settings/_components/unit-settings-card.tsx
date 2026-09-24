@@ -63,6 +63,7 @@ import {
   type MessingBillingMode,
   type MessingMealType,
 } from '@/lib/schemas/messing';
+import type { MessingFlatRateRow } from '@/lib/messing/types';
 
 export function UnitSettingsCard({
   unitId,
@@ -83,13 +84,7 @@ export function UnitSettingsCard({
   guestFoodPerNight: number;
   autoRationPost: boolean;
   activeFlatRates: Record<MessingMealType, number>;
-  flatRatesHistory: Array<{
-    id: string;
-    meal_type: MessingMealType;
-    rate: number | string;
-    valid_from: string;
-    valid_to: string | null;
-  }>;
+  flatRatesHistory: MessingFlatRateRow[];
 }) {
   const router = useRouter();
   const [mess, setMess] = useState<MessType | undefined>(messType ?? undefined);
@@ -164,7 +159,7 @@ export function UnitSettingsCard({
       } else {
         toast.error(res.error ?? 'Failed to update flat rates');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       toast.error(err?.message || 'An unexpected error occurred');
     } finally {
       setIsUpdatingRates(false);

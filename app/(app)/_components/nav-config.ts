@@ -30,7 +30,7 @@ export function navItemMatchesModules(
 }
 
 // Diner/Officer portal navigation - visible to all members
-export const NAV_DINER: NavItem[] = [
+const NAV_DINER: NavItem[] = [
   { label: 'Dashboard',    href: '/dashboard',    icon: 'LayoutDashboard' },
   { label: 'My Messing',   href: '/messing',      icon: 'CalendarCheck' },
   { label: 'My Bills',     href: '/billing',      icon: 'ReceiptText' },
@@ -42,7 +42,7 @@ export const NAV_DINER: NavItem[] = [
 ];
 
 // Mess Manager & Quartermaster operations navigation - capability gated
-export const NAV_OPS: NavItem[] = [
+const NAV_OPS: NavItem[] = [
   { label: 'Attendance',   href: '/attendance',   icon: 'ClipboardList', requires: 'attendance.read', module: 'attendance' },
   { label: 'Messing',      href: '/messing/cuts', icon: 'Scissors',      requires: 'attendance.write', module: 'attendance' },
   { label: 'Ration',       href: '/ration',       icon: 'Boxes',         requires: 'ration.read', module: 'ration' },

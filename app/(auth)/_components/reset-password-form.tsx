@@ -23,7 +23,7 @@ function SubmitButton() {
   );
 }
 
-export function ResetPasswordForm() {
+export function ResetPasswordForm({ token }: { token?: string }) {
   const [state, formAction] = useActionState(resetPasswordAction, INITIAL);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -45,6 +45,7 @@ export function ResetPasswordForm() {
 
   return (
     <form action={formAction} onSubmit={handleSubmit} className="space-y-4">
+      <input type="hidden" name="token" value={token ?? ''} />
       <div className="flex flex-col gap-2">
         <Label htmlFor="password">New password</Label>
         <Input

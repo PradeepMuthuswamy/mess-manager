@@ -16,7 +16,7 @@ export type UserFormFields = {
 export type UsersUiState = {
   isFormOpen: boolean;
   isEditing: boolean;
-  editingUser: any | null;
+  editingUser: unknown | null;
   form: UserFormFields;
   error: string | null;
 };
@@ -60,7 +60,7 @@ export const usersSlice = createSlice({
         unitId: action.payload.activeUnitId,
       };
     },
-    openEdit: (state, action: PayloadAction<{ user: any }>) => {
+    openEdit: (state, action: PayloadAction<{ user: unknown }>) => {
       const { user } = action.payload;
       state.ui.isFormOpen = true;
       state.ui.isEditing = true;
@@ -73,7 +73,7 @@ export const usersSlice = createSlice({
         serviceNo: user.service_no || '',
         role: user.role as Role,
         unitId: user.unit_id,
-        selectedCapabilities: (user.user_capabilities || []).map((uc: any) => uc.capability as Capability),
+        selectedCapabilities: (user.user_capabilities || []).map((uc: Record<string, unknown>) => uc.capability as Capability),
         selectedTemplateId: '',
       };
     },

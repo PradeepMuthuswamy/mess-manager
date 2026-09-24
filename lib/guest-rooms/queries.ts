@@ -1,9 +1,6 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Database } from '@/lib/supabase/database.types';
-
-type Sb = SupabaseClient<Database>;
+import { getDb, getCollection } from '@/lib/mongo';
+import type { Document } from 'mongodb';
 
 export type {
   Room,
@@ -27,59 +24,20 @@ import type {
   UnitFurniture,
   RoomFurniture,
   HostProfile,
+  RoomBill,
   RoomBillItem,
   RoomBillSummary,
   RoomBillWithLines,
   RoomBillDetail,
   BillOrder,
   UnitGuestTariff,
+  RoomCurrentStatus,
 } from './types';
 
-const BOOKING_LIST_SELECT = `
-  *,
-  room:room_id (name),
-  host_profile:profiles!bookings_host_profile_id_fkey (id, full_name, rank, service_no),
-  unit:unit_id (guest_food_per_night),
-  bill:room_bills (id, status, payment_status, folio_number, settlement_type, total_amount)
-`;
-
-const BILL_ITEM_SELECT =
-  'id, bill_id, category, description, amount, quantity, meal_type, order_id, variant_id, bar_chit_id, created_at';
-
-const BOOKING_BILL_SELECT = `
-  *,
-  room:room_id (name),
-  host_profile:profiles!bookings_host_profile_id_fkey (id, full_name, rank, service_no),
-  unit:unit_id (guest_food_per_night),
-  bill:room_bills (
-    *,
-    items:room_bill_items (${BILL_ITEM_SELECT}),
-    orders:room_bill_orders (
-      *,
-      items:room_bill_items (${BILL_ITEM_SELECT})
-    )
-  )
-`;
-
-const ROOM_BILL_DETAIL_SELECT = `
-  *,
-  items:room_bill_items (${BILL_ITEM_SELECT}),
-  orders:room_bill_orders (
-    *,
-    items:room_bill_items (${BILL_ITEM_SELECT})
-  ),
-  booking:bookings (
-    id,
-    host_profile_id,
-    settlement_type,
-    unit_id,
-    unit:unit_id (guest_food_per_night)
-  )
-`;
-
-function asOne<T>(value: T | T[] | null | undefined): T | null {
-  if (value == null) return null;
-  return Array.isArray(value) ? (value[0] ?? null) : value;
+function cleanDoc<T>(doc: Document | null | undefined): T {
+  if (!doc) return doc;
+  const { _id, ...rest } = doc;
+  return { ...rest, id: rest.id || _id?.toString() } as T;
 }
 
 type RawBillLines = {
@@ -89,8 +47,7 @@ type RawBillLines = {
 
 /**
  * One consistent folio shape: each line appears once, including bar.
- * PostgREST embeds the same rows at bill root and under orders — keep
- * standalone lines (`order_id` is null) on `items` and order lines nested.
+ * Keep standalone lines (`order_id` is null) on `items` and order lines nested.
  */
 export function normalizeRoomBillLines<T extends RawBillLines>(
   raw: T,
@@ -109,234 +66,431 @@ export function normalizeRoomBillLines<T extends RawBillLines>(
   return { ...raw, items, orders };
 }
 
-function toBillSummary(raw: RoomBillSummary | RoomBillSummary[] | null | undefined): RoomBillSummary | null {
-  return asOne(raw);
-}
+export async function getRooms(unitId: string, _client?: unknown): Promise<Room[]> {
+  const db = await getDb();
+  const roomsCol = db.collection('rooms');
+  const bookingsCol = db.collection('bookings');
 
-function toUnitTariff(
-  raw: UnitGuestTariff | UnitGuestTariff[] | null | undefined,
-): UnitGuestTariff | null {
-  return asOne(raw);
-}
+  const rawRooms = await roomsCol
+    .find({ unit_id: unitId })
+    .sort({ name: 1 })
+    .toArray();
 
-export async function getRooms(unitId: string, client?: Sb) {
-  const supabase = client ?? (await createClient());
-  // Read from the v_rooms_current view so each row carries derived
-  // `current_status` and `current_booking_id` alongside the operational
-  // `status` column. Occupancy is never stored on rooms — it's computed.
-  const { data, error } = await supabase
-    .from('v_rooms_current')
-    .select('*')
-    .eq('unit_id', unitId)
-    .order('name');
+  const today = new Date().toISOString().split('T')[0];
 
-  if (error) throw new Error(error.message);
-  return data as Room[];
-}
+  // Derive current_status and current_booking_id from active bookings
+  const activeBookings = await bookingsCol
+    .find({
+      unit_id: unitId,
+      status: { $in: ['checked_in', 'confirmed'] },
+      check_in_date: { $lte: today },
+      check_out_date: { $gt: today },
+    })
+    .toArray();
 
-export async function getBookings(unitId: string, from: string, to: string, client?: Sb) {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('bookings')
-    .select(BOOKING_LIST_SELECT)
-    .eq('unit_id', unitId)
-    .neq('status', 'cancelled')
-    .gte('check_out_date', from)
-    .lte('check_in_date', to)
-    .order('check_in_date');
+  const bookingByRoom = new Map<string, Document>();
+  for (const b of activeBookings) {
+    const existing = bookingByRoom.get(b.room_id);
+    if (!existing || (existing.status !== 'checked_in' && b.status === 'checked_in')) {
+      bookingByRoom.set(b.room_id, b);
+    }
+  }
 
-  if (error) throw new Error(error.message);
+  return rawRooms.map((r: Document) => {
+    const room = cleanDoc<Room>(r);
+    const booking = bookingByRoom.get(room.id);
 
-  return (data ?? []).map((row) => {
-    const raw = row as unknown as Booking & {
-      bill?: RoomBillSummary | RoomBillSummary[] | null;
-      unit?: UnitGuestTariff | UnitGuestTariff[] | null;
-    };
+    let current_status: RoomCurrentStatus = 'vacant';
+    let current_booking_id: string | null = null;
+
+    if (room.status === 'maintenance') {
+      current_status = 'maintenance';
+    } else if (room.status === 'out_of_service') {
+      current_status = 'out_of_service';
+    } else if (booking) {
+      current_status = booking.status === 'checked_in' ? 'occupied' : 'reserved';
+      current_booking_id = booking.id || booking._id?.toString() || null;
+    }
+
     return {
-      ...raw,
-      unit: toUnitTariff(raw.unit),
-      bill: toBillSummary(raw.bill),
-    } satisfies Booking;
+      ...room,
+      nightly_rate: Number(room.nightly_rate || 0),
+      current_status,
+      current_booking_id,
+    };
   });
 }
 
-export async function getBookingSummaryById(id: string, client?: Sb): Promise<Booking> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('bookings')
-    .select(BOOKING_LIST_SELECT)
-    .eq('id', id)
-    .single();
+export async function getBookings(
+  unitId: string,
+  from: string,
+  to: string,
+  _client?: unknown,
+): Promise<Booking[]> {
+  const db = await getDb();
+  const bookingsCol = db.collection('bookings');
 
-  if (error) throw new Error(error.message);
+  const rawBookings = await bookingsCol
+    .find({
+      unit_id: unitId,
+      status: { $ne: 'cancelled' },
+      check_out_date: { $gte: from },
+      check_in_date: { $lte: to },
+    })
+    .sort({ check_in_date: 1 })
+    .toArray();
 
-  const raw = data as unknown as Booking & {
-    bill?: RoomBillSummary | RoomBillSummary[] | null;
-    unit?: UnitGuestTariff | UnitGuestTariff[] | null;
+  if (rawBookings.length === 0) return [];
+
+  const roomIds = [...new Set(rawBookings.map((b: Document) => b.room_id).filter(Boolean))];
+  const hostProfileIds = [
+    ...new Set(rawBookings.map((b: Document) => b.host_profile_id).filter(Boolean)),
+  ];
+  const bookingIds = rawBookings.map((b: Document) => b.id || b._id?.toString());
+
+  const [rooms, profiles, unitDoc, bills] = await Promise.all([
+    roomIds.length > 0
+      ? db
+          .collection('rooms')
+          .find({ id: { $in: roomIds } })
+          .toArray()
+      : Promise.resolve([]),
+    hostProfileIds.length > 0
+      ? db
+          .collection('profiles')
+          .find({ id: { $in: hostProfileIds } })
+          .toArray()
+      : Promise.resolve([]),
+    db.collection('units').findOne({ id: unitId }),
+    bookingIds.length > 0
+      ? db
+          .collection('room_bills')
+          .find({ booking_id: { $in: bookingIds } })
+          .toArray()
+      : Promise.resolve([]),
+  ]);
+
+  const roomMap = new Map<string, Document>(rooms.map((r: Document) => [r.id, r]));
+  const hostMap = new Map<string, HostProfile>(
+    profiles.map((p: Document) => [
+      p.id,
+      {
+        id: p.id,
+        full_name: p.full_name ?? null,
+        rank: p.rank ?? null,
+        service_no: p.service_no ?? null,
+      },
+    ]),
+  );
+  const billMap = new Map<string, RoomBillSummary>(
+    bills.map((b: Document) => [
+      b.booking_id,
+      {
+        id: b.id || b._id?.toString(),
+        status: b.status,
+        payment_status: b.payment_status,
+        folio_number: b.folio_number ?? null,
+        settlement_type: b.settlement_type,
+        total_amount: Number(b.total_amount || 0),
+      },
+    ]),
+  );
+
+  const unitTariff: UnitGuestTariff = {
+    guest_food_per_night: Number(unitDoc?.guest_food_per_night ?? 900),
   };
+
+  return rawBookings.map((b: Document) => {
+    const booking = cleanDoc<Booking>(b);
+    return {
+      ...booking,
+      room: {
+        name: roomMap.get(booking.room_id)?.name ?? 'Unknown Room',
+      },
+      host_profile: booking.host_profile_id
+        ? hostMap.get(booking.host_profile_id) ?? null
+        : null,
+      unit: unitTariff,
+      bill: billMap.get(booking.id) ?? null,
+    };
+  });
+}
+
+export async function getBookingSummaryById(
+  id: string,
+  _client?: unknown,
+): Promise<Booking> {
+  const db = await getDb();
+  const rawBooking = await db.collection('bookings').findOne({ id });
+  if (!rawBooking) throw new Error('Booking not found');
+
+  const booking = cleanDoc<Booking>(rawBooking);
+
+  const [room, hostProfile, unitDoc, bill] = await Promise.all([
+    db.collection('rooms').findOne({ id: booking.room_id }),
+    booking.host_profile_id
+      ? db.collection('profiles').findOne({ id: booking.host_profile_id })
+      : Promise.resolve(null),
+    db.collection('units').findOne({ id: booking.unit_id }),
+    db.collection('room_bills').findOne({ booking_id: id }),
+  ]);
+
   return {
-    ...raw,
-    unit: toUnitTariff(raw.unit),
-    bill: toBillSummary(raw.bill),
+    ...booking,
+    room: {
+      name: room?.name ?? 'Unknown Room',
+    },
+    host_profile: hostProfile
+      ? {
+          id: hostProfile.id,
+          full_name: hostProfile.full_name ?? null,
+          rank: hostProfile.rank ?? null,
+          service_no: hostProfile.service_no ?? null,
+        }
+      : null,
+    unit: {
+      guest_food_per_night: Number(unitDoc?.guest_food_per_night ?? 900),
+    },
+    bill: bill
+      ? {
+          id: bill.id || bill._id?.toString(),
+          status: bill.status,
+          payment_status: bill.payment_status,
+          folio_number: bill.folio_number ?? null,
+          settlement_type: bill.settlement_type,
+          total_amount: Number(bill.total_amount || 0),
+        }
+      : null,
   };
 }
 
-export async function getRoomsByIds(unitId: string, ids: string[], client?: Sb) {
+export async function getRoomsByIds(
+  unitId: string,
+  ids: string[],
+  _client?: unknown,
+): Promise<Room[]> {
   if (ids.length === 0) return [];
 
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('v_rooms_current')
-    .select('*')
-    .eq('unit_id', unitId)
-    .in('id', ids)
-    .order('name');
+  const db = await getDb();
+  const rawRooms = await db
+    .collection('rooms')
+    .find({ unit_id: unitId, id: { $in: ids } })
+    .sort({ name: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return data as Room[];
-}
+  const today = new Date().toISOString().split('T')[0];
 
-type RawBookingWithBill = Omit<Booking, 'bill' | 'unit'> & {
-  unit?: UnitGuestTariff | UnitGuestTariff[] | null;
-  bill:
-    | (RoomBillWithLines & RawBillLines)
-    | (RoomBillWithLines & RawBillLines)[]
-    | null;
-};
+  const activeBookings = await db
+    .collection('bookings')
+    .find({
+      unit_id: unitId,
+      room_id: { $in: ids },
+      status: { $in: ['checked_in', 'confirmed'] },
+      check_in_date: { $lte: today },
+      check_out_date: { $gt: today },
+    })
+    .toArray();
 
-export async function getBookingById(id: string, client?: Sb): Promise<BookingWithBill> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('bookings')
-    .select(BOOKING_BILL_SELECT)
-    .eq('id', id)
-    .single();
+  const bookingByRoom = new Map<string, Document>();
+  for (const b of activeBookings) {
+    const existing = bookingByRoom.get(b.room_id);
+    if (!existing || (existing.status !== 'checked_in' && b.status === 'checked_in')) {
+      bookingByRoom.set(b.room_id, b);
+    }
+  }
 
-  if (error) throw new Error(error.message);
+  return rawRooms.map((r: Document) => {
+    const room = cleanDoc<Room>(r);
+    const booking = bookingByRoom.get(room.id);
 
-  const raw = data as unknown as RawBookingWithBill;
-  const rawBill = asOne(raw.bill);
+    let current_status: RoomCurrentStatus = 'vacant';
+    let current_booking_id: string | null = null;
 
-  return {
-    ...raw,
-    unit: toUnitTariff(raw.unit),
-    bill: rawBill ? normalizeRoomBillLines(rawBill) : null,
-  };
-}
+    if (room.status === 'maintenance') {
+      current_status = 'maintenance';
+    } else if (room.status === 'out_of_service') {
+      current_status = 'out_of_service';
+    } else if (booking) {
+      current_status = booking.status === 'checked_in' ? 'occupied' : 'reserved';
+      current_booking_id = booking.id || booking._id?.toString() || null;
+    }
 
-export async function getRoomBillById(id: string, client?: Sb): Promise<RoomBillDetail> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('room_bills')
-    .select(ROOM_BILL_DETAIL_SELECT)
-    .eq('id', id)
-    .single();
-
-  if (error) throw new Error(error.message);
-
-  const raw = data as unknown as RoomBillWithLines &
-    RawBillLines & {
-      booking:
-        | RoomBillDetail['booking']
-        | RoomBillDetail['booking'][]
-        | null;
+    return {
+      ...room,
+      nightly_rate: Number(room.nightly_rate || 0),
+      current_status,
+      current_booking_id,
     };
+  });
+}
 
-  const booking = asOne(raw.booking);
-  if (!booking) throw new Error('Room bill is missing its booking');
+export async function getBookingById(
+  id: string,
+  _client?: unknown,
+): Promise<BookingWithBill> {
+  const db = await getDb();
+  const rawBooking = await db.collection('bookings').findOne({ id });
+  if (!rawBooking) throw new Error('Booking not found');
 
-  const { booking: _ignored, ...bill } = raw;
+  const booking = cleanDoc<Booking>(rawBooking);
+
+  const [room, hostProfile, unitDoc, rawBill] = await Promise.all([
+    db.collection('rooms').findOne({ id: booking.room_id }),
+    booking.host_profile_id
+      ? db.collection('profiles').findOne({ id: booking.host_profile_id })
+      : Promise.resolve(null),
+    db.collection('units').findOne({ id: booking.unit_id }),
+    db.collection('room_bills').findOne({ booking_id: id }),
+  ]);
+
+  let billWithLines: RoomBillWithLines | null = null;
+
+  if (rawBill) {
+    const bill = cleanDoc<RoomBill>(rawBill);
+    const [rawItems, rawOrders] = await Promise.all([
+      db.collection('room_bill_items').find({ bill_id: bill.id }).toArray(),
+      db.collection('room_bill_orders').find({ bill_id: bill.id }).toArray(),
+    ]);
+
+    const items = rawItems.map((i: Document) => cleanDoc<RoomBillItem>(i));
+    const orders = rawOrders.map((o: Document) => ({
+      ...cleanDoc<BillOrder>(o),
+      items: items.filter((item) => item.order_id === o.id),
+    }));
+
+    const normalized = normalizeRoomBillLines({
+      ...bill,
+      total_amount: Number(bill.total_amount || 0),
+      items,
+      orders,
+    });
+    billWithLines = normalized as RoomBillWithLines;
+  }
+
   return {
-    ...normalizeRoomBillLines(bill),
-    booking: {
-      ...booking,
-      unit: toUnitTariff(booking.unit),
+    ...booking,
+    room: {
+      name: room?.name ?? 'Unknown Room',
     },
+    host_profile: hostProfile
+      ? {
+          id: hostProfile.id,
+          full_name: hostProfile.full_name ?? null,
+          rank: hostProfile.rank ?? null,
+          service_no: hostProfile.service_no ?? null,
+        }
+      : null,
+    unit: {
+      guest_food_per_night: Number(unitDoc?.guest_food_per_night ?? 900),
+    },
+    bill: billWithLines,
   };
 }
 
-export async function getGuestFoodPerNight(unitId: string, client?: Sb): Promise<number> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('units')
-    .select('guest_food_per_night')
-    .eq('id', unitId)
-    .single();
 
-  if (error) throw new Error(error.message);
-  return data.guest_food_per_night;
+export async function getAvailableRooms(
+  unitId: string,
+  checkIn: string,
+  checkOut: string,
+  _client?: unknown,
+): Promise<Room[]> {
+  const db = await getDb();
+  const roomsCol = db.collection('rooms');
+  const bookingsCol = db.collection('bookings');
+
+  // Only operational status 'available' is bookable
+  const rawRooms = await roomsCol
+    .find({ unit_id: unitId, status: 'available' })
+    .sort({ name: 1 })
+    .toArray();
+
+  // Find booked room IDs overlapping with [checkIn, checkOut)
+  const bookedBookings = await bookingsCol
+    .find({
+      unit_id: unitId,
+      status: { $ne: 'cancelled' },
+      check_in_date: { $lt: checkOut },
+      check_out_date: { $gt: checkIn },
+    })
+    .project({ room_id: 1 })
+    .toArray();
+
+  const bookedIds = new Set(bookedBookings.map((b: Document) => b.room_id).filter(Boolean));
+
+  return rawRooms
+    .filter((r: Document) => !bookedIds.has(r.id))
+    .map((r: Document) => cleanDoc<Room>(r));
 }
 
-export async function getAvailableRooms(unitId: string, checkIn: string, checkOut: string, client?: Sb) {
-  const supabase = client ?? (await createClient());
-
-  // Only operational state 'available' is bookable. 'maintenance' and
-  // 'out_of_service' rooms are filtered out at the source.
-  const { data: rawRooms, error: roomsError } = await supabase
-    .from('rooms')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('status', 'available');
-
-  if (roomsError) throw new Error(roomsError.message);
-
-  // Get booked room IDs for the period
-  const { data: bookedRooms, error: bookingsError } = await supabase
-    .from('bookings')
-    .select('room_id')
-    .eq('unit_id', unitId)
-    .neq('status', 'cancelled')
-    .filter('check_in_date', 'lt', checkOut)
-    .filter('check_out_date', 'gt', checkIn);
-
-  if (bookingsError) throw new Error(bookingsError.message);
-
-  const bookedIds = new Set(bookedRooms.map(b => b.room_id));
-
-  return rawRooms.filter(room => !bookedIds.has(room.id)) as Room[];
+export async function getUnitFurniture(
+  unitId: string,
+  _client?: unknown,
+): Promise<UnitFurniture[]> {
+  const col = await getCollection('unit_furniture');
+  const items = await col.find({ unit_id: unitId }).sort({ name: 1 }).toArray();
+  return items.map((i: Document) => cleanDoc<UnitFurniture>(i));
 }
 
-export async function getUnitFurniture(unitId: string, client?: Sb): Promise<UnitFurniture[]> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('unit_furniture')
-    .select('*')
-    .eq('unit_id', unitId)
-    .order('name', { ascending: true });
+export async function getRoomInventory(
+  roomId: string,
+  _client?: unknown,
+): Promise<RoomFurniture[]> {
+  const db = await getDb();
+  const rawRoomFurniture = await db
+    .collection('room_furniture')
+    .find({ room_id: roomId })
+    .sort({ created_at: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []) as UnitFurniture[];
+  if (rawRoomFurniture.length === 0) return [];
+
+  const furnitureIds = [
+    ...new Set(rawRoomFurniture.map((rf: Document) => rf.furniture_id).filter(Boolean)),
+  ];
+
+  const rawUnitFurniture = await db
+    .collection('unit_furniture')
+    .find({ id: { $in: furnitureIds } })
+    .toArray();
+
+  const furnitureMap = new Map<string, Document>(
+    rawUnitFurniture.map((f: Document) => [f.id, f]),
+  );
+
+  return rawRoomFurniture.map((rf: Document) => {
+    const item = cleanDoc<RoomFurniture>(rf);
+    const matched = furnitureMap.get(item.furniture_id);
+    return {
+      ...item,
+      furniture: matched
+        ? {
+            name: String(matched.name),
+            kind: String(matched.kind || 'furniture'),
+          }
+        : null,
+    };
+  });
 }
 
-export async function getRoomInventory(roomId: string, client?: Sb): Promise<RoomFurniture[]> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('room_furniture')
-    .select('*, furniture:unit_furniture(name, kind)')
-    .eq('room_id', roomId)
-    .order('created_at', { ascending: true });
+export async function getDailyBookingStats(
+  unitId: string,
+  from: string,
+  to: string,
+  _client?: unknown,
+): Promise<Record<string, number>> {
+  const col = await getCollection('bookings');
+  const bookings = await col
+    .find({
+      unit_id: unitId,
+      status: { $ne: 'cancelled' },
+      check_in_date: { $lt: to },
+      check_out_date: { $gt: from },
+    })
+    .project({ check_in_date: 1, check_out_date: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  // Cast through unknown: the unit_furniture join shape isn't expressed in
-  // the generated row type but matches RoomFurniture's optional `furniture`.
-  return (data ?? []) as unknown as RoomFurniture[];
-}
-
-export async function getDailyBookingStats(unitId: string, from: string, to: string, client?: Sb) {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('bookings')
-    .select('check_in_date, check_out_date')
-    .eq('unit_id', unitId)
-    .neq('status', 'cancelled')
-    .filter('check_in_date', 'lt', to)
-    .filter('check_out_date', 'gt', from);
-
-  if (error) throw new Error(error.message);
-
-  // Count bookings per day
   const stats: Record<string, number> = {};
-  data.forEach(booking => {
+  bookings.forEach((booking: Document) => {
     const curr = new Date(booking.check_in_date);
     const end = new Date(booking.check_out_date);
     while (curr < end) {
@@ -351,14 +505,20 @@ export async function getDailyBookingStats(unitId: string, from: string, to: str
   return stats;
 }
 
-export async function listHostProfiles(unitId: string, client?: Sb): Promise<HostProfile[]> {
-  const supabase = client ?? (await createClient());
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, full_name, rank, service_no')
-    .eq('unit_id', unitId)
-    .order('full_name', { ascending: true });
+export async function listHostProfiles(
+  unitId: string,
+  _client?: unknown,
+): Promise<HostProfile[]> {
+  const col = await getCollection('profiles');
+  const profiles = await col
+    .find({ unit_id: unitId })
+    .sort({ full_name: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []) as HostProfile[];
+  return profiles.map((p: Document) => ({
+    id: p.id || p._id?.toString(),
+    full_name: p.full_name ?? null,
+    rank: p.rank ?? null,
+    service_no: p.service_no ?? null,
+  }));
 }

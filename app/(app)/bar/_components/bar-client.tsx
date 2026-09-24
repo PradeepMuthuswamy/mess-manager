@@ -345,7 +345,7 @@ export function BarClient({
                     {inventory.map((item) => {
                       const qty = Number(item.qty_packs);
                       const isLow = qty <= 2;
-                      let vol = Number((item as any).volume_ml ?? 0);
+                      let vol = Number(item.volume_ml ?? 0);
                       if (vol <= 0 && item.category === 'alcohol' && item.pack_label?.toUpperCase().includes('BOTTLE')) {
                         vol = 750;
                       }

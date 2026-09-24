@@ -7,7 +7,7 @@ import { StockTable } from '@/app/(app)/_shared/stock-table/stock-table';
 import {
   CATEGORY_META,
   slugFromCategory,
-  type InventoryCategory,
+  type Category,
 } from '@/lib/masters/categories';
 import type { MasterItemPick } from '@/lib/stock/types';
 
@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 
 // Grocery stock is hard-locked to the `grocery` stockable category — this
 // module's own nav replaces the shared /stock category tab strip.
-const GROCERY_CATEGORY: InventoryCategory = 'grocery';
+const GROCERY_CATEGORY: Category = 'grocery';
 
 const INVENTORY_READ = 'inventory.read';
 const INVENTORY_WRITE = 'inventory.write';
@@ -33,7 +33,7 @@ export default async function GroceryStockPage({
 }) {
   const { q, page, sortBy, sortOrder } = await searchParams;
 
-  // Single Supabase SSR round trip: fetch the user once, then gate against the
+  // Single MongoDB round trip: fetch the user once, then gate against the
   // active unit with the pure helper instead of calling requireCapability
   // (which would re-run requireUser internally). Keeps the unit-scoped check.
   const user = await requireUser();

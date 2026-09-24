@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { requireUser } from '@/lib/auth/require-role';
 import { requireCapability, userHasCapability } from '@/lib/auth/require-capability';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import {
   listScales,
   getScaleByDimensions,
@@ -76,12 +76,8 @@ export default async function RationPage({
   }
 
   const unitId = user.activeUnitId;
-  const supabase = await createClient();
-  const { data: unitRow } = await supabase
-    .from('units')
-    .select('name, code, mess_type, terrain')
-    .eq('id', unitId)
-    .maybeSingle();
+  const unitsCol = await getCollection('units');
+  const unitRow = await unitsCol.findOne({ id: unitId });
 
   const messType = (unitRow?.mess_type as MessType | null) ?? null;
   const unitTerrain = (unitRow?.terrain as RationTerrain | null) ?? null;

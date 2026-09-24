@@ -9,6 +9,7 @@ import {
   finalizeBarChitAction,
   reopenBarChitAction,
 } from '@/lib/bar/actions';
+import { getCollection } from '@/lib/mongo';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,26 +19,6 @@ type Ctx = { params: Promise<{ id: string }> };
 const patchBarChitSchema = z.object({
   action: z.enum(['finalize', 'reopen']),
 });
-
-const CHIT_DETAIL_SELECT = `
-  *,
-  profile:profile_id (id, full_name, email, rank, service_no),
-  booking:booking_id (
-    id,
-    guest_name,
-    room:room_id (name)
-  ),
-  items:bar_chit_items (
-    *,
-    variant:variant_id (
-      id,
-      unit_value,
-      unit_type,
-      package_type,
-      product:product_id (name)
-    )
-  )
-`;
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const { id } = await params;
@@ -63,15 +44,15 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
   if (res.error) throw Errors.badRequest(res.error);
 
-  const { data: chitRow, error: fetchErr } = await ctx.supabase
-    .from('bar_chits')
-    .select(CHIT_DETAIL_SELECT)
-    .eq('id', id)
-    .maybeSingle();
+  const barChits = await getCollection('bar_chits');
+  const barChitItems = await getCollection('bar_chit_items');
 
-  if (fetchErr) throw Errors.internal(fetchErr.message);
+  const chitRow = await barChits.findOne({ id });
   if (!chitRow) throw Errors.notFound();
 
-  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 200, chitRow);
-  return ok(chitRow);
+  const items = await barChitItems.find({ chit_id: id }).toArray();
+  const result = { ...chitRow, items };
+
+  if (idemKey) await storeResponse(idemKey, ctx.user.id, 200, JSON.stringify(result), bodyText);
+  return ok(result);
 });

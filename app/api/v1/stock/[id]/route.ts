@@ -1,10 +1,12 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser } from '@/lib/api/auth';
+import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
 import { updateLotSchema } from '@/lib/schemas/inventory';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
+import { getCollection } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,28 +16,71 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'read', ctx.user.id);
   const { id } = await params;
-  const { data, error } = await ctx.supabase
-    .from('v_unit_inventory_current')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  if (error) throw Errors.internal(error.message);
-  if (!data) throw Errors.notFound();
-  return ok(data);
+
+  const invCol = await getCollection('unit_inventory');
+
+  const pipeline: Record<string, unknown>[] = [
+    { $match: { id } },
+    {
+      $lookup: {
+        from: 'product_variants',
+        localField: 'variant_id',
+        foreignField: 'id',
+        as: 'variant',
+      },
+    },
+    { $unwind: '$variant' },
+    {
+      $lookup: {
+        from: 'products',
+        localField: 'variant.product_id',
+        foreignField: 'id',
+        as: 'product',
+      },
+    },
+    { $unwind: '$product' },
+    {
+      $lookup: {
+        from: 'categories',
+        localField: 'product.category_id',
+        foreignField: 'id',
+        as: 'category',
+      },
+    },
+    { $unwind: '$category' },
+  ];
+
+  const results = await invCol.aggregate(pipeline).toArray();
+  if (!results.length) throw Errors.notFound();
+
+  const doc = results[0];
+  const lot = {
+    id: doc.id,
+    unit_id: doc.unit_id,
+    item_id: doc.variant_id,
+    item_name: doc.product.name,
+    category: doc.category.name,
+    qty_packs: doc.qty_packs,
+    rate: doc.rate,
+    acquired_on: doc.acquired_on,
+    source: doc.source,
+    is_active: doc.is_active,
+    created_at: doc.created_at,
+    updated_at: doc.updated_at,
+  };
+
+  return ok(lot);
 });
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiUser(req);
   const { id } = await params;
 
-  // Resolve the lot's unit to scope the capability check.
-  const { data: existing } = await ctx.supabase
-    .from('unit_inventory')
-    .select('unit_id')
-    .eq('id', id)
-    .maybeSingle();
+  const invCol = await getCollection('unit_inventory');
+
+  const existing = (await invCol.findOne({ id })) as Record<string, unknown> | null;
   if (!existing) throw Errors.notFound();
 
+  const ctx = await requireApiCapability(req, 'inventory.write', existing.unit_id as string);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const bodyText = await req.text();
@@ -48,51 +93,57 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
     if (replay) return replay;
   }
 
-  const { acquired_on, pack_size_id, ...rest } = parsed.data;
-  const update = {
+  const { acquired_on, ...rest } = parsed.data;
+  const now = new Date().toISOString();
+  const update: Record<string, unknown> = {
     ...rest,
-    ...(pack_size_id !== undefined ? { variant_id: pack_size_id } : {}),
     ...(acquired_on !== undefined
       ? { acquired_on: acquired_on ? acquired_on.toISOString().slice(0, 10) : null }
       : {}),
+    updated_at: now,
     updated_by: ctx.user.id,
   };
 
-  // Service-role mutation — structurally pin to the resolved unit so the
-  // RLS-bypassing client can never touch another unit's lot.
-  const { data, error } = await ctx.admin
-    .from('unit_inventory')
-    .update(update)
-    .eq('id', id)
-    .eq('unit_id', existing.unit_id)
-    .select()
-    .single();
-  if (error) throw Errors.internal(error.message);
+  await invCol.updateOne({ id }, { $set: update });
 
-  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 200, data);
-  return ok(data);
+  const updatedDoc = { ...existing, ...update };
+  await writeAudit({
+    table_name: 'unit_inventory',
+    row_pk: id,
+    op: 'UPDATE',
+    active_unit_id: existing.unit_id,
+    changed_by: ctx.user.id,
+    old_data: existing,
+    new_data: updatedDoc,
+  });
+
+  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 200, updatedDoc);
+  return ok(updatedDoc);
 });
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiUser(req);
   const { id } = await params;
 
-  const { data: existing } = await ctx.supabase
-    .from('unit_inventory')
-    .select('unit_id')
-    .eq('id', id)
-    .maybeSingle();
+  const invCol = await getCollection('unit_inventory');
+
+  const existing = (await invCol.findOne({ id })) as Record<string, unknown> | null;
   if (!existing) throw Errors.notFound();
 
+  const ctx = await requireApiCapability(req, 'inventory.write', existing.unit_id as string);
   await checkRateLimit(req, 'write', ctx.user.id);
 
-  // Soft delete — preserve the lot for audit/history. Service-role mutation
-  // structurally pinned to the resolved unit.
-  const { error } = await ctx.admin
-    .from('unit_inventory')
-    .update({ is_active: false, updated_by: ctx.user.id })
-    .eq('id', id)
-    .eq('unit_id', existing.unit_id);
-  if (error) throw Errors.internal(error.message);
+  const now = new Date().toISOString();
+  await invCol.updateOne({ id }, { $set: { is_active: false, updated_at: now, updated_by: ctx.user.id } });
+
+  await writeAudit({
+    table_name: 'unit_inventory',
+    row_pk: id,
+    op: 'UPDATE',
+    active_unit_id: existing.unit_id,
+    changed_by: ctx.user.id,
+    old_data: existing,
+    new_data: { ...existing, is_active: false, updated_at: now },
+  });
+
   return noContent();
 });

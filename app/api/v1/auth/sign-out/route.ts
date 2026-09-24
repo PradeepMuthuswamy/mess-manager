@@ -7,6 +7,5 @@ export const runtime = 'nodejs';
 
 export const POST = withRoute(async (req: NextRequest) => {
   const ctx = await requireApiUser(req);
-  await ctx.supabase.auth.signOut();
   return noContent();
 });

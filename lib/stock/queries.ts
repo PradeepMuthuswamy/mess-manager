@@ -1,5 +1,6 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
+import { listItemsCurrent } from '@/lib/masters/queries';
 import type {
   InventoryLotRow,
   ListInventoryOpts,
@@ -7,97 +8,171 @@ import type {
 } from './types';
 import type { InventoryCategory } from '@/lib/masters/categories';
 
-// Current inventory lots for a unit.
-// - If `unitId` is null (admin in "All units" mode) return [] so the page can
-//   render the same empty-state pattern as /ration — there is no all-units
-//   inventory roll-up in Phase 1.
-// - Otherwise query the current-lots view scoped to the unit. The cookies-aware
-//   client is used so RLS applies on top of the explicit capability gate.
+const uomMap: Record<string, string> = {
+  ML: 'ml',
+  LITRE: 'l',
+  GRAM: 'g',
+  KG: 'kg',
+  PIECE: 'piece',
+};
+
 export async function listInventory(
   unitId: string | null,
   opts: ListInventoryOpts = {},
 ): Promise<{ rows: InventoryLotRow[]; totalCount: number }> {
   if (unitId === null) return { rows: [], totalCount: 0 };
 
-  const supabase = await createClient();
-  let q = supabase
-    .from('v_unit_inventory_current')
-    .select(
-      'id, unit_id, item_id, item_name, category, pack_size_id, pack_label, kind, volume_ml, unit_count, qty_packs, rate, acquired_on, source, uom, is_active, created_at, created_by, updated_at, updated_by',
-      { count: 'exact' }
-    )
-    .eq('unit_id', unitId)
-    // Ration is scale-derived and lives only in the ration module — it is
-    // never a stockable inventory lot. Exclude it defensively even when no
-    // category filter is supplied so it can never leak into any tab.
-    .neq('category', 'ration');
+  const db = await getDb();
+  const invCol = db.collection('unit_inventory');
 
-  if (opts.category) q = q.eq('category', opts.category);
-  if (!opts.includeInactive) q = q.eq('is_active', true);
-  if (opts.q) q = q.ilike('item_name', `%${opts.q}%`);
-  if (opts.itemId) q = q.eq('item_id', opts.itemId);
+  const matchStage: Record<string, unknown> = { unit_id: unitId };
+  if (!opts.includeInactive) matchStage.is_active = { $ne: false };
+  if (opts.itemId) matchStage.variant_id = opts.itemId;
 
-  const ascending = opts.sortOrder === 'desc' ? false : true;
-  let sortByCol = 'item_name';
-  if (opts.sortBy === 'qty') sortByCol = 'qty_packs';
-  else if (opts.sortBy === 'rate') sortByCol = 'rate';
-  else if (opts.sortBy === 'acquired') sortByCol = 'acquired_on';
-  else if (opts.sortBy === 'source') sortByCol = 'source';
+  const pipeline: Record<string, unknown>[] = [
+    { $match: matchStage },
+    {
+      $lookup: {
+        from: 'product_variants',
+        localField: 'variant_id',
+        foreignField: 'id',
+        as: 'variant',
+      },
+    },
+    { $unwind: '$variant' },
+    {
+      $lookup: {
+        from: 'products',
+        localField: 'variant.product_id',
+        foreignField: 'id',
+        as: 'product',
+      },
+    },
+    { $unwind: '$product' },
+    {
+      $lookup: {
+        from: 'categories',
+        localField: 'product.category_id',
+        foreignField: 'id',
+        as: 'category',
+      },
+    },
+    { $unwind: '$category' },
+  ];
 
-  q = q.order(sortByCol, { ascending });
-  if (sortByCol !== 'item_name') {
-    q = q.order('item_name', { ascending: true });
+  if (opts.q) {
+    const qClean = opts.q.trim();
+    if (qClean) {
+      pipeline.push({
+        $match: {
+          'product.name': { $regex: qClean, $options: 'i' },
+        },
+      });
+    }
   }
 
-  // Pagination
-  if (opts.page && opts.pageSize) {
-    const from = (opts.page - 1) * opts.pageSize;
-    const to = from + opts.pageSize - 1;
-    q = q.range(from, to);
+  const sortOrder = opts.sortOrder === 'desc' ? -1 : 1;
+  const sortStage: Record<string, unknown> = {};
+  if (opts.sortBy === 'qty') sortStage.qty_packs = sortOrder;
+  else if (opts.sortBy === 'rate') sortStage.rate = sortOrder;
+  else if (opts.sortBy === 'acquired') sortStage.acquired_on = sortOrder;
+  else if (opts.sortBy === 'source') sortStage.source = sortOrder;
+  else sortStage['product.name'] = sortOrder;
+
+  if (opts.sortBy !== 'name') {
+    sortStage['product.name'] = 1;
   }
 
-  const { data, error, count } = await q;
-  if (error) throw new Error(error.message);
-  
-  return {
-    rows: (data ?? []) as InventoryLotRow[],
-    totalCount: count ?? (data?.length ?? 0),
-  };
+  pipeline.push({
+    $facet: {
+      total: [{ $count: 'count' }],
+      rows: [
+        { $sort: sortStage },
+        ...(opts.page && opts.pageSize
+          ? [
+              { $skip: (opts.page - 1) * opts.pageSize },
+              { $limit: opts.pageSize },
+            ]
+          : []),
+      ],
+    },
+  });
+
+  const results = await invCol.aggregate(pipeline).toArray();
+  const facetResult = results[0] || { total: [], rows: [] };
+  const totalCount = facetResult.total[0]?.count ?? 0;
+
+  const rows: InventoryLotRow[] = [];
+  for (const doc of facetResult.rows ?? []) {
+    const catName = (doc.category.name || '').toLowerCase();
+    let category: InventoryCategory = 'grocery';
+    if (catName.includes('alcohol') || catName.includes('beer') || catName.includes('rum') || catName.includes('whisky')) {
+      category = 'alcohol';
+    } else if (catName.includes('cold') || catName.includes('drink')) {
+      category = 'soft_drink';
+    } else if (catName.includes('cigar')) {
+      category = 'cigar';
+    } else if (catName.includes('ration')) {
+      continue;
+    }
+
+    if (opts.category && category !== opts.category) continue;
+
+    const packKind = ['ML', 'LITRE'].includes(doc.variant.unit_type) ? 'volume' : 'count';
+    let volumeMl: number | null = null;
+    if (doc.variant.unit_type === 'ML') volumeMl = Number(doc.variant.unit_value);
+    else if (doc.variant.unit_type === 'LITRE') volumeMl = Number(doc.variant.unit_value) * 1000;
+    const unitCount = doc.variant.unit_type === 'PIECE' ? Number(doc.variant.unit_value) : null;
+
+    rows.push({
+      id: doc.id,
+      unit_id: doc.unit_id,
+      item_id: doc.variant_id,
+      item_name: doc.product.name,
+      category,
+      pack_size_id: null,
+      pack_label: `${doc.variant.unit_value} ${doc.variant.unit_type} ${doc.variant.package_type}`,
+      kind: packKind as 'volume' | 'count',
+      volume_ml: volumeMl,
+      unit_count: unitCount,
+      qty_packs: Number(doc.qty_packs ?? 0),
+      rate: Number(doc.rate ?? 0),
+      acquired_on: doc.acquired_on || '',
+      source: doc.source ?? null,
+      uom: (uomMap[doc.variant.unit_type] || 'piece') as unknown,
+      is_active: Boolean(doc.is_active !== false),
+      created_at: doc.created_at || '',
+      created_by: doc.created_by ?? null,
+      updated_at: doc.updated_at || '',
+      updated_by: doc.updated_by ?? null,
+    });
+  }
+
+  return { rows, totalCount };
 }
 
-// Master items for the add-lot picker, scoped to the active inventory tab's
-// category. Ration is a HARD exclude (scale-derived, ration-module only) — it
-// can never appear in the picker regardless of `category`. When `category` is
-// given the picker is restricted to that one category so a lot cannot be
-// opened against a wrong-category master from a tab. Queries the current-items
-// view directly via the cookies-aware client (RLS applies on top of the
-// page's explicit capability gate). Includes the unit's own items plus the
-// global (unit_id is null) catalogue.
 export async function listMasterItemsForPicker(
-  unitId: string | null,
+  _unitId: string | null,
   q?: string,
   category?: InventoryCategory,
 ): Promise<MasterItemPick[]> {
-  const supabase = await createClient();
-  let query = supabase
-    .from('v_items_current')
-    .select('id, name, category, uom, pack_label, pack_kind, volume_ml, unit_count')
-    .eq('is_active', true)
-    // Hard exclude ration even if no category is passed.
-    .neq('category', 'ration')
-    .order('name')
-    .limit(50);
+  const items = await listItemsCurrent({
+    category,
+    activeOnly: true,
+    q,
+    limit: 50,
+  });
 
-  if (category) query = query.eq('category', category);
-
-  if (unitId === null) {
-    query = query.is('unit_id', null);
-  } else {
-    query = query.or(`unit_id.is.null,unit_id.eq.${unitId}`);
-  }
-  if (q) query = query.ilike('name', `%${q}%`);
-
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as MasterItemPick[];
+  return items
+    .filter((i) => i.category !== 'ration')
+    .map((i) => ({
+      id: i.id,
+      name: i.name,
+      category: i.category as InventoryCategory,
+      uom: i.uom,
+      pack_label: i.pack_label,
+      pack_kind: i.pack_kind,
+      volume_ml: i.volume_ml,
+      unit_count: i.unit_count,
+    }));
 }
