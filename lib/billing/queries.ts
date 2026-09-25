@@ -1,8 +1,11 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
+import type { Document } from 'mongodb';
 import type {
   MessBillingPeriodRow,
-  MessBillRow,
+  MessBillingPeriod,
+  MessBill,
+  MessBillLineItem,
   MessBillWithDetails,
   MessSubscriptionRow,
   MessMiscDebitRow,
@@ -17,13 +20,14 @@ import {
   type BarChitRollupRow,
   type HostRoomBillRollupRow,
 } from './compute';
-import type { Database } from '@/lib/supabase/database.types';
+import type { GuestMeal } from '@/lib/messing/types';
+import type { MessPartyCharge } from '@/lib/parties/types';
 
-export type GuestMealBillRow = Database['public']['Tables']['guest_meals']['Row'];
-export type PartyChargeBillRow = Database['public']['Tables']['mess_party_charges']['Row'];
+export type GuestMealBillRow = GuestMeal;
+export type PartyChargeBillRow = MessPartyCharge & { billed_period_id?: string | null };
 
 /** Generated types lag `billed_period_id` on misc debits. */
-export type MiscDebitBillRow = Database['public']['Tables']['mess_misc_debits']['Row'] & {
+export type MiscDebitBillRow = MessMiscDebitRow & {
   billed_period_id: string | null;
 };
 
@@ -43,19 +47,24 @@ export type PublishedBillForEmail = {
   period_name: string;
 };
 
+function cleanDoc<T>(doc: Record<string, unknown> | null | undefined): T {
+  if (!doc) return doc as T;
+  const { _id, ...rest } = doc;
+  return rest as T;
+}
+
 /**
  * Returns all billing periods for a unit.
  */
 export async function getBillingPeriods(unitId: string): Promise<MessBillingPeriodRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_billing_periods')
-    .select('*')
-    .eq('unit_id', unitId)
-    .order('start_date', { ascending: false });
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_billing_periods')
+    .find({ unit_id: unitId })
+    .sort({ start_date: -1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return docs.map((d: Document) => cleanDoc<MessBillingPeriodRow>(d));
 }
 
 /**
@@ -64,96 +73,123 @@ export async function getBillingPeriods(unitId: string): Promise<MessBillingPeri
 export async function getCurrentBillingPeriod(
   unitId: string
 ): Promise<MessBillingPeriodRow | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_billing_periods')
-    .select('*')
-    .eq('unit_id', unitId)
-    .in('status', ['open', 'draft', 'published'])
-    .order('start_date', { ascending: false })
+  const db = await getDb();
+  const doc = await db
+    .collection('mess_billing_periods')
+    .find({
+      unit_id: unitId,
+      status: { $in: ['open', 'draft', 'published'] },
+    })
+    .sort({ start_date: -1 })
     .limit(1)
-    .maybeSingle();
+    .next();
 
-  if (error) throw new Error(error.message);
-  return data;
+  return doc ? cleanDoc<MessBillingPeriodRow>(doc) : null;
 }
 
 /**
  * Returns all bills for a particular member across periods.
  */
 export async function getMyMessBills(profileId: string): Promise<MessBillWithDetails[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_bills')
-    .select(`
-      *,
-      period:mess_billing_periods (*)
-    `)
-    .eq('profile_id', profileId)
-    .in('status', ['published', 'paid', 'overdue'])
-    .order('created_at', { ascending: false });
+  const db = await getDb();
+  const bills = await db
+    .collection('mess_bills')
+    .find({
+      profile_id: profileId,
+      status: { $in: ['published', 'paid', 'overdue'] },
+    })
+    .sort({ created_at: -1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data as unknown as MessBillWithDetails[]) ?? [];
+  if (bills.length === 0) return [];
+
+  const periodIds = Array.from(new Set(bills.map((b: Document) => b.billing_period_id as string).filter(Boolean)));
+  const periods = periodIds.length > 0
+    ? await db.collection('mess_billing_periods').find({ id: { $in: periodIds } }).toArray()
+    : [];
+  const periodMap = new Map(periods.map((p: Document) => [p.id as string, cleanDoc<MessBillingPeriod>(p)]));
+
+  return bills.map((b: Document) => {
+    const bill = cleanDoc<MessBill>(b);
+    return {
+      ...bill,
+      period: bill.billing_period_id ? periodMap.get(bill.billing_period_id) ?? null : null,
+    };
+  });
 }
 
 /**
  * Returns all bills generated for a specific billing period (Mess Secretary audit view).
  */
 export async function getMessBillsForPeriod(periodId: string): Promise<MessBillWithDetails[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_bills')
-    .select(`
-      *,
-      profile:profiles (
-        id,
-        full_name,
-        service_no,
-        rank
-      )
-    `)
-    .eq('billing_period_id', periodId)
-    .order('bill_number', { ascending: true });
+  const db = await getDb();
+  const bills = await db
+    .collection('mess_bills')
+    .find({ billing_period_id: periodId })
+    .sort({ bill_number: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data as unknown as MessBillWithDetails[]) ?? [];
+  if (bills.length === 0) return [];
+
+  const profileIds = Array.from(new Set(bills.map((b: Document) => b.profile_id as string).filter(Boolean)));
+  const profiles = profileIds.length > 0
+    ? await db.collection('profiles').find({ id: { $in: profileIds } }).toArray()
+    : [];
+  const profileMap = new Map(profiles.map((p: Document) => [p.id as string, p]));
+
+  return bills.map((b: Document) => {
+    const bill = cleanDoc<MessBill>(b);
+    const prof = bill.profile_id ? profileMap.get(bill.profile_id) : null;
+    return {
+      ...bill,
+      profile: prof
+        ? {
+            id: prof.id as string,
+            full_name: (prof.full_name as string) ?? null,
+            service_no: (prof.service_no as string) ?? null,
+            rank: (prof.rank as string) ?? null,
+          }
+        : null,
+    };
+  });
 }
 
 /**
  * Fetches a single mess bill with its granular line items.
  */
 export async function getMessBillDetails(billId: string): Promise<MessBillWithDetails | null> {
-  const supabase = await createClient();
-  const { data: bill, error: billErr } = await supabase
-    .from('mess_bills')
-    .select(`
-      *,
-      period:mess_billing_periods (*),
-      profile:profiles (
-        id,
-        full_name,
-        service_no,
-        rank
-      )
-    `)
-    .eq('id', billId)
-    .maybeSingle();
+  const db = await getDb();
+  const rawBill = await db.collection('mess_bills').findOne({ id: billId });
+  if (!rawBill) return null;
 
-  if (billErr) throw new Error(billErr.message);
-  if (!bill) return null;
+  const bill = cleanDoc<MessBill>(rawBill);
 
-  const { data: lineItems, error: itemsErr } = await supabase
-    .from('mess_bill_line_items')
-    .select('*')
-    .eq('bill_id', billId)
-    .order('item_date', { ascending: true });
-
-  if (itemsErr) throw new Error(itemsErr.message);
+  const [rawPeriod, rawProfile, lineItemsDocs] = await Promise.all([
+    bill.billing_period_id
+      ? db.collection('mess_billing_periods').findOne({ id: bill.billing_period_id })
+      : Promise.resolve(null),
+    bill.profile_id
+      ? db.collection('profiles').findOne({ id: bill.profile_id })
+      : Promise.resolve(null),
+    db
+      .collection('mess_bill_line_items')
+      .find({ bill_id: billId })
+      .sort({ item_date: 1 })
+      .toArray(),
+  ]);
 
   return {
-    ...(bill as unknown as MessBillWithDetails),
-    line_items: lineItems ?? [],
+    ...bill,
+    period: rawPeriod ? cleanDoc<MessBillingPeriod>(rawPeriod) : null,
+    profile: rawProfile
+      ? {
+          id: rawProfile.id as string,
+          full_name: (rawProfile.full_name as string) ?? null,
+          service_no: (rawProfile.service_no as string) ?? null,
+          rank: (rawProfile.rank as string) ?? null,
+        }
+      : null,
+    line_items: lineItemsDocs.map((item: Document) => cleanDoc<MessBillLineItem>(item)),
   };
 }
 
@@ -161,15 +197,14 @@ export async function getMessBillDetails(billId: string): Promise<MessBillWithDe
  * Lists all recurring mess subscriptions for a unit.
  */
 export async function getSubscriptions(unitId: string): Promise<MessSubscriptionRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_subscriptions')
-    .select('*')
-    .eq('unit_id', unitId)
-    .order('name', { ascending: true });
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_subscriptions')
+    .find({ unit_id: unitId })
+    .sort({ name: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return docs.map((d: Document) => cleanDoc<MessSubscriptionRow>(d));
 }
 
 /**
@@ -179,21 +214,21 @@ export async function getPendingMiscDebits(
   unitId: string,
   profileId?: string
 ): Promise<MessMiscDebitRow[]> {
-  const supabase = await createClient();
-  let query = supabase
-    .from('mess_misc_debits')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('is_billed', false)
-    .order('charge_date', { ascending: false });
-
+  const db = await getDb();
+  const filter: Record<string, unknown> = {
+    unit_id: unitId,
+    is_billed: false,
+  };
   if (profileId) {
-    query = query.eq('profile_id', profileId);
+    filter.profile_id = profileId;
   }
+  const docs = await db
+    .collection('mess_misc_debits')
+    .find(filter)
+    .sort({ charge_date: -1 })
+    .toArray();
 
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return docs.map((d: Document) => cleanDoc<MessMiscDebitRow>(d));
 }
 
 /**
@@ -205,19 +240,21 @@ export async function getBillableBarChitsForPeriod(
   startDate: string,
   endDate: string
 ): Promise<BarChitRollupRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('bar_chits')
-    .select('id, profile_id, booking_id, status, total_amount, date')
-    .eq('unit_id', unitId)
-    .in('status', [...BILLABLE_BAR_CHIT_STATUSES])
-    .is('booking_id', null)
-    .not('profile_id', 'is', null)
-    .gte('date', startDate)
-    .lte('date', endDate);
+  const db = await getDb();
+  const docs = await db
+    .collection('bar_chits')
+    .find({
+      unit_id: unitId,
+      status: { $in: [...BILLABLE_BAR_CHIT_STATUSES] },
+      booking_id: null,
+      profile_id: { $ne: null },
+      date: { $gte: startDate, $lte: endDate },
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []).filter(isBillableMemberBarChit);
+  return docs
+    .map((d: Document) => cleanDoc<BarChitRollupRow>(d))
+    .filter(isBillableMemberBarChit);
 }
 
 type RoomBillQueryRow = {
@@ -280,37 +317,54 @@ export async function getHostChargeRoomBillsForPeriod(
   startDate: string,
   endDate: string
 ): Promise<HostRoomBillWithPeriodFlag[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('room_bills')
-    .select(
-      `
-      id,
-      total_amount,
-      settlement_type,
-      status,
-      payment_status,
-      paid_at,
-      is_billed,
-      billed_period_id,
-      booking:bookings!inner (
-        host_profile_id,
-        guest_name,
-        actual_check_out,
-        check_out_date,
-        room:rooms (
-          name
-        )
-      )
-    `
-    )
-    .eq('unit_id', unitId)
-    .eq('settlement_type', 'CHARGE_TO_HOST');
+  const db = await getDb();
+  const roomBills = await db
+    .collection('room_bills')
+    .find({
+      unit_id: unitId,
+      settlement_type: 'CHARGE_TO_HOST',
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
+  if (roomBills.length === 0) return [];
 
-  return ((data ?? []) as unknown as RoomBillQueryRow[])
-    .map(normalizeRoomBillRow)
+  const bookingIds = Array.from(new Set(roomBills.map((rb: Document) => rb.booking_id as string).filter(Boolean)));
+  const bookings = bookingIds.length > 0
+    ? await db.collection('bookings').find({ id: { $in: bookingIds } }).toArray()
+    : [];
+  const roomIds = Array.from(new Set(bookings.map((b: Document) => b.room_id as string).filter(Boolean)));
+  const rooms = roomIds.length > 0
+    ? await db.collection('rooms').find({ id: { $in: roomIds } }).toArray()
+    : [];
+  const roomMap = new Map(rooms.map((r: Document) => [r.id as string, r]));
+  const bookingMap = new Map(
+    bookings.map((b: Document) => [
+      b.id as string,
+      {
+        host_profile_id: (b.host_profile_id as string) ?? null,
+        guest_name: (b.guest_name as string) ?? null,
+        actual_check_out: (b.actual_check_out as string) ?? null,
+        check_out_date: (b.check_out_date as string) ?? null,
+        room: b.room_id && roomMap.has(b.room_id as string) ? { name: (roomMap.get(b.room_id as string)?.name as string) ?? null } : null,
+      },
+    ])
+  );
+
+  return roomBills
+    .map((rb: Document) => {
+      const bInfo = rb.booking_id ? bookingMap.get(rb.booking_id as string) ?? null : null;
+      return normalizeRoomBillRow({
+        id: rb.id as string,
+        total_amount: Number(rb.total_amount),
+        settlement_type: rb.settlement_type as string,
+        status: rb.status as string,
+        payment_status: (rb.payment_status as string) ?? null,
+        paid_at: (rb.paid_at as string) ?? null,
+        is_billed: Boolean(rb.is_billed),
+        billed_period_id: (rb.billed_period_id as string) ?? null,
+        booking: bInfo,
+      });
+    })
     .filter(
       (bill) => isHostChargeRoomBill(bill) && isRoomBillInPeriod(bill, startDate, endDate)
     );
@@ -324,19 +378,19 @@ export async function getRegisterStatusByDate(
   startDate: string,
   endDate: string
 ): Promise<Map<string, string | null>> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_daily_expenditures')
-    .select('expenditure_date, register_status')
-    .eq('unit_id', unitId)
-    .gte('expenditure_date', startDate)
-    .lte('expenditure_date', endDate);
-
-  if (error) throw new Error(error.message);
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_daily_expenditures')
+    .find({
+      unit_id: unitId,
+      expenditure_date: { $gte: startDate, $lte: endDate },
+    })
+    .project({ expenditure_date: 1, register_status: 1 })
+    .toArray();
 
   const map = new Map<string, string | null>();
-  for (const row of data ?? []) {
-    map.set(row.expenditure_date, row.register_status);
+  for (const row of docs) {
+    map.set(row.expenditure_date as string, (row.register_status as string | null) ?? null);
   }
   return map;
 }
@@ -347,16 +401,23 @@ export async function getBillableGuestMealsForPeriod(
   startDate: string,
   endDate: string
 ): Promise<GuestMealBillRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('guest_meals')
-    .select('*')
-    .eq('unit_id', unitId)
-    .gte('meal_date', startDate)
-    .lte('meal_date', endDate);
+  const db = await getDb();
+  const docs = await db
+    .collection('guest_meals')
+    .find({
+      unit_id: unitId,
+      meal_date: { $gte: startDate, $lte: endDate },
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []).filter((row) => isChargeBillableForPeriod(row, periodId));
+  return docs
+    .map((d: Document) => cleanDoc<GuestMealBillRow>(d))
+    .filter((row: GuestMealBillRow) =>
+      isChargeBillableForPeriod(
+        { is_billed: Boolean(row.is_billed), billed_period_id: row.billed_period_id ?? null },
+        periodId
+      )
+    );
 }
 
 export async function getBillableMiscDebitsForPeriod(
@@ -364,22 +425,24 @@ export async function getBillableMiscDebitsForPeriod(
   periodId: string,
   endDate: string
 ): Promise<MiscDebitBillRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_misc_debits')
-    .select('*')
-    .eq('unit_id', unitId)
-    .lte('charge_date', endDate)
-    .or(`is_billed.eq.false,billed_period_id.eq.${periodId}`);
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_misc_debits')
+    .find({
+      unit_id: unitId,
+      charge_date: { $lte: endDate },
+      $or: [{ is_billed: false }, { billed_period_id: periodId }],
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-
-  return ((data ?? []) as unknown as MiscDebitBillRow[]).filter((row) =>
-    isChargeBillableForPeriod(
-      { is_billed: row.is_billed, billed_period_id: row.billed_period_id ?? null },
-      periodId
-    )
-  );
+  return docs
+    .map((d: Document) => cleanDoc<MiscDebitBillRow>(d))
+    .filter((row: MiscDebitBillRow) =>
+      isChargeBillableForPeriod(
+        { is_billed: Boolean(row.is_billed), billed_period_id: row.billed_period_id ?? null },
+        periodId
+      )
+    );
 }
 
 export async function getBillablePartyChargesForPeriod(
@@ -387,16 +450,24 @@ export async function getBillablePartyChargesForPeriod(
   periodId: string,
   endDate: string
 ): Promise<PartyChargeBillRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_party_charges')
-    .select('*')
-    .eq('unit_id', unitId)
-    .lte('party_date', endDate)
-    .or(`is_billed.eq.false,billed_period_id.eq.${periodId}`);
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_party_charges')
+    .find({
+      unit_id: unitId,
+      party_date: { $lte: endDate },
+      $or: [{ is_billed: false }, { billed_period_id: periodId }],
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []).filter((row) => isChargeBillableForPeriod(row, periodId));
+  return docs
+    .map((d: Document) => cleanDoc<PartyChargeBillRow>(d))
+    .filter((row: PartyChargeBillRow) =>
+      isChargeBillableForPeriod(
+        { is_billed: Boolean(row.is_billed), billed_period_id: row.billed_period_id ?? null },
+        periodId
+      )
+    );
 }
 
 /**
@@ -406,41 +477,31 @@ export async function getPriorArrearSourceBills(
   unitId: string,
   periodStartDate: string
 ): Promise<ArrearSourceBill[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_bills')
-    .select(
-      `
-      profile_id,
-      total_amount,
-      paid_amount,
-      status,
-      period:mess_billing_periods!inner (
-        end_date
-      )
-    `
-    )
-    .eq('unit_id', unitId)
-    .in('status', ['published', 'overdue']);
+  const db = await getDb();
+  const bills = await db
+    .collection('mess_bills')
+    .find({
+      unit_id: unitId,
+      status: { $in: ['published', 'overdue'] },
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
+  if (bills.length === 0) return [];
 
-  type ArrearQueryRow = {
-    profile_id: string;
-    total_amount: number;
-    paid_amount: number | null;
-    status: string;
-    period: { end_date: string } | { end_date: string }[] | null;
-  };
+  const periodIds = Array.from(new Set(bills.map((b: Document) => b.billing_period_id as string).filter(Boolean)));
+  const periods = periodIds.length > 0
+    ? await db.collection('mess_billing_periods').find({ id: { $in: periodIds } }).toArray()
+    : [];
+  const periodMap = new Map(periods.map((p: Document) => [p.id as string, p]));
 
-  return ((data ?? []) as unknown as ArrearQueryRow[]).map((row) => {
-    const period = Array.isArray(row.period) ? row.period[0] : row.period;
+  return bills.map((b: Document) => {
+    const period = b.billing_period_id ? periodMap.get(b.billing_period_id as string) : null;
     return {
-      profile_id: row.profile_id,
-      total_amount: Number(row.total_amount),
-      paid_amount: Number(row.paid_amount ?? 0),
-      status: row.status,
-      period_end_date: period?.end_date ?? periodStartDate,
+      profile_id: b.profile_id as string,
+      total_amount: Number(b.total_amount),
+      paid_amount: Number(b.paid_amount ?? 0),
+      status: b.status as string,
+      period_end_date: (period?.end_date as string | undefined) ?? periodStartDate,
     };
   });
 }
@@ -448,67 +509,53 @@ export async function getPriorArrearSourceBills(
 export async function getPublishedBillsForEmail(
   periodId: string
 ): Promise<PublishedBillForEmail[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_bills')
-    .select(
-      `
-      id,
-      bill_number,
-      total_amount,
-      due_date,
-      profile_id,
-      profile:profiles (
-        email,
-        full_name
-      ),
-      period:mess_billing_periods (
-        name
-      )
-    `
-    )
-    .eq('billing_period_id', periodId)
-    .eq('status', 'published');
+  const db = await getDb();
+  const bills = await db
+    .collection('mess_bills')
+    .find({
+      billing_period_id: periodId,
+      status: 'published',
+    })
+    .toArray();
 
-  if (error) throw new Error(error.message);
+  if (bills.length === 0) return [];
 
-  type NotifyQueryRow = {
-    id: string;
-    bill_number: string;
-    total_amount: number;
-    due_date: string;
-    profile_id: string;
-    profile:
-      | { email: string | null; full_name: string | null }
-      | { email: string | null; full_name: string | null }[]
-      | null;
-    period: { name: string } | { name: string }[] | null;
-  };
+  const profileIds = Array.from(new Set(bills.map((b: Document) => b.profile_id as string).filter(Boolean)));
+  const [period, profiles] = await Promise.all([
+    db.collection('mess_billing_periods').findOne({ id: periodId }),
+    profileIds.length > 0
+      ? db.collection('profiles').find({ id: { $in: profileIds } }).toArray()
+      : [],
+  ]);
 
-  return ((data ?? []) as unknown as NotifyQueryRow[]).map((row) => {
-    const profile = Array.isArray(row.profile) ? row.profile[0] : row.profile;
-    const period = Array.isArray(row.period) ? row.period[0] : row.period;
+  const profileMap = new Map(profiles.map((p: Document) => [p.id as string, p]));
+  const periodName = (period?.name as string | undefined) ?? 'Mess bill';
+
+  return bills.map((b: Document) => {
+    const profile = b.profile_id ? profileMap.get(b.profile_id as string) : null;
     return {
-      id: row.id,
-      bill_number: row.bill_number,
-      total_amount: Number(row.total_amount),
-      due_date: row.due_date,
-      profile_id: row.profile_id,
-      email: profile?.email ?? null,
-      full_name: profile?.full_name ?? null,
-      period_name: period?.name ?? 'Mess bill',
+      id: b.id as string,
+      bill_number: b.bill_number as string,
+      total_amount: Number(b.total_amount),
+      due_date: b.due_date as string,
+      profile_id: b.profile_id as string,
+      email: (profile?.email as string | undefined) ?? null,
+      full_name: (profile?.full_name as string | undefined) ?? null,
+      period_name: periodName,
     };
   });
 }
 
 export async function getSentMessBillEmailIds(periodId: string): Promise<Set<string>> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_bill_email_sends')
-    .select('bill_id')
-    .eq('billing_period_id', periodId)
-    .eq('status', 'sent');
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_bill_email_sends')
+    .find({
+      billing_period_id: periodId,
+      status: 'sent',
+    })
+    .project({ bill_id: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return new Set((data ?? []).map((row) => row.bill_id));
+  return new Set(docs.map((row: Document) => row.bill_id as string));
 }

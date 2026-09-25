@@ -290,7 +290,7 @@ export function CheckoutDialog({
             ? paymentReference.trim() || null
             : null,
         guestName: booking.guest_name,
-        guestRank: booking.guest_rank,
+        guestRank: booking.guest_rank ?? null,
         roomName: booking.room?.name ?? 'Room',
         checkIn: booking.check_in_date,
         checkOut: booking.check_out_date,

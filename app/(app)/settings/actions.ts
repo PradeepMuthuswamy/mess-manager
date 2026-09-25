@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireUser } from '@/lib/auth/require-role';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 
 export type ProfileSaveState = { ok: true } | { error: string } | null;
 
@@ -16,21 +16,22 @@ export async function updateProfileAction(
   formData: FormData,
 ): Promise<ProfileSaveState> {
   const user = await requireUser();
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('profiles')
-    .update({
-      full_name: String(formData.get('full_name') ?? '').trim() || null,
-      service_no: String(formData.get('service_no') ?? '').trim() || null,
-      rank: String(formData.get('rank') ?? '').trim() || null,
-      date_of_birth: optionalIsoDate(formData.get('date_of_birth')),
-      marriage_date: optionalIsoDate(formData.get('marriage_date')),
-    })
-    .eq('id', user.id)
-    .select('id');
+  const col = await getCollection('profiles');
+  const result = await col.updateOne(
+    { id: user.id },
+    {
+      $set: {
+        full_name: String(formData.get('full_name') ?? '').trim() || null,
+        service_no: String(formData.get('service_no') ?? '').trim() || null,
+        rank: String(formData.get('rank') ?? '').trim() || null,
+        date_of_birth: optionalIsoDate(formData.get('date_of_birth')),
+        marriage_date: optionalIsoDate(formData.get('marriage_date')),
+        updated_at: new Date().toISOString(),
+      },
+    },
+  );
 
-  if (error) return { error: error.message };
-  if (!data?.length) return { error: 'Could not save personal details.' };
+  if (result.matchedCount === 0) return { error: 'Could not save personal details.' };
 
   revalidatePath('/settings');
   revalidatePath('/calendar');

@@ -6,6 +6,8 @@ import { createBarChitSchema, listBarChitsQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { createBarChitCore } from '@/lib/bar/actions';
+import { listBarChits } from '@/lib/bar/queries';
+import { getCollection } from '@/lib/mongo';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -19,40 +21,13 @@ export const GET = withRoute(async (req: NextRequest) => {
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
   const unitId = parsed.data.unit_id ?? ctx.user.activeUnitId ?? ctx.user.homeUnitId ?? null;
-
   if (unitId === null) {
     return ok({ data: [] });
   }
 
-  const { data, error } = await ctx.supabase
-    .from('bar_chits')
-    .select(`
-      *,
-      profile:profile_id (id, full_name, email, rank, service_no),
-      booking:booking_id (
-        id,
-        guest_name,
-        room:room_id (name)
-      ),
-      items:bar_chit_items (
-        *,
-        variant:variant_id (
-          id,
-          unit_value,
-          unit_type,
-          package_type,
-          product:product_id (name)
-        )
-      )
-    `)
-    .eq('unit_id', unitId)
-    .order('date', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(parsed.data.limit);
-
-  if (error) throw Errors.internal(error.message);
-
-  return ok({ data });
+  const allChits = await listBarChits(unitId);
+  const page = allChits.slice(0, parsed.data.limit);
+  return ok({ data: page });
 });
 
 export const POST = withRoute(async (req: NextRequest) => {
@@ -60,9 +35,6 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = createBarChitSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const { unit_id } = parsed.data;
-
-  // Capability gate
   const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
@@ -72,42 +44,22 @@ export const POST = withRoute(async (req: NextRequest) => {
     if (replay) return replay;
   }
 
-  const res = await createBarChitCore(ctx.supabase, ctx.user.id, parsed.data);
-  if ('error' in res && res.error) {
-    throw Errors.badRequest(res.error);
+  const res = await createBarChitCore(ctx.user.id, parsed.data);
+  if (!res.ok || !res.id) {
+    throw Errors.badRequest(res.error ?? 'Failed to create bar chit');
   }
+  const chitId = res.id;
 
-  const chitId = res.id!;
-  
-  // Fetch full details of the newly created chit for response
-  const { data: chitRow, error: fetchErr } = await ctx.supabase
-    .from('bar_chits')
-    .select(`
-      *,
-      profile:profile_id (id, full_name, email, rank, service_no),
-      booking:booking_id (
-        id,
-        guest_name,
-        room:room_id (name)
-      ),
-      items:bar_chit_items (
-        *,
-        variant:variant_id (
-          id,
-          unit_value,
-          unit_type,
-          package_type,
-          product:product_id (name)
-        )
-      )
-    `)
-    .eq('id', chitId)
-    .single();
+  const barChits = await getCollection('bar_chits');
+  const barChitItems = await getCollection('bar_chit_items');
 
-  if (fetchErr || !chitRow) {
-    throw Errors.internal(fetchErr?.message ?? 'Chit created but retrieval failed');
+  const chitRow = await barChits.findOne({ id: chitId });
+  const items = await barChitItems.find({ chit_id: chitId }).toArray();
+
+  const responseBody = { ...chitRow, items };
+  const response = created(responseBody, `/api/v1/bar/chits/${chitId}`);
+  if (idemKey) {
+    await storeResponse(idemKey, ctx.user.id, response.status, await response.clone().text(), bodyText);
   }
-
-  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, chitRow);
-  return created(chitRow, `/api/v1/bar/chits/${chitId}`);
+  return response;
 });

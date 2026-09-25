@@ -1,11 +1,12 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, noContent } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser } from '@/lib/api/auth';
+import { requireApiUser, requireApiRole } from '@/lib/api/auth';
 import { updateTemplateSchema } from '@/lib/schemas';
-import type { Database } from '@/lib/supabase/database.types';
-
-type TemplateUpdate = Database['public']['Tables']['capability_templates']['Update'];
+import { getDb } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
+import type { CapabilityTemplateDoc } from '@/lib/users/types';
+import type { Capability } from '@/lib/auth/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -13,58 +14,83 @@ export const runtime = 'nodejs';
 type Ctx = { params: Promise<{ id: string }> };
 
 export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiUser(req);
+  await requireApiUser(req);
   const { id } = await params;
-  const { data, error } = await ctx.supabase
-    .from('capability_templates')
-    .select('id, name, description, capabilities, is_system, created_at, updated_at')
-    .eq('id', id)
-    .maybeSingle();
-  if (error) throw Errors.internal(error.message);
-  if (!data) throw Errors.notFound();
-  return ok(data);
+
+  const db = await getDb();
+  const tpl = await db.collection<CapabilityTemplateDoc>('capability_templates').findOne({ id });
+  if (!tpl) throw Errors.notFound();
+
+  const clean = { ...tpl };
+  delete (clean as Record<string, unknown>)._id;
+  return ok(clean);
 });
 
 export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiUser(req);
+  const ctx = await requireApiRole(req, ['super_admin']);
   const { id } = await params;
   const body = await req.json().catch(() => null);
   const parsed = updateTemplateSchema.safeParse(body);
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const update: TemplateUpdate = {};
+  const db = await getDb();
+  const col = db.collection<CapabilityTemplateDoc>('capability_templates');
+  const existing = await col.findOne({ id });
+  if (!existing) throw Errors.notFound();
+
+  if (parsed.data.name && parsed.data.name !== existing.name) {
+    const dup = await col.findOne({ name: parsed.data.name });
+    if (dup) throw Errors.conflict('Template with that name already exists');
+  }
+
+  const now = new Date().toISOString();
+  const update: Partial<CapabilityTemplateDoc> = {
+    updated_at: now,
+    updated_by: ctx.user.id,
+  };
   if (parsed.data.name !== undefined) update.name = parsed.data.name;
   if (parsed.data.description !== undefined) update.description = parsed.data.description;
   if (parsed.data.capabilities !== undefined) {
-    update.capabilities = parsed.data.capabilities as TemplateUpdate['capabilities'];
+    update.capabilities = parsed.data.capabilities as Capability[];
   }
-  update.updated_by = ctx.user.id;
 
-  const { data, error } = await ctx.admin
-    .from('capability_templates')
-    .update(update)
-    .eq('id', id)
-    .select()
-    .single();
-  if (error?.code === '23505') throw Errors.conflict('Template with that name already exists');
-  if (error) throw Errors.internal(error.message);
-  return ok(data);
+  await col.updateOne({ id }, { $set: update });
+
+  const cleanExisting = { ...existing };
+  delete (cleanExisting as Record<string, unknown>)._id;
+  const updated: CapabilityTemplateDoc = { ...cleanExisting, ...update };
+
+  await writeAudit({
+    table_name: 'capability_templates',
+    row_pk: id,
+    op: 'UPDATE',
+    changed_by: ctx.user.id,
+    old_data: existing as never,
+    new_data: updated as never,
+  });
+
+  return ok(updated);
 });
 
 export const DELETE = withRoute(async (req: NextRequest, { params }: Ctx) => {
-  const ctx = await requireApiUser(req);
+  const ctx = await requireApiRole(req, ['super_admin']);
   const { id } = await params;
 
-  const { data: existing, error: getErr } = await ctx.admin
-    .from('capability_templates')
-    .select('id, is_system')
-    .eq('id', id)
-    .maybeSingle();
-  if (getErr) throw Errors.internal(getErr.message);
+  const db = await getDb();
+  const col = db.collection<CapabilityTemplateDoc>('capability_templates');
+  const existing = await col.findOne({ id });
   if (!existing) throw Errors.notFound();
   if (existing.is_system) throw Errors.forbidden('Cannot delete system templates');
 
-  const { error } = await ctx.admin.from('capability_templates').delete().eq('id', id);
-  if (error) throw Errors.internal(error.message);
+  await col.deleteOne({ id });
+
+  await writeAudit({
+    table_name: 'capability_templates',
+    row_pk: id,
+    op: 'DELETE',
+    changed_by: ctx.user.id,
+    old_data: existing as never,
+  });
+
   return noContent();
 });

@@ -41,7 +41,7 @@ Deliver a **multi-tenant SaaS** so an Indian Officers' Mess (or related establis
 
 ### 2.1 Tenant model
 
-- **REQ-PLAT-01:** Each subscribing customer is a **unit** (one mess), isolated by `unit_id` with row-level security.
+- **REQ-PLAT-01:** Each subscribing customer is a **unit** (one mess), isolated by `unit_id` at the document level across all operational collections with mandatory query scoping, compound index constraints (`{ unit_id: 1, ... }`), and server-side capability gates.
 - **REQ-PLAT-02:** A platform **super admin** manages all units, global masters, and master ration scales (Admin app).
 - **REQ-PLAT-03:** Each unit has a **unit admin** surface (Mess Secretary / PMC) for users, settings, and bill publication within that unit.
 - **REQ-PLAT-04:** Units declare **enabled modules** (e.g. `guest_rooms`, `ration`, `bar`, `attendance`, `billing`, `parties`, `garden`) so transit or guest-rooms-only tenants are not forced through irrelevant navigation.
@@ -83,7 +83,7 @@ Settings already support **messing billing mode** (`FLAT_RATE` vs `P_REGISTER_SP
 
 ### 2.5 Master data & global catalog (single source of truth)
 
-Operational modules (bar, ration, inventory) reference **one canonical item identity** per product — e.g. "Old Monk" nationwide — even when **SKU**, **lot cost**, and **menu price** differ by unit and time. **Catalog-backed consumption** must use **`product_variants.id`**; **tariff charges** (room rent, flat messing, subscriptions) use **unit config**, not catalog rows.
+Operational modules (bar, ration, inventory) reference **one canonical item identity** per product — e.g. "Old Monk" nationwide — even when **SKU**, **lot cost**, and **menu price** differ by unit and time. **Catalog-backed consumption** must use **`product_variants.id`**; **tariff charges** (room rent, flat messing, subscriptions) use **unit config**, not catalog documents.
 
 **Architecture:** [`FOUNDATION.md`](./FOUNDATION.md) §2 (target model, foundation reset, phase audit).
 
@@ -93,7 +93,7 @@ Operational modules (bar, ration, inventory) reference **one canonical item iden
 |-----------|-------------|
 | **Three planes** | **Identity** (category → product → variant) · **Lot economics** (`unit_inventory`) · **Sale price** (menu rate + snapshot on chit lines). |
 | **Global catalog only** | `products` are **platform-global**. Units **adopt** via `unit_catalog`; ops app does not create products. |
-| **Two domains** | **Catalog** (bar, ration, stock) requires `variant_id`. **Tariff** (rooms, messing, subs) uses unit config tables. |
+| **Two domains** | **Catalog** (bar, ration, stock) requires `variant_id`. **Tariff** (rooms, messing, subs) uses unit config collections. |
 | **Variant is the join key** | Bar, ration scale, ration ledger, inventory lots share `product_variants.id`. |
 | **FIFO / open bottle** | Lots deplete in `acquired_on` order; fractional `qty_packs` = open bottle. |
 | **Historical truth** | Posted chits store rate at sale time; menu rate changes do not rewrite history. |
@@ -113,9 +113,9 @@ Operational modules (bar, ration, inventory) reference **one canonical item iden
 | **REQ-MD-08** | Ration authorisations: SCD-2 on `ration_scale_item_versions` keyed by `variant_id`. |
 | **REQ-MD-09** | **`unit_menu_rates`:** optional committee peg/bottle rate per variant (`effective_from`); distinct from lot cost. |
 | **REQ-MD-10** | Cross-unit analytics (Phase 7+): aggregate by `variant_id` / `product_id`, rank, unit, period. |
-| **REQ-MD-11** | Platform catalog cache (Phase 5+): optional; Postgres remains source of truth for transactions. |
+| **REQ-MD-11** | Platform catalog cache (Phase 5+): optional; MongoDB remains source of truth for transactions (using multi-document ACID transactions where necessary). |
 | **REQ-MD-12** | Catalog changes audited; capabilities: `masters.read`, `masters.write`, `masters.write.global`. |
-| **REQ-MD-13** | **Foundation reset:** migration adds target tables; operational purge allowed; re-seed global catalog before go-live. |
+| **REQ-MD-13** | **Foundation reset:** schema initialization adds target collections; operational purge allowed; re-seed global catalog before go-live. |
 
 #### 2.5.3 Relationship to inventory (§9)
 
@@ -133,7 +133,52 @@ REQ-INV-01 is the lot layer under REQ-MD-05. REQ-INV-05 unchanged — ration led
 | REQ-MD-09 | ✅ `unit_menu_rates` live | — |
 | REQ-MD-10–11 | Deferred | — |
 | REQ-MD-12 | ✅ | — |
-| REQ-MD-13 | ✅ Foundation migration applied (`20260909183414`); purge in that migration | Re-seed global catalog before go-live |
+| REQ-MD-13 | ✅ Target collections and schemas initialized; operational purge applied | Re-seed global catalog before go-live |
+
+### 2.6 Database & persistence architecture (MongoDB)
+
+The platform persistence layer is built on **MongoDB** using the official Node.js native driver (`mongodb`) paired with **Better-Auth** for authentication and session management.
+
+#### 2.6.1 Connection & driver management
+- **Client singleton:** Managed via `lib/mongo.ts` with connection pooling and caching across serverless invocations and Next.js Server Components / Actions (`getMongoClient()`, `getDb('mess')`).
+- **Typed collections:** Centralized access pattern using typed collection getters (`getCollection<T>(collectionName)`) enforcing document schema contracts and TypeScript types.
+
+#### 2.6.2 Authentication & identity (Better-Auth + MongoDB)
+- **Adapter:** `better-auth/adapters/mongodb` connected directly to the `mess` database.
+- **Auth collections:** Managed by Better-Auth: `users`, `sessions`, `accounts`, `verifications`, and `two_factors` (TOTP MFA).
+- **Extended user profile:** Tenant context and RBAC fields are embedded directly on `users` documents (`unit_id`, `home_unit_id`, `role`, `capabilities: string[]`, `rank`, `service_number`, `status`).
+- **Capability authorization:** Dynamic RBAC where individual permissions (`user_capabilities`) and appointment-based capability templates (`capability_templates`) merge into session claims.
+
+#### 2.6.3 Tenancy & data isolation
+- **Document-level multi-tenancy:** Every operational document carries a mandatory `unit_id` field.
+- **Application enforcement:** All queries and mutations in server actions and API routes strictly enforce `unit_id` predicates via the data access layer (`requireCapability`, `requireRole`, `requireUser`).
+- **Compound indexing:** Operational collections enforce multi-tenant compound indexes prefixed by `unit_id` (e.g. `{ unit_id: 1, date: -1 }`, `{ unit_id: 1, status: 1 }`), guaranteeing query isolation and performance.
+
+#### 2.6.4 Transaction consistency & ACID guarantees
+- **Client sessions:** Multi-document ACID transactions via `client.startSession()` and `session.withTransaction(...)` protect cross-document consistency during critical business transitions:
+  - **Bar operations:** Posting bar chits while atomically decrementing FIFO stock lots in `unit_inventory`.
+  - **Guest room checkout:** Aggregating room charges, adhoc items, and bar folios into `room_bills` and marking rooms as vacant.
+  - **Daily messing:** Finalizing the daily register, recording attendance counts, and publishing daily P-rates in `mess_daily_p_rates`.
+  - **Billing publication:** Finalizing member drafts into published `mess_bills` and generating audit entries.
+
+#### 2.6.5 Document modeling & schema design
+- **Master-reference pattern:** Catalog items (`categories`, `products`, `product_variants`) and master ration scales (`ration_scales`, `ration_scale_item_versions`) maintain normalized IDs. Units enable items via `unit_catalog` adoption documents.
+- **Embedded financial snapshots:** Chits (`bar_chit_items`), room invoices (`room_bill_items`), and monthly statements (`mess_bill_line_items`) embed immutable snapshots of item names, rates, and quantities at transaction time to prevent historical drift when catalog prices update.
+- **Audit & idempotency:** System mutations append structured audit documents to `audit_log`. Mutation requests pass through `idempotency_keys` with MongoDB TTL indexes for automated expiration.
+
+#### 2.6.6 Primary collection catalog
+
+| Domain | Collections | Description |
+|--------|-------------|-------------|
+| **Tenancy & System** | `units`, `capability_templates`, `audit_log`, `idempotency_keys` | Tenant configurations, system templates, security audit trail, request deduplication |
+| **Auth & Profiles** | `users`, `sessions`, `accounts`, `verifications`, `two_factors`, `user_capabilities`, `dependants` | Better-Auth identity, credentials, multi-unit memberships, capability grants |
+| **Catalog & Stock** | `categories`, `products`, `product_variants`, `unit_catalog`, `unit_menu_rates`, `unit_inventory` | Global product catalog, unit adoption, committee menu pricing, FIFO stock lots |
+| **Guest Rooms** | `rooms`, `bookings`, `room_bills`, `room_bill_items`, `unit_furniture`, `room_furniture`, `room_waitlist_requests` | Room inventory, reservations, guest/sponsor billing folios, inventory tracking |
+| **Messing & Kitchen** | `mess_daily_attendance`, `mess_daily_expenditures`, `mess_daily_p_rates`, `mess_flat_rates`, `mess_meal_cuts` | Daily diner rolls, kitchen expenses, P-rate calculation ledger, meal cuts |
+| **Bar & Wine** | `bar_chits`, `bar_chit_items` | Bar chits, line items with rate snapshots, member and guest allocations |
+| **Ration** | `ration_scales`, `ration_scale_item_versions`, `ration_consumptions`, `ration_stock_transactions` | Entitlement scales, daily draw calculations, stock receipt/issue ledger |
+| **Events & Calendar** | `parties`, `party_orders`, `social_events` | Mess and individual functions, social calendar, recurring anniversaries |
+| **Billing** | `mess_bills`, `mess_bill_line_items`, `mess_bill_email_sends` | Monthly member bills (26th–25th cycle), granular statement items, delivery logs |
 
 ---
 
@@ -179,7 +224,7 @@ Indian Officers' Messes are run by a **committee** with named **appointments**. 
 | `wine_nco` | Wine NCO | Wine stock, procurement execution under Wine Member | `bar.write`, `inventory.write`; reports to Wine Member |
 | `property_nco` | Property NCO / Guest Room Clerk | Bookings, check-in/out, room bills | `rooms.booking.write`, `rooms.read` |
 
-**REQ-GOV-10:** Seed migration inserts appointment **definitions** (key, label, description, default capabilities); assignments link `profile_id` ↔ appointment.
+**REQ-GOV-10:** Seed initialization inserts appointment **definitions** (key, label, description, default capabilities); assignments link `profile_id` / `user_id` ↔ appointment.
 
 **REQ-GOV-11:** UI for unit admin: assign/remove appointments; show active appointments on user profile.
 
@@ -209,7 +254,7 @@ The **Mess Committee** meets periodically to decide policy, menus, rates, and ma
 | REQ-MCM-01 | Record committee meeting: date, attendees (appointments/profiles), chair (PMC or President), venue, status (draft / finalized) |
 | REQ-MCM-02 | Attach **minutes** document (rich text and/or PDF upload) |
 | REQ-MCM-03 | Log **resolutions** as structured items: e.g. approve bill of fare for date range, revise flat meal rates, approve mess party budget, approve guest tariff |
-| REQ-MCM-04 | Resolutions may **drive config changes** — e.g. approved flat rates → new `messing_flat_rates` row with `valid_from` and meeting reference |
+| REQ-MCM-04 | Resolutions may **drive config changes** — e.g. approved flat rates → new `messing_flat_rates` document with `valid_from` and meeting reference |
 | REQ-MCM-05 | Minutes are **read-only** after finalize; amendments via new meeting entry |
 | REQ-MCM-06 | President, PMC, Mess Secretary, and committee members can view minutes; Mess Secretary / PMC can create and finalize |
 | REQ-MCM-07 | Minutes searchable by date and resolution type for audit |
@@ -482,13 +527,13 @@ Transactional email infrastructure exists (Resend). Extend for operational comms
 
 **REQ-NOTIF-03:** Unit admin configures which reminder schedules are active (`anniversary`: 7d + 1d; `mess_party`: 3d; etc.).
 
-**REQ-NOTIF-04:** Dedupe: same event + lead time + recipient sent only once (`notification_log` table).
+**REQ-NOTIF-04:** Dedupe: same event + lead time + recipient sent only once (`notification_log` collection).
 
 **REQ-NOTIF-05:** Failed emails retried with backoff; visible in admin notification log.
 
 **REQ-NOTIF-06:** Members may opt out of **non-mandatory** reminders (not monthly bill — that is official notice).
 
-**REQ-NOTIF-07:** Implementation options: Supabase Edge Function + pg_cron, Vercel Cron, or queue worker — must support multi-tenant batch across all units on platform.
+**REQ-NOTIF-07:** Implementation options: Next.js API cron endpoint triggered by Vercel Cron, scheduled cloud functions, or a distributed queue worker (e.g. BullMQ / Agenda backed by MongoDB) — must support multi-tenant batch across all units on platform.
 
 ### 13.3 Excel import (social calendar)
 
@@ -502,10 +547,10 @@ Transactional email infrastructure exists (Resend). Extend for operational comms
 
 | ID | Requirement |
 |----|-------------|
-| REQ-SEC-01 | RLS on all operational tables by `unit_id` |
+| REQ-SEC-01 | Tenant isolation on all operational collections by `unit_id` query scoping and indexing |
 | REQ-SEC-02 | Server-side capability check on every mutation |
 | REQ-SEC-03 | Audit log for masters, profiles, bills, appointments, approvals |
-| REQ-SEC-04 | Super admin writes require AAL2 where configured |
+| REQ-SEC-04 | Super admin writes require two-factor authentication (TOTP MFA via Better-Auth) where configured |
 | REQ-SEC-05 | President read access must not leak other units' data |
 
 ---
@@ -514,12 +559,12 @@ Transactional email infrastructure exists (Resend). Extend for operational comms
 
 | Area | Requirements | Current state |
 |------|--------------|---------------|
-| Appointments model | §3 | Partial — UI lists food/wine/property members; **no DB appointments table**; single `profiles.role` |
+| Appointments model | §3 | Partial — UI lists food/wine/property members; **no DB appointments collection**; single `users.role` |
 | President (CO) dashboard | §4 | Mock `/dashboard` only |
 | Guest rooms | §5 | ~70% — missing sponsor, payment, bar rollup, API |
 | Daily messing register approval | §6 | Schema for expenditure exists; **no approval workflow UI** |
 | Bar / wine governance | §7 | Bar ops built; finalize + Wine Member audit missing |
-| Master data / global catalog | §2.5 | Phase 0 redesign approved — adoption table + purge pending |
+| Master data / global catalog | §2.5 | Phase 0 redesign approved — adoption collection + purge pending |
 | Ration | §8 | Scales + manual consumption; no cron; ledger not decremented on post |
 | Parties | §10 | Placeholder page only |
 | Monthly mess bill | §11 | Schema + engine on disk; **UI mock**; sponsor field mismatch |

@@ -4,7 +4,7 @@ import {
 } from '@asteasolutions/zod-to-openapi';
 import { withRoute, ok } from '@/lib/api/handler';
 import {
-  signInSchema, forgotPasswordSchema, resetPasswordSchema,
+  signInSchema,
   createUnitSchema, updateUnitSchema,
   inviteUserSchema, updateUserSchema,
   createItemApiSchema, updateProductSchema, updateVariantSchema,
@@ -21,8 +21,6 @@ let cached: ReturnType<OpenApiGeneratorV31['generateDocument']> | null = null;
 function build() {
   const r = new OpenAPIRegistry();
   r.register('SignInInput', signInSchema);
-  r.register('ForgotPasswordInput', forgotPasswordSchema);
-  r.register('ResetPasswordInput', resetPasswordSchema);
   r.register('CreateUnitInput', createUnitSchema);
   r.register('UpdateUnitInput', updateUnitSchema);
   r.register('InviteUserInput', inviteUserSchema);
@@ -48,11 +46,6 @@ function build() {
     method: 'get', path: '/api/v1/me', summary: 'Get current user', tags: ['Auth'],
     security: [{ bearerAuth: [] }],
     responses: { 200: { description: 'OK' }, 401: { description: 'Unauthenticated' } },
-  });
-  r.registerPath({
-    method: 'post', path: '/api/v1/auth/sign-in', summary: 'Sign in', tags: ['Auth'],
-    request: { body: { content: { 'application/json': { schema: signInSchema } } } },
-    responses: { 200: { description: 'OK' }, 401: { description: 'Bad credentials' }, 422: { description: 'Invalid input' } },
   });
   r.registerPath({
     method: 'get', path: '/api/v1/items', summary: 'List items', tags: ['Items'],

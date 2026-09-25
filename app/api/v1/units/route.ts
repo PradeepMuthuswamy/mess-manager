@@ -1,10 +1,12 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser } from '@/lib/api/auth';
+import { requireApiUser, requireApiRole } from '@/lib/api/auth';
 import { createUnitSchema, listUnitsQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
+import { rollbackNewUnit, cloneMasterRationScales } from '@/lib/units/onboard';
+import { getCollection } from '@/lib/mongo';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,16 +18,33 @@ export const GET = withRoute(async (req: NextRequest) => {
   const parsed = listUnitsQuerySchema.safeParse(Object.fromEntries(url.searchParams));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  let q = ctx.supabase.from('units').select('id, name, code, description, is_active, created_at, updated_at').order('name').limit(parsed.data.limit);
-  if (parsed.data.active_only) q = q.eq('is_active', true);
-  if (parsed.data.q) q = q.ilike('name', `%${parsed.data.q}%`);
-  const { data, error } = await q;
-  if (error) throw Errors.internal(error.message);
+  const unitsCol = await getCollection('units');
+  let query: Record<string, unknown> = {};
+  if (parsed.data.active_only) {
+    query.is_active = true;
+  }
+  if (parsed.data.q) {
+    const needle = parsed.data.q.replace(/[%_,]/g, '');
+    if (needle) {
+      query.$or = [
+        { name: { $regex: needle, $options: 'i' } },
+        { code: { $regex: needle, $options: 'i' } }
+      ];
+    }
+  }
+
+  const data = await unitsCol.find(query, {
+    projection: { _id: 0, id: 1, name: 1, code: 1, description: 1, is_active: 1, mess_type: 1, terrain: 1, enabled_modules: 1, bill_format_template: 1, room_bill_format_template: 1, created_at: 1, updated_at: 1 }
+  })
+    .sort({ name: 1 })
+    .limit(parsed.data.limit || 0)
+    .toArray();
+
   return ok({ data, meta: { next_cursor: null, has_more: false } });
 });
 
 export const POST = withRoute(async (req: NextRequest) => {
-  const ctx = await requireApiUser(req);
+  const ctx = await requireApiRole(req, ['super_admin']);
   await checkRateLimit(req, 'write', ctx.user.id);
   const bodyText = await req.text();
 
@@ -37,10 +56,46 @@ export const POST = withRoute(async (req: NextRequest) => {
 
   const parsed = createUnitSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
+  const { admin_email, admin_full_name, ...unitFields } = parsed.data;
+  void admin_email;
+  void admin_full_name;
+  
+  const newId = crypto.randomUUID();
+  const now = new Date();
+  const payload = {
+    ...unitFields,
+    id: newId,
+    code: unitFields.code.toUpperCase(),
+    created_by: ctx.user.id,
+    updated_by: ctx.user.id,
+    created_at: now,
+    updated_at: now,
+  };
 
-  const { data, error } = await ctx.admin.from('units').insert(parsed.data).select().single();
-  if (error?.code === '23505') throw Errors.conflict('Unit with that code or name already exists');
-  if (error) throw Errors.internal(error.message);
+  const unitsCol = await getCollection('units');
+  try {
+    await unitsCol.insertOne(payload);
+  } catch (error: unknown) {
+    const err = error as { code?: number; message?: string };
+    if (err.code === 11000) {
+      throw Errors.conflict('Unit with that code or name already exists');
+    }
+    throw Errors.internal((err instanceof Error ? err.message : String(err)) || 'Unknown error');
+  }
+  const data = payload;
+
+  try {
+    await cloneMasterRationScales(data.id, ctx.user.id);
+  } catch (cloneErr: unknown) {
+    const errMsg = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
+    const rollback = await rollbackNewUnit(data.id);
+    if (rollback.error) {
+      throw Errors.internal(
+        `Unit created but ration scales could not be cloned, and cleanup failed: ${errMsg}`,
+      );
+    }
+    throw Errors.internal(`Could not finish onboarding: ${errMsg}`);
+  }
 
   if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, data);
   return created(data, `/api/v1/units/${data.id}`);

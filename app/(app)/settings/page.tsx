@@ -1,5 +1,5 @@
 import { requireUser } from '@/lib/auth/require-role';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import { UnitSettingsCard } from './_components/unit-settings-card';
 import { BillTemplateCard } from './_components/bill-template-card';
 import { PersonalDetailsForm } from './_components/personal-details-form';
@@ -8,16 +8,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import type { MessType } from '@/lib/schemas/attendance';
 import type { RationTerrain } from '@/lib/schemas/ration';
 import { getFlatRatesHistory, getActiveFlatRates } from '@/lib/messing/queries';
+import type { MessingFlatRateRow } from '@/lib/messing/types';
 import type { MessingBillingMode } from '@/lib/schemas/messing';
 
 export default async function SettingsPage() {
   const user = await requireUser();
-  const supabase = await createClient();
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name, service_no, rank, email, date_of_birth, marriage_date')
-    .eq('id', user.id)
-    .single();
+  const profilesCol = await getCollection('profiles');
+  const profile = await profilesCol.findOne(
+    { id: user.id },
+    { projection: { full_name: 1, service_no: 1, rank: 1, email: 1, date_of_birth: 1, marriage_date: 1 } }
+  );
+
   const canManageUnit = user.role === 'super_admin' || user.role === 'unit_admin';
   const unitId = user.activeUnitId ?? user.homeUnitId;
   type UnitCfg = {
@@ -33,17 +34,22 @@ export default async function SettingsPage() {
   };
   let unit: UnitCfg | null = null;
   let activeFlatRates: Record<string, number> = {};
-  let flatRatesHistory: any[] = [];
+  let flatRatesHistory: MessingFlatRateRow[] = [];
   if (canManageUnit && unitId) {
-    const { data } = await supabase
-      .from('units')
-      .select(
-        'id, name, mess_type, terrain, messing_billing_mode, guest_food_per_night, auto_ration_post, bill_format_template, room_bill_format_template',
-      )
-      .eq('id', unitId)
-      .single();
+    const unitsCol = await getCollection('units');
+    const data = await unitsCol.findOne({ id: unitId });
     if (data) {
-      unit = data as UnitCfg;
+      unit = {
+        id: String(data.id || data._id),
+        name: String(data.name),
+        mess_type: data.mess_type ?? null,
+        terrain: data.terrain ?? null,
+        messing_billing_mode: (data.messing_billing_mode as MessingBillingMode) ?? 'P_REGISTER_SPLIT',
+        guest_food_per_night: Number(data.guest_food_per_night ?? 900),
+        auto_ration_post: Boolean(data.auto_ration_post),
+        bill_format_template: data.bill_format_template ?? 'classic',
+        room_bill_format_template: data.room_bill_format_template ?? 'classic',
+      };
       const today = new Date().toISOString().slice(0, 10);
       activeFlatRates = await getActiveFlatRates(unitId, today);
       flatRatesHistory = await getFlatRatesHistory(unitId);

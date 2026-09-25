@@ -8,6 +8,7 @@ import { createBookingSchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { getBookings, getBookingSummaryById } from '@/lib/guest-rooms/queries';
+import { createBookingAction } from '@/lib/guest-rooms/actions';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -33,7 +34,7 @@ export const GET = withRoute(async (req: NextRequest) => {
     throw Errors.forbidden('Requires capability: rooms.read');
   }
 
-  const data = await getBookings(unit_id, from, to, ctx.supabase);
+  const data = await getBookings(unit_id, from, to);
   return ok({ data });
 });
 
@@ -59,48 +60,18 @@ export const POST = withRoute(async (req: NextRequest) => {
   const replay = await tryReplay(idemKey, ctx.user.id, bodyText);
   if (replay) return replay;
 
-  // H4: Verify room belongs to this unit
-  const { data: room, error: roomErr } = await ctx.supabase
-    .from('rooms')
-    .select('id')
-    .eq('id', parsed.data.room_id)
-    .eq('unit_id', parsed.data.unit_id)
-    .maybeSingle();
-  if (roomErr) throw Errors.internal(roomErr.message);
-  if (!room) throw Errors.notFound('Room not found in this unit');
-
-  // Verify availability
-  const { data: conflicts, error: availErr } = await ctx.supabase
-    .from('bookings')
-    .select('id')
-    .eq('room_id', parsed.data.room_id)
-    .neq('status', 'cancelled')
-    .lt('check_in_date', parsed.data.check_out_date)
-    .gt('check_out_date', parsed.data.check_in_date)
-    .limit(1);
-  if (availErr) throw Errors.internal(availErr.message);
-  if (conflicts && conflicts.length > 0) {
-    throw Errors.conflict('Room is not available for the selected dates');
-  }
-
-  // Insert booking using authenticated Bearer client
-  const { data: newBooking, error: insertErr } = await ctx.supabase
-    .from('bookings')
-    .insert({
-      ...parsed.data,
-      created_by: ctx.user.id,
-    })
-    .select('id')
-    .single();
-
-  if (insertErr) {
-    if (insertErr.code === '23P01') {
-      throw Errors.conflict('Room is not available for the selected dates (conflict detected)');
+  const result = await createBookingAction(parsed.data);
+  if ('error' in result) {
+    const errorMsg = result.error || 'Failed to create booking';
+    if (errorMsg.toLowerCase().includes('not available') || errorMsg.toLowerCase().includes('conflict')) {
+      throw Errors.conflict(errorMsg);
     }
-    throw Errors.internal(insertErr.message);
+    throw Errors.badRequest(errorMsg);
   }
 
-  const data = await getBookingSummaryById(newBooking.id, ctx.supabase);
-  await storeResponse(idemKey, ctx.user.id, bodyText, 201, data);
-  return created({ data }, `/api/v1/guest-rooms/bookings/${data.id}`);
+  const bookingId = result.data.id;
+  const data = await getBookingSummaryById(bookingId);
+  const response = created({ data }, `/api/v1/guest-rooms/bookings/${data?.id ?? bookingId}`);
+  await storeResponse(idemKey, ctx.user.id, response.status, await response.clone().text(), bodyText);
+  return response;
 });

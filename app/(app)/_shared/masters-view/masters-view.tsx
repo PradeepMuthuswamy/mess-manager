@@ -6,6 +6,7 @@ import {
 import {
   listMasterItems,
   listMasterAuthorisations,
+  listCategories,
 } from '@/lib/masters/queries';
 import {
   CATEGORY_META,
@@ -13,7 +14,7 @@ import {
   type CategorySlug,
 } from '@/lib/masters/categories';
 import type { AuthorisationChip } from '@/lib/masters/types';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
 import { rankClassForMessType } from '@/lib/ration/mess-type';
 import type { MessType } from '@/lib/schemas/attendance';
 import type { RationClass, RationTerrain } from '@/lib/schemas/ration';
@@ -76,8 +77,7 @@ export async function MastersView({
     | 'desc';
   const pageSize = 15;
 
-  const supabase = await createClient();
-  const [{ rows, totalCount }, categoriesRes] = await Promise.all([
+  const [{ rows, totalCount }, categories] = await Promise.all([
     listMasterItems(slug, {
       q,
       activeUnitId: user.activeUnitId,
@@ -88,10 +88,8 @@ export async function MastersView({
       sortBy: currentSortBy,
       sortOrder: currentSortOrder,
     }),
-    supabase.from('categories').select('id, name, parent_id').order('name'),
+    listCategories(),
   ]);
-
-  const categories = categoriesRes.data ?? [];
 
   // Super admins see the full rank×terrain matrix. Everyone else is scoped to
   // their active unit's configured mess_type (→rank class) and terrain.
@@ -104,11 +102,10 @@ export async function MastersView({
 
   if (category === 'ration') {
     if (!isSuperAdmin && user.activeUnitId) {
-      const { data: unitRow } = await supabase
-        .from('units')
-        .select('mess_type, terrain')
-        .eq('id', user.activeUnitId)
-        .single();
+      const db = await getDb();
+      const unitRow = await db
+        .collection('units')
+        .findOne({ id: user.activeUnitId });
 
       const scopeRank = rankClassForMessType(
         (unitRow?.mess_type as MessType | null) ?? null,

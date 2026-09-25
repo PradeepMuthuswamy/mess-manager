@@ -111,7 +111,7 @@ export function RoomForm({
             furniture_id: row.furniture_id,
             quantity: row.quantity,
             condition: row.condition as RoomInventoryRow['condition'],
-            notes: row.notes,
+            notes: row.notes ?? null,
           })),
         );
       })

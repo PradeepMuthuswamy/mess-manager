@@ -63,9 +63,9 @@ ADMIN is a **pre–Phase 0 snapshot** of a shared-DB sibling. Shared migrations 
 
 ---
 
-## 2. Migration copy list (ADMIN)
+## 2. Collection schema list (ADMIN)
 
-Copy in timestamp order from `mess-manager/supabase/migrations/`:
+Historical collection schemas:
 
 1. `20260612000000_ration_usage.sql`
 2. `20260612010000_ration_consumption.sql`
@@ -125,7 +125,7 @@ Unit CRUD exists (super_admin). No provisioning wizard (REQ-PLAT-10/11), no `ena
 
 ### 4.5 Auth / MFA / segregation
 
-Aligned: `super_admin` enum + Zod preprocess, `handle_new_user`, `token_hash` links, flow-gate, inverse bounce codes, MFA correctly ADMIN-only. Broken: ADMIN bootstrap writes `admin`; sign-in only blocks `user`/`manager`; `mess_secretary` allowed on API but blocked on web; invite API keeps secretary on ADMIN URL; docs still cite retired Supabase project. OPS `resend.ts` + invite API still label `'admin'`.
+Aligned: `super_admin` enum + Zod preprocess, `handle_new_user`, `token_hash` links, flow-gate, inverse bounce codes, MFA correctly ADMIN-only. Broken: ADMIN bootstrap writes `admin`; sign-in only blocks `user`/`manager`; `mess_secretary` allowed on API but blocked on web; invite API keeps secretary on ADMIN URL; docs still cite retired database project. OPS `resend.ts` + invite API still label `'admin'`.
 
 ### 4.6 Users / capabilities / governance
 
@@ -141,7 +141,7 @@ ADMIN owns master scales + clone-on-onboard — **neither is built**. `/ration` 
 
 ### 4.9 Messing / kitchen / billing
 
-OPS `/messing` and `/billing` are real (~55% / ~75%). ADMIN correctly has **no** those routes. Settings flat-rate UI after commit `f51d0fc` is aligned — but the `20260613000000` migration was never copied, and types omit all Phase 3/4 ops tables. ADMIN docs still call Settings “mess_type/terrain only” and list `/billing` as a platform placeholder.
+OPS `/messing` and `/billing` are real (~55% / ~75%). ADMIN correctly has **no** those routes. Settings flat-rate UI after commit `f51d0fc` is aligned — but the collections were never copied, and types omit all Phase 3/4 ops tables. ADMIN docs still call Settings “mess_type/terrain only” and list `/billing` as a platform placeholder.
 
 ### 4.10 Bar / inventory / parties / reports / comms
 
@@ -153,7 +153,7 @@ ADMIN must not sell bar (correctly has no `/bar` code) but nav still links to 40
 - `app/api/v1/items/route.ts`
 - `app/api/v1/items/[id]/route.ts`
 
-Plus schema/UI: `lib/schemas/items.ts`, `lib/masters/{types,queries}.ts`, `lib/supabase/database.types.ts`, masters form/table/bulk/multi-edit dialogs.
+Plus schema/UI: `lib/schemas/items.ts`, `lib/masters/{types,queries}.ts`, domain types, masters form/table/bulk/multi-edit dialogs.
 
 ---
 

@@ -127,7 +127,7 @@ export function CreateChitDialog({
       if (!lot.item_id || !lot.item_name) return null;
       const qty = Number(lot.qty_packs ?? 0);
       const rate = Number(lot.rate ?? 0);
-      let vol = Number((lot as any).volume_ml ?? 0);
+      let vol = Number(lot.volume_ml ?? 0);
       if (vol <= 0 && lot.category === 'alcohol' && lot.pack_label?.toUpperCase().includes('BOTTLE')) {
         vol = 750;
       }
@@ -197,7 +197,7 @@ export function CreateChitDialog({
     }
   };
 
-  const handleLineChange = (index: number, field: keyof ChitLineItem, value: any) => {
+  const handleLineChange = (index: number, field: keyof ChitLineItem, value: string | number) => {
     const updated = [...lines];
     if (field === 'unit') {
       const oldUnit = updated[index].unit;
@@ -235,7 +235,7 @@ export function CreateChitDialog({
   };
 
   // Safe wrapper for server action
-  const formSubmitHandler = async (state: any, formData: FormData) => {
+  const formSubmitHandler = async (state: { error?: string } | null, formData: FormData) => {
     // Basic verification of selected member/guest
     if (consumerType === 'member' && !profileId) {
       return { error: 'Please select a member' };
@@ -332,7 +332,7 @@ export function CreateChitDialog({
                   type="button"
                   variant={selectedCategory === cat.value ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setSelectedCategory(cat.value as any)}
+                  onClick={() => setSelectedCategory(cat.value as 'all' | 'alcohol' | 'cigar' | 'grocery' | 'soft_drink')}
                   className="h-8 rounded-full text-xs font-medium px-3.5 transition-all"
                 >
                   {cat.label}

@@ -1,43 +1,31 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser, type ApiContext } from '@/lib/api/auth';
+import { requireApiUser } from '@/lib/api/auth';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { patchRoomBillSchema } from '@/lib/schemas/guest-rooms';
+import { getDb } from '@/lib/mongo';
+
+import type { Document } from 'mongodb';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 type Ctx = { params: Promise<{ id: string }> };
 
-const BILL_DETAIL_SELECT = `
-  *,
-  items:room_bill_items (
-    id,
-    bill_id,
-    category,
-    description,
-    amount,
-    quantity,
-    meal_type,
-    order_id,
-    variant_id,
-    bar_chit_id,
-    created_at
-  )
-`;
+type LoadedBill = Document & {
+  unit_id: string;
+  items: Array<Document & { id: string; amount?: number; description?: string }>;
+};
 
-async function loadBill(supabase: ApiContext['supabase'], id: string) {
-  const { data, error } = await supabase
-    .from('room_bills')
-    .select(BILL_DETAIL_SELECT)
-    .eq('id', id)
-    .maybeSingle();
-  if (error) throw Errors.internal(error.message);
-  if (!data) throw Errors.notFound();
-  return data;
+async function loadBill(id: string): Promise<LoadedBill> {
+  const db = await getDb();
+  const bill = await db.collection('room_bills').findOne({ id });
+  if (!bill) throw Errors.notFound();
+  const items = await db.collection('room_bill_items').find({ bill_id: id }).toArray();
+  return { ...bill, items } as unknown as LoadedBill;
 }
 
 export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
@@ -47,7 +35,7 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const { id } = await params;
   if (!id) throw Errors.notFound();
 
-  const bill = await loadBill(ctx.supabase, id);
+  const bill = await loadBill(id);
   if (!userHasCapability(ctx.user, 'rooms.read', bill.unit_id)) {
     throw Errors.forbidden('Requires capability: rooms.read');
   }
@@ -73,7 +61,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'write', ctx.user.id);
 
-  const bill = await loadBill(ctx.supabase, id);
+  const bill = await loadBill(id);
   if (!userHasCapability(ctx.user, 'rooms.booking.write', bill.unit_id)) {
     throw Errors.forbidden('Requires capability: rooms.booking.write');
   }
@@ -84,27 +72,26 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
     if (replay) return replay;
   }
 
-  const itemsById = new Map((bill.items ?? []).map((item) => [item.id, item]));
+  const db = await getDb();
+  const itemsById = new Map((bill.items ?? []).map((item: Record<string, unknown>) => [item.id, item]));
 
   for (const item of parsed.data.items) {
     const existing = itemsById.get(item.id);
     if (!existing) throw Errors.notFound('Bill item not found');
 
-    const updatePayload: { amount?: number; description?: string } = {};
+    const updatePayload: Record<string, unknown> = {};
     if (item.amount !== undefined) updatePayload.amount = item.amount;
     if (item.description !== undefined) updatePayload.description = item.description;
 
     if (Object.keys(updatePayload).length > 0) {
-      const { error } = await ctx.supabase
-        .from('room_bill_items')
-        .update(updatePayload)
-        .eq('id', item.id)
-        .eq('bill_id', id);
-      if (error) throw Errors.internal(error.message);
+      await db.collection('room_bill_items').updateOne(
+        { id: item.id, bill_id: id },
+        { $set: updatePayload }
+      );
     }
   }
 
-  const updated = await loadBill(ctx.supabase, id);
-  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 200, updated);
+  const updated = await loadBill(id);
+  if (idemKey) await storeResponse(idemKey, ctx.user.id, 200, JSON.stringify(updated), bodyText);
   return ok(updated);
 });

@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb, getCollection } from '@/lib/mongo';
 import { requireUser } from '@/lib/auth/require-role';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { createWaitlistSchema, waitlistIdSchema } from '@/lib/schemas/waitlist';
@@ -28,16 +28,18 @@ async function loadWaitlistRow(
   const parsed = waitlistIdSchema.safeParse(id);
   if (!parsed.success) return { ok: false, error: 'Invalid request.' };
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('room_waitlist_requests')
-    .select('id, unit_id, status')
-    .eq('id', parsed.data)
-    .maybeSingle();
+  const col = await getCollection('room_waitlist_requests');
+  const data = await col.findOne({ id: parsed.data });
 
-  if (error) return { ok: false, error: error.message };
   if (!data) return { ok: false, error: 'Room request not found.' };
-  return { ok: true, row: data };
+  return {
+    ok: true,
+    row: {
+      id: data.id || data._id?.toString(),
+      unit_id: data.unit_id,
+      status: data.status,
+    },
+  };
 }
 
 export async function createWaitlistRequestAction(input: unknown): Promise<ActionResult> {
@@ -52,18 +54,24 @@ export async function createWaitlistRequestAction(input: unknown): Promise<Actio
     return { error: 'You cannot request a room in another unit.' };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.from('room_waitlist_requests').insert({
+  const col = await getCollection('room_waitlist_requests');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await col.insertOne({
+    id,
     unit_id: parsed.data.unit_id,
     profile_id: user.id,
     guest_name: parsed.data.guest_name,
     requested_from: parsed.data.requested_from,
     requested_to: parsed.data.requested_to,
     notes: parsed.data.notes ?? null,
+    status: 'requested',
     created_by: user.id,
+    created_at: now,
+    updated_at: now,
   });
 
-  if (error) return { error: error.message };
   revalidateWaitlist();
   return { ok: true };
 }
@@ -77,19 +85,28 @@ export async function cancelWaitlistRequestAction(id: string, unitId: string): P
     return { error: 'You cannot cancel a request in another unit.' };
   }
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('room_waitlist_requests')
-    .update({ status: 'cancelled' })
-    .eq('id', parsedId.data)
-    .eq('unit_id', unitId)
-    .eq('profile_id', user.id)
-    .in('status', ['requested', 'offered'])
-    .select('id')
-    .maybeSingle();
+  const col = await getCollection('room_waitlist_requests');
+  const now = new Date().toISOString();
 
-  if (error) return { error: error.message };
-  if (!data) return { error: 'This request can no longer be cancelled.' };
+  const res = await col.updateOne(
+    {
+      id: parsedId.data,
+      unit_id: unitId,
+      profile_id: user.id,
+      status: { $in: ['requested', 'offered'] },
+    },
+    {
+      $set: {
+        status: 'cancelled',
+        updated_at: now,
+      },
+    },
+  );
+
+  if (res.matchedCount === 0) {
+    return { error: 'This request can no longer be cancelled.' };
+  }
+
   revalidateWaitlist();
   return { ok: true };
 }
@@ -109,18 +126,27 @@ export async function offerWaitlistAction(id: string): Promise<ActionResult> {
     return { error: 'Only an open request can be offered a room.' };
   }
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('room_waitlist_requests')
-    .update({ status: 'offered' })
-    .eq('id', loaded.row.id)
-    .eq('unit_id', loaded.row.unit_id)
-    .eq('status', 'requested')
-    .select('id')
-    .maybeSingle();
+  const col = await getCollection('room_waitlist_requests');
+  const now = new Date().toISOString();
 
-  if (error) return { error: error.message };
-  if (!data) return { error: 'Request is no longer open.' };
+  const res = await col.updateOne(
+    {
+      id: loaded.row.id,
+      unit_id: loaded.row.unit_id,
+      status: 'requested',
+    },
+    {
+      $set: {
+        status: 'offered',
+        updated_at: now,
+      },
+    },
+  );
+
+  if (res.matchedCount === 0) {
+    return { error: 'Request is no longer open.' };
+  }
+
   revalidateWaitlist();
   return { ok: true };
 }
@@ -143,28 +169,20 @@ export async function markWaitlistBookedAction(id: string, roomId: string): Prom
   const parsedRoom = waitlistIdSchema.safeParse(roomId);
   if (!parsedRoom.success) return { error: 'Choose a room.' };
 
-  const supabase = await createClient();
-  const { data: request, error: requestError } = await supabase
-    .from('room_waitlist_requests')
-    .select('guest_name, requested_from, requested_to, notes, profile_id, unit_id')
-    .eq('id', loaded.row.id)
-    .eq('status', 'offered')
-    .maybeSingle();
+  const db = await getDb();
+  const request = await db
+    .collection('room_waitlist_requests')
+    .findOne({ id: loaded.row.id, status: 'offered' });
 
-  if (requestError) return { error: requestError.message };
   if (!request) return { error: 'Request is no longer offered.' };
   if (request.requested_to <= request.requested_from) {
     return { error: 'Check-out must be after check-in before this can be booked.' };
   }
 
-  const { data: room, error: roomError } = await supabase
-    .from('rooms')
-    .select('id')
-    .eq('id', parsedRoom.data)
-    .eq('unit_id', request.unit_id)
-    .maybeSingle();
+  const room = await db
+    .collection('rooms')
+    .findOne({ id: parsedRoom.data, unit_id: request.unit_id });
 
-  if (roomError) return { error: roomError.message };
   if (!room) return { error: 'That room is not in this unit.' };
 
   const booked = await createBookingAction({
@@ -181,17 +199,25 @@ export async function markWaitlistBookedAction(id: string, roomId: string): Prom
   });
   if ('error' in booked) return { error: booked.error };
 
-  const { data, error } = await supabase
-    .from('room_waitlist_requests')
-    .update({ status: 'booked' })
-    .eq('id', loaded.row.id)
-    .eq('unit_id', loaded.row.unit_id)
-    .eq('status', 'offered')
-    .select('id')
-    .maybeSingle();
+  const now = new Date().toISOString();
+  const res = await db.collection('room_waitlist_requests').updateOne(
+    {
+      id: loaded.row.id,
+      unit_id: loaded.row.unit_id,
+      status: 'offered',
+    },
+    {
+      $set: {
+        status: 'booked',
+        updated_at: now,
+      },
+    },
+  );
 
-  if (error) return { error: error.message };
-  if (!data) return { error: 'The room was booked, but the request could not be closed.' };
+  if (res.matchedCount === 0) {
+    return { error: 'The room was booked, but the request could not be closed.' };
+  }
+
   revalidateWaitlist();
   return { ok: true };
 }

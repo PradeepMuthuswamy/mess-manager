@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateSession } from '@/lib/supabase/middleware';
-import { AUTH_FLOW_GATE_COOKIE, isGatePath } from '@/lib/auth/flow-gate';
+import { auth } from '@/lib/auth/auth';
 
 export const config = {
   matcher: [
@@ -12,35 +11,14 @@ export const config = {
 const PUBLIC_PATHS = [
   '/',
   '/sign-in',
-  '/forgot-password',
-  '/reset-password',
-  '/accept-invite',
 ];
 
 export async function proxy(request: NextRequest) {
-  const { response, user } = await updateSession(request);
   const { pathname } = request.nextUrl;
+  const session = await auth.api.getSession({ headers: request.headers });
+  const user = session?.user;
 
-  // Confinement for partially-trusted sessions created by recovery/invite
-  // email links: until the flow completes (which clears the gate cookie),
-  // the session may only reach its own flow page. Without this, a failed
-  // or abandoned password reset leaves a fully usable session behind.
-  const gate = request.cookies.get(AUTH_FLOW_GATE_COOKIE)?.value;
-  if (gate && isGatePath(gate)) {
-    if (user && pathname !== gate) {
-      const url = request.nextUrl.clone();
-      url.pathname = gate;
-      url.search = '';
-      return NextResponse.redirect(url);
-    }
-    if (!user) {
-      // Session is gone; the stale gate cookie would otherwise trap the
-      // next sign-in. Drop it.
-      response.cookies.delete(AUTH_FLOW_GATE_COOKIE);
-    }
-  }
-
-  // Public paths and any /api route bypass the redirect gate; /api routes do their own auth.
+  // Public paths and any /api route bypass the redirect gate
   const isApi = pathname.startsWith('/api/');
   const isPublic =
     isApi ||
@@ -50,21 +28,32 @@ export async function proxy(request: NextRequest) {
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = '/sign-in';
-    // Preserve the full original destination (path + query) so post-login
-    // deep links like /masters?cat=alcohol resolve to the right module.
-    // Reset search first — clone() carried the original query params over.
     const nextTarget = pathname + request.nextUrl.search;
     url.search = '';
     url.searchParams.set('next', nextTarget);
     return NextResponse.redirect(url);
   }
 
-  // Logged-in users shouldn't see /sign-in.
-  if (user && (pathname === '/sign-in' || pathname === '/forgot-password')) {
-    const url = request.nextUrl.clone();
-    url.pathname = '/dashboard';
-    return NextResponse.redirect(url);
+  if (user) {
+    // App segregation: mess-manager bounces super_admin to admin app
+    const role = (user as { role?: string }).role;
+    if (role === 'super_admin' || role === 'admin') {
+      const adminAppUrl = process.env.NEXT_PUBLIC_ADMIN_APP_URL;
+      if (adminAppUrl) {
+        return NextResponse.redirect(new URL(adminAppUrl));
+      }
+      const url = request.nextUrl.clone();
+      url.pathname = '/auth/signout';
+      url.searchParams.set('error', 'admin_console');
+      return NextResponse.redirect(url);
+    }
+
+    if (pathname === '/sign-in') {
+      const url = request.nextUrl.clone();
+      url.pathname = '/dashboard';
+      return NextResponse.redirect(url);
+    }
   }
 
-  return response;
+  return NextResponse.next();
 }

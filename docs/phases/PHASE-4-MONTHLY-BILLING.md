@@ -2,8 +2,7 @@
 
 > **Audit date:** 2026-09-09  
 > **Foundation:** [`FOUNDATION.md`](../FOUNDATION.md) · **Master data:** aggregates sources; variant detail optional on output lines  
-> **Requirements:** [`requirements.md`](../requirements.md) §11 (REQ-BIL-*)  
-> **Schema:** `supabase/migrations/20260614000000_messing_kitchen_and_monthly_billing.sql` (on disk; **likely not applied to remote**)  
+> **Schema:** MongoDB collections (`monthly_bills`, `monthly_bill_items`, `attendance_days`, `kitchen_expenditures`)  
 > **Scope of this audit:** `lib/billing/compute.ts`, `lib/billing/compute.test.ts`, `runMonthlyBillingAction` in `lib/billing/actions.ts`, and rollup field matrices for **bar**, **subscriptions**, **misc debits**, **guest meals** (Phase 1 dependencies + `is_billed` patterns)
 
 ---

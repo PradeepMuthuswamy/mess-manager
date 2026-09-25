@@ -1,8 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
-import { createServiceClient } from '@/lib/supabase/service';
+import { getDb } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireRole, requireUser } from '@/lib/auth/require-role';
 import { userHasCapability } from '@/lib/auth/capabilities';
@@ -21,6 +21,12 @@ import {
 import { format, subDays, parseISO } from 'date-fns';
 import { recalculateDailyPRate } from './prate';
 import type { MessingMealType } from '@/lib/schemas/messing';
+import type {
+  MessingFlatRate,
+  MessDailyExpenditure,
+  MessMealCut,
+  GuestMeal,
+} from './types';
 
 type ActionResult = { ok: true; data?: unknown } | { error: string; details?: unknown };
 
@@ -50,80 +56,85 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
   const mismatch = unitMismatch(user, unit_id);
   if (mismatch) return { error: mismatch };
 
-  const admin = createServiceClient();
+  const db = await getDb();
+  const ratesCol = db.collection<MessingFlatRate>('messing_flat_rates');
 
   try {
-    for (const rateInput of rates) {
-      const { data: existingRate, error: checkErr } = await admin
-        .from('messing_flat_rates')
-        .select('id')
-        .eq('unit_id', unit_id)
-        .eq('meal_type', rateInput.meal_type)
-        .eq('valid_from', rateInput.valid_from)
-        .maybeSingle();
+    const now = new Date().toISOString();
 
-      if (checkErr) {
-        return { error: `Failed to check existing rate: ${checkErr.message}` };
-      }
+    for (const rateInput of rates) {
+      const existingRate = await ratesCol.findOne({
+        unit_id,
+        meal_type: rateInput.meal_type,
+        valid_from: rateInput.valid_from,
+      });
 
       if (existingRate) {
-        const { error: updateErr } = await admin
-          .from('messing_flat_rates')
-          .update({
-            rate: rateInput.rate,
-            updated_by: user.id,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', existingRate.id);
-
-        if (updateErr) {
-          return { error: `Failed to update existing rate: ${updateErr.message}` };
-        }
+        const patch = {
+          rate: rateInput.rate,
+          updated_by: user.id,
+          updated_at: now,
+        };
+        await ratesCol.updateOne({ id: existingRate.id }, { $set: patch });
+        await writeAudit({
+          table_name: 'messing_flat_rates',
+          row_pk: existingRate.id,
+          op: 'UPDATE',
+          active_unit_id: unit_id,
+          changed_by: user.id,
+          old_data: { rate: existingRate.rate },
+          new_data: { rate: rateInput.rate },
+        });
       } else {
-        const { data: overlappingRate, error: overlapErr } = await admin
-          .from('messing_flat_rates')
-          .select('id, valid_from, valid_to')
-          .eq('unit_id', unit_id)
-          .eq('meal_type', rateInput.meal_type)
-          .lt('valid_from', rateInput.valid_from)
-          .or(`valid_to.is.null,valid_to.gte.${rateInput.valid_from}`)
-          .maybeSingle();
-
-        if (overlapErr) {
-          return { error: `Failed to check overlapping rate: ${overlapErr.message}` };
-        }
+        const overlappingRate = await ratesCol.findOne({
+          unit_id,
+          meal_type: rateInput.meal_type,
+          valid_from: { $lt: rateInput.valid_from },
+          $or: [{ valid_to: null }, { valid_to: { $gte: rateInput.valid_from } }],
+        });
 
         if (overlappingRate) {
           const previousDay = format(subDays(parseISO(rateInput.valid_from), 1), 'yyyy-MM-dd');
-
-          const { error: updateOverlapErr } = await admin
-            .from('messing_flat_rates')
-            .update({
-              valid_to: previousDay,
-              updated_by: user.id,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', overlappingRate.id);
-
-          if (updateOverlapErr) {
-            return { error: `Failed to update overlapping rate: ${updateOverlapErr.message}` };
-          }
-        }
-
-        const { error: insertErr } = await admin
-          .from('messing_flat_rates')
-          .insert({
-            unit_id,
-            meal_type: rateInput.meal_type,
-            rate: rateInput.rate,
-            valid_from: rateInput.valid_from,
-            created_by: user.id,
+          const patch = {
+            valid_to: previousDay,
             updated_by: user.id,
+            updated_at: now,
+          };
+          await ratesCol.updateOne({ id: overlappingRate.id }, { $set: patch });
+          await writeAudit({
+            table_name: 'messing_flat_rates',
+            row_pk: overlappingRate.id,
+            op: 'UPDATE',
+            active_unit_id: unit_id,
+            changed_by: user.id,
+            old_data: { valid_to: overlappingRate.valid_to },
+            new_data: { valid_to: previousDay },
           });
-
-        if (insertErr) {
-          return { error: `Failed to insert new rate: ${insertErr.message}` };
         }
+
+        const newId = crypto.randomUUID();
+        const doc: MessingFlatRate = {
+          id: newId,
+          unit_id,
+          meal_type: rateInput.meal_type,
+          rate: rateInput.rate,
+          valid_from: rateInput.valid_from,
+          valid_to: null,
+          created_by: user.id,
+          updated_by: user.id,
+          created_at: now,
+          updated_at: now,
+        };
+
+        await ratesCol.insertOne(doc);
+        await writeAudit({
+          table_name: 'messing_flat_rates',
+          row_pk: newId,
+          op: 'INSERT',
+          active_unit_id: unit_id,
+          changed_by: user.id,
+          new_data: doc as unknown as Record<string, unknown>,
+        });
       }
     }
 
@@ -162,39 +173,85 @@ export async function recordDailyKitchenExpenditureAction(input: unknown): Promi
   const mismatch = unitMismatch(user, unit_id);
   if (mismatch) return { error: mismatch };
 
-  const supabase = await createClient();
+  const db = await getDb();
+  const expCol = db.collection<MessDailyExpenditure>('mess_daily_expenditures');
   const total_amount = morning_amount + afternoon_amount + dinner_amount;
+  const now = new Date().toISOString();
 
-  const { error: expErr } = await supabase
-    .from('mess_daily_expenditures')
-    .upsert(
-      {
-        unit_id,
-        expenditure_date,
-        morning_amount,
-        afternoon_amount,
-        dinner_amount,
-        total_amount,
-        notes: notes ?? null,
-        receipt_ref: receipt_ref ?? null,
-        vendor_name: vendor_name ?? null,
-        sourcing_category,
-        register_status: 'draft',
-        submitted_at: null,
-        submitted_by: null,
-        approved_at: null,
-        approved_by: null,
-        rejected_at: null,
-        rejected_by: null,
-        reject_reason: null,
-        updated_by: user.id,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'unit_id, expenditure_date' },
-    );
+  const existing = await expCol.findOne({
+    unit_id,
+    expenditure_date,
+  });
 
-  if (expErr) {
-    return { error: `Failed to save kitchen expenditure: ${expErr.message}` };
+  if (existing) {
+    const patch = {
+      morning_amount,
+      afternoon_amount,
+      dinner_amount,
+      total_amount,
+      notes: notes ?? null,
+      receipt_ref: receipt_ref ?? null,
+      vendor_name: vendor_name ?? null,
+      sourcing_category,
+      register_status: 'draft',
+      submitted_at: null,
+      submitted_by: null,
+      approved_at: null,
+      approved_by: null,
+      rejected_at: null,
+      rejected_by: null,
+      reject_reason: null,
+      updated_by: user.id,
+      updated_at: now,
+    };
+
+    await expCol.updateOne({ id: existing.id }, { $set: patch });
+    await writeAudit({
+      table_name: 'mess_daily_expenditures',
+      row_pk: existing.id,
+      op: 'UPDATE',
+      active_unit_id: unit_id,
+      changed_by: user.id,
+      old_data: existing as unknown as Record<string, unknown>,
+      new_data: patch,
+    });
+  } else {
+    const newId = crypto.randomUUID();
+    const doc: MessDailyExpenditure = {
+      id: newId,
+      unit_id,
+      expenditure_date,
+      morning_amount,
+      afternoon_amount,
+      dinner_amount,
+      total_amount,
+      notes: notes ?? null,
+      receipt_ref: receipt_ref ?? null,
+      vendor_name: vendor_name ?? null,
+      sourcing_category,
+      register_status: 'draft',
+      submitted_at: null,
+      submitted_by: null,
+      approved_at: null,
+      approved_by: null,
+      rejected_at: null,
+      rejected_by: null,
+      reject_reason: null,
+      created_by: user.id,
+      updated_by: user.id,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await expCol.insertOne(doc);
+    await writeAudit({
+      table_name: 'mess_daily_expenditures',
+      row_pk: newId,
+      op: 'INSERT',
+      active_unit_id: unit_id,
+      changed_by: user.id,
+      new_data: doc as unknown as Record<string, unknown>,
+    });
   }
 
   const pResult = await recalculateDailyPRate(unit_id, expenditure_date, user.id);
@@ -227,36 +284,41 @@ export async function submitDailyRegisterAction(input: unknown): Promise<ActionR
   const mismatch = unitMismatch(user, parsed.data.unit_id);
   if (mismatch) return { error: mismatch };
 
-  const supabase = await createClient();
-  const { data: row, error: fetchErr } = await supabase
-    .from('mess_daily_expenditures')
-    .select('id, register_status')
-    .eq('unit_id', parsed.data.unit_id)
-    .eq('expenditure_date', parsed.data.expenditure_date)
-    .maybeSingle();
+  const db = await getDb();
+  const expCol = db.collection<MessDailyExpenditure>('mess_daily_expenditures');
 
-  if (fetchErr) return { error: fetchErr.message };
+  const row = await expCol.findOne({
+    unit_id: parsed.data.unit_id,
+    expenditure_date: parsed.data.expenditure_date,
+  });
+
   if (!row) return { error: 'No kitchen register exists for this date.' };
   if (row.register_status !== 'draft') {
     return { error: 'Only a draft register can be submitted.' };
   }
 
   const now = new Date().toISOString();
-  const { error } = await supabase
-    .from('mess_daily_expenditures')
-    .update({
-      register_status: 'submitted',
-      submitted_at: now,
-      submitted_by: user.id,
-      rejected_at: null,
-      rejected_by: null,
-      reject_reason: null,
-      updated_by: user.id,
-      updated_at: now,
-    })
-    .eq('id', row.id);
+  const patch = {
+    register_status: 'submitted',
+    submitted_at: now,
+    submitted_by: user.id,
+    rejected_at: null,
+    rejected_by: null,
+    reject_reason: null,
+    updated_by: user.id,
+    updated_at: now,
+  };
 
-  if (error) return { error: `Failed to submit register: ${error.message}` };
+  await expCol.updateOne({ id: row.id }, { $set: patch });
+  await writeAudit({
+    table_name: 'mess_daily_expenditures',
+    row_pk: row.id,
+    op: 'UPDATE',
+    active_unit_id: parsed.data.unit_id,
+    changed_by: user.id,
+    old_data: { register_status: row.register_status },
+    new_data: patch,
+  });
 
   revalidateMessing();
   return { ok: true };
@@ -272,36 +334,41 @@ export async function approveDailyRegisterAction(input: unknown): Promise<Action
   const mismatch = unitMismatch(user, parsed.data.unit_id);
   if (mismatch) return { error: mismatch };
 
-  const supabase = await createClient();
-  const { data: row, error: fetchErr } = await supabase
-    .from('mess_daily_expenditures')
-    .select('id, register_status')
-    .eq('unit_id', parsed.data.unit_id)
-    .eq('expenditure_date', parsed.data.expenditure_date)
-    .maybeSingle();
+  const db = await getDb();
+  const expCol = db.collection<MessDailyExpenditure>('mess_daily_expenditures');
 
-  if (fetchErr) return { error: fetchErr.message };
+  const row = await expCol.findOne({
+    unit_id: parsed.data.unit_id,
+    expenditure_date: parsed.data.expenditure_date,
+  });
+
   if (!row) return { error: 'No kitchen register exists for this date.' };
   if (row.register_status !== 'submitted') {
     return { error: 'Only a submitted register can be approved.' };
   }
 
   const now = new Date().toISOString();
-  const { error } = await supabase
-    .from('mess_daily_expenditures')
-    .update({
-      register_status: 'approved',
-      approved_at: now,
-      approved_by: user.id,
-      rejected_at: null,
-      rejected_by: null,
-      reject_reason: null,
-      updated_by: user.id,
-      updated_at: now,
-    })
-    .eq('id', row.id);
+  const patch = {
+    register_status: 'approved',
+    approved_at: now,
+    approved_by: user.id,
+    rejected_at: null,
+    rejected_by: null,
+    reject_reason: null,
+    updated_by: user.id,
+    updated_at: now,
+  };
 
-  if (error) return { error: `Failed to approve register: ${error.message}` };
+  await expCol.updateOne({ id: row.id }, { $set: patch });
+  await writeAudit({
+    table_name: 'mess_daily_expenditures',
+    row_pk: row.id,
+    op: 'UPDATE',
+    active_unit_id: parsed.data.unit_id,
+    changed_by: user.id,
+    old_data: { register_status: row.register_status },
+    new_data: patch,
+  });
 
   revalidateMessing();
   return { ok: true };
@@ -317,36 +384,41 @@ export async function rejectDailyRegisterAction(input: unknown): Promise<ActionR
   const mismatch = unitMismatch(user, parsed.data.unit_id);
   if (mismatch) return { error: mismatch };
 
-  const supabase = await createClient();
-  const { data: row, error: fetchErr } = await supabase
-    .from('mess_daily_expenditures')
-    .select('id, register_status')
-    .eq('unit_id', parsed.data.unit_id)
-    .eq('expenditure_date', parsed.data.expenditure_date)
-    .maybeSingle();
+  const db = await getDb();
+  const expCol = db.collection<MessDailyExpenditure>('mess_daily_expenditures');
 
-  if (fetchErr) return { error: fetchErr.message };
+  const row = await expCol.findOne({
+    unit_id: parsed.data.unit_id,
+    expenditure_date: parsed.data.expenditure_date,
+  });
+
   if (!row) return { error: 'No kitchen register exists for this date.' };
   if (row.register_status !== 'submitted') {
     return { error: 'Only a submitted register can be rejected.' };
   }
 
   const now = new Date().toISOString();
-  const { error } = await supabase
-    .from('mess_daily_expenditures')
-    .update({
-      register_status: 'rejected',
-      rejected_at: now,
-      rejected_by: user.id,
-      reject_reason: parsed.data.reject_reason ?? null,
-      approved_at: null,
-      approved_by: null,
-      updated_by: user.id,
-      updated_at: now,
-    })
-    .eq('id', row.id);
+  const patch = {
+    register_status: 'rejected',
+    rejected_at: now,
+    rejected_by: user.id,
+    reject_reason: parsed.data.reject_reason ?? null,
+    approved_at: null,
+    approved_by: null,
+    updated_by: user.id,
+    updated_at: now,
+  };
 
-  if (error) return { error: `Failed to reject register: ${error.message}` };
+  await expCol.updateOne({ id: row.id }, { $set: patch });
+  await writeAudit({
+    table_name: 'mess_daily_expenditures',
+    row_pk: row.id,
+    op: 'UPDATE',
+    active_unit_id: parsed.data.unit_id,
+    changed_by: user.id,
+    old_data: { register_status: row.register_status },
+    new_data: patch,
+  });
 
   revalidateMessing();
   return { ok: true };
@@ -373,25 +445,56 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
     await requireCapability('attendance.write', parsed.data.unit_id);
   }
 
-  const supabase = await createClient();
+  const db = await getDb();
+  const cutsCol = db.collection<MessMealCut>('mess_meal_cuts');
+  const now = new Date().toISOString();
+  const status = canWrite ? 'approved' : 'requested';
 
-  const { error } = await supabase
-    .from('mess_meal_cuts')
-    .upsert(
-      {
-        unit_id: parsed.data.unit_id,
-        profile_id: targetProfileId,
-        cut_date: parsed.data.cut_date,
-        meal_type: parsed.data.meal_type,
-        status: canWrite ? 'approved' : 'requested',
-        reason: parsed.data.reason ?? null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'profile_id, cut_date, meal_type' },
-    );
+  const existing = await cutsCol.findOne({
+    profile_id: targetProfileId,
+    cut_date: parsed.data.cut_date,
+    meal_type: parsed.data.meal_type,
+  });
 
-  if (error) {
-    return { error: `Failed to mark absent: ${error.message}` };
+  if (existing) {
+    const patch = {
+      unit_id: parsed.data.unit_id,
+      status,
+      reason: parsed.data.reason ?? null,
+      updated_at: now,
+    };
+    await cutsCol.updateOne({ id: existing.id }, { $set: patch });
+    await writeAudit({
+      table_name: 'mess_meal_cuts',
+      row_pk: existing.id,
+      op: 'UPDATE',
+      active_unit_id: parsed.data.unit_id,
+      changed_by: currentUser.id,
+      old_data: existing as unknown as Record<string, unknown>,
+      new_data: patch,
+    });
+  } else {
+    const newId = crypto.randomUUID();
+    const doc: MessMealCut = {
+      id: newId,
+      unit_id: parsed.data.unit_id,
+      profile_id: targetProfileId,
+      cut_date: parsed.data.cut_date,
+      meal_type: parsed.data.meal_type,
+      status,
+      reason: parsed.data.reason ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+    await cutsCol.insertOne(doc);
+    await writeAudit({
+      table_name: 'mess_meal_cuts',
+      row_pk: newId,
+      op: 'INSERT',
+      active_unit_id: parsed.data.unit_id,
+      changed_by: currentUser.id,
+      new_data: doc as unknown as Record<string, unknown>,
+    });
   }
 
   revalidateMessing();
@@ -408,18 +511,32 @@ export async function approveMealCutAction(input: unknown): Promise<ActionResult
   const mismatch = unitMismatch(user, parsed.data.unit_id);
   if (mismatch) return { error: mismatch };
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_meal_cuts')
-    .update({ status: 'approved', updated_at: new Date().toISOString() })
-    .eq('id', parsed.data.id)
-    .eq('unit_id', parsed.data.unit_id)
-    .eq('status', 'requested')
-    .select('id')
-    .maybeSingle();
+  const db = await getDb();
+  const cutsCol = db.collection<MessMealCut>('mess_meal_cuts');
 
-  if (error) return { error: `Failed to approve messing: ${error.message}` };
-  if (!data) return { error: 'Messing is no longer pending.' };
+  const existing = await cutsCol.findOne({
+    id: parsed.data.id,
+    unit_id: parsed.data.unit_id,
+    status: 'requested',
+  });
+
+  if (!existing) return { error: 'Messing is no longer pending.' };
+
+  const now = new Date().toISOString();
+  await cutsCol.updateOne(
+    { id: existing.id },
+    { $set: { status: 'approved', updated_at: now } }
+  );
+
+  await writeAudit({
+    table_name: 'mess_meal_cuts',
+    row_pk: existing.id,
+    op: 'UPDATE',
+    active_unit_id: parsed.data.unit_id,
+    changed_by: user.id,
+    old_data: { status: existing.status },
+    new_data: { status: 'approved' },
+  });
 
   revalidateMessing();
   return { ok: true };
@@ -435,22 +552,38 @@ export async function rejectMealCutAction(input: unknown): Promise<ActionResult>
   const mismatch = unitMismatch(user, parsed.data.unit_id);
   if (mismatch) return { error: mismatch };
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_meal_cuts')
-    .update({
-      status: 'rejected',
-      reason: parsed.data.reason ?? null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', parsed.data.id)
-    .eq('unit_id', parsed.data.unit_id)
-    .eq('status', 'requested')
-    .select('id')
-    .maybeSingle();
+  const db = await getDb();
+  const cutsCol = db.collection<MessMealCut>('mess_meal_cuts');
 
-  if (error) return { error: `Failed to reject messing: ${error.message}` };
-  if (!data) return { error: 'Messing is no longer pending.' };
+  const existing = await cutsCol.findOne({
+    id: parsed.data.id,
+    unit_id: parsed.data.unit_id,
+    status: 'requested',
+  });
+
+  if (!existing) return { error: 'Messing is no longer pending.' };
+
+  const now = new Date().toISOString();
+  await cutsCol.updateOne(
+    { id: existing.id },
+    {
+      $set: {
+        status: 'rejected',
+        reason: parsed.data.reason ?? null,
+        updated_at: now,
+      },
+    }
+  );
+
+  await writeAudit({
+    table_name: 'mess_meal_cuts',
+    row_pk: existing.id,
+    op: 'UPDATE',
+    active_unit_id: parsed.data.unit_id,
+    changed_by: user.id,
+    old_data: { status: existing.status, reason: existing.reason },
+    new_data: { status: 'rejected', reason: parsed.data.reason ?? null },
+  });
 
   revalidateMessing();
   return { ok: true };
@@ -475,18 +608,26 @@ export async function cancelMealCutAction(input: {
     await requireCapability('attendance.write', input.unit_id);
   }
 
-  const supabase = await createClient();
+  const db = await getDb();
+  const cutsCol = db.collection<MessMealCut>('mess_meal_cuts');
 
-  const { error } = await supabase
-    .from('mess_meal_cuts')
-    .delete()
-    .eq('unit_id', input.unit_id)
-    .eq('profile_id', targetProfileId)
-    .eq('cut_date', input.cut_date)
-    .eq('meal_type', input.meal_type as MessingMealType);
+  const existing = await cutsCol.findOne({
+    unit_id: input.unit_id,
+    profile_id: targetProfileId,
+    cut_date: input.cut_date,
+    meal_type: input.meal_type as MessingMealType,
+  });
 
-  if (error) {
-    return { error: `Failed to cancel messing: ${error.message}` };
+  if (existing) {
+    await cutsCol.deleteOne({ id: existing.id });
+    await writeAudit({
+      table_name: 'mess_meal_cuts',
+      row_pk: existing.id,
+      op: 'DELETE',
+      active_unit_id: input.unit_id,
+      changed_by: currentUser.id,
+      old_data: existing as unknown as Record<string, unknown>,
+    });
   }
 
   revalidateMessing();
@@ -509,28 +650,39 @@ export async function recordGuestMealAction(input: unknown): Promise<ActionResul
   if (parsed.data.host_profile_id !== user.id) {
     await requireCapability('attendance.write', parsed.data.unit_id);
   }
-  const supabase = await createClient();
 
+  const db = await getDb();
+  const guestCol = db.collection<GuestMeal>('guest_meals');
   const total_amount = parsed.data.guest_count * parsed.data.rate_charged;
+  const now = new Date().toISOString();
+  const newId = crypto.randomUUID();
 
-  const { error } = await supabase
-    .from('guest_meals')
-    .insert({
-      unit_id: parsed.data.unit_id,
-      host_profile_id: parsed.data.host_profile_id,
-      meal_date: parsed.data.meal_date,
-      meal_type: parsed.data.meal_type,
-      guest_count: parsed.data.guest_count,
-      guest_names: parsed.data.guest_names ?? null,
-      rate_charged: parsed.data.rate_charged,
-      total_amount,
-      notes: parsed.data.notes ?? null,
-      created_by: user.id,
-    });
+  const doc: GuestMeal = {
+    id: newId,
+    unit_id: parsed.data.unit_id,
+    host_profile_id: parsed.data.host_profile_id,
+    meal_date: parsed.data.meal_date,
+    meal_type: parsed.data.meal_type,
+    guest_count: parsed.data.guest_count,
+    guest_names: parsed.data.guest_names ?? null,
+    rate_charged: parsed.data.rate_charged,
+    total_amount,
+    notes: parsed.data.notes ?? null,
+    is_billed: false,
+    billed_period_id: null,
+    created_by: user.id,
+    created_at: now,
+  };
 
-  if (error) {
-    return { error: `Failed to record guest meal: ${error.message}` };
-  }
+  await guestCol.insertOne(doc);
+  await writeAudit({
+    table_name: 'guest_meals',
+    row_pk: newId,
+    op: 'INSERT',
+    active_unit_id: parsed.data.unit_id,
+    changed_by: user.id,
+    new_data: doc as unknown as Record<string, unknown>,
+  });
 
   revalidateMessing();
   return { ok: true };

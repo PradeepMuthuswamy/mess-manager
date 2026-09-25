@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { AUTH_FLOW_GATE_COOKIE } from '@/lib/auth/flow-gate';
+import { auth } from '@/lib/auth/auth';
 
 export const dynamic = 'force-dynamic';
 
 /** Error codes we allow to be forwarded to the sign-in page. */
-const FORWARDABLE_ERRORS = new Set(['admin_console', 'invalid_link']);
+const FORWARDABLE_ERRORS = new Set(['admin_console', 'invalid_link', 'ops_app']);
 
 /**
  * Server-side sign-out endpoint. Server components can't write cookies,
@@ -14,8 +13,11 @@ const FORWARDABLE_ERRORS = new Set(['admin_console', 'invalid_link']);
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  try {
+    await auth.api.signOut({ headers: req.headers });
+  } catch (err) {
+    console.error('Sign out error:', err);
+  }
 
   const error = url.searchParams.get('error');
   const target = new URL('/sign-in', url.origin);
@@ -23,6 +25,6 @@ export async function GET(req: NextRequest) {
     target.searchParams.set('error', error);
   }
   const res = NextResponse.redirect(target);
-  res.cookies.delete(AUTH_FLOW_GATE_COOKIE);
+  res.cookies.delete('om-flow-gate');
   return res;
 }

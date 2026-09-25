@@ -1,293 +1,431 @@
 # SHARED DATA MODEL — Officers' Mess
 
-> **Single source of truth for the shared Supabase schema.**
+> **Single source of truth for the shared MongoDB collections and Better Auth data model.**
 > An IDENTICAL copy of this file lives in BOTH repos:
-> - `officers-mess/docs/SHARED-DATA-MODEL.md` (USER app)
-> - `officer-mess-admin/docs/SHARED-DATA-MODEL.md` (ADMIN app)
+> - `mess-manager/docs/SHARED-DATA-MODEL.md` (Ops app)
+> - `mess-admin/docs/SHARED-DATA-MODEL.md` (Admin app)
 >
 > If you edit one copy, you MUST edit the other so they stay byte-identical.
 
 ## 1. Ground rules
 
-Both Next.js apps point at **one hosted Supabase project**: CommandHQ **Mess** (ref `nwrjhxzlnvtubwjuzsxr`, `https://nwrjhxzlnvtubwjuzsxr.supabase.co`), schema `public`.
+Both Next.js apps point at **one shared MongoDB database**: `mess` (configured via `MONGODB_URI` / `MONGO_URI`).
 
-1. **The live database is the source of truth. Code adapts to the DB, never the other way round** (no app may "fix" itself by changing the schema unilaterally).
-2. **Migrations live in BOTH repos, byte-identical**, under `supabase/migrations/`. The same 42 files (`20260512080001_init.sql` … `20260605000000_bar_chits.sql`) must exist in both. A migration added in one repo is copied verbatim into the other.
-3. **Writes never target views.** Views (`v_*`) are read-only projections; mutations go to base tables or RPCs.
-4. **Never cast the Supabase client to `any` to silence a missing-relation type error.** That is exactly how the `items` regression shipped: stale `.from('items')` calls hidden behind `(supabase as any)` crashed at runtime with *"Could not find the table 'public.items' in the schema cache"*.
+1. **The live database is the source of truth. Code adapts to the DB, never the other way round** (no app may "fix" itself by changing schemas unilaterally).
+2. **Collection schemas and indexes are documented and mirrored in BOTH repos.** Database access is managed via the singleton helper `lib/mongo.ts` (`getDb()`, `getCollection()`) in both apps.
+3. **Writes target base collections.** Aggregation pipelines and projections are read-only transformations; mutations go to base collections or atomic action helpers.
+4. **Never cast the MongoDB collection or document to `any` to silence a missing-field or collection type error.** Stale collection references or schema drifts crash at runtime.
 
-### Dropped relations — never reference these
+### Dropped collections & legacy entities — never reference these
 
-The migration `20260512080039_products_variants.sql` ("Refactor master items to Category-Product-Variant hierarchy") **DROPPED**:
+The catalog refactor to Category-Product-Variant hierarchy **DROPPED**:
 
-- tables `items`, `item_versions`, `pack_sizes`
-- RPC `set_item_rate`
+- collections `items`, `item_versions`, `pack_sizes`
+- legacy RPC `set_item_rate`
 
-Any `.from('items')` (or the others above) is an immediate runtime crash. Legacy-shaped reads go through the compat view `v_items_current` instead (see §4).
+Any query targeting `items` is an immediate runtime error. Legacy-shaped reads go through the aggregation helper `listItemCurrent()` / `getItemCurrent()` instead (see §5).
 
-## 2. Enums
+## 2. Enums & Domain Types
+
+In MongoDB documents, these are stored as string values and strictly validated via Zod schemas in `lib/schemas/`:
 
 | Enum | Values | Notes |
 |---|---|---|
 | `uom` | `kg` `g` `l` `ml` `piece` `pack` `bottle` | Legacy unit-of-measure; still the live type on ration quantities. |
-| `item_category` | `ration` `soft_drink` `alcohol` `cigar` `grocery` `room` | Legacy; appears **only** in compat views, derived from the root category name (§4). |
-| `unit_type` | `ML` `LITRE` `GRAM` `KG` `PIECE` | New variant sizing unit. |
-| `package_type` | `BOTTLE` `CAN` `PACKET` `BOX` `LOOSE` | New variant packaging. |
+| `item_category` | `ration` `soft_drink` `alcohol` `cigar` `grocery` `room` | Legacy category grouping; derived from root category slugs (§5). |
+| `unit_type` | `ML` `LITRE` `GRAM` `KG` `PIECE` | Variant sizing unit. |
+| `package_type` | `BOTTLE` `CAN` `PACKET` `BOX` `LOOSE` | Variant packaging type. |
 | `ration_class` | `officer` `jco` `or` `civilian` | Ration scale rank dimension. |
 | `ration_terrain` | `plains` `desert` `high_altitude` `field` `sea` | Ration scale terrain dimension. |
 
-## 3. Masters & ration tables
+## 3. Better Auth & Identity Data Model
 
-### 3.1 Masters catalog: `categories` → `products` → `product_variants`
+Authentication and user identity are managed by **Better Auth** (`better-auth`) with the MongoDB adapter (`@better-auth/mongo-adapter`), bearer plugin for API routes, and TOTP two-factor plugin for MFA.
+
+### 3.1 `user` (or `users`)
+Core user accounts and extended profile fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` / `_id` | string / ObjectId | Primary key |
+| `email` | string | Unique email address (lowercase) |
+| `emailVerified` | boolean | Verification flag |
+| `name` / `full_name` | string | User's full display name |
+| `image` | string \| null | Profile avatar URL |
+| `role` | string | Role: `super_admin`, `unit_admin`, `admin`, `manager`, `user` |
+| `unit_id` | string \| null | Primary assigned unit ID (references `units.id`) |
+| `home_unit_id` | string \| null | Primary home unit ID (alias to `unit_id`) |
+| `rank` | string \| null | Military rank (e.g. Major, Col, Capt) |
+| `service_number` | string \| null | Military service number |
+| `status` | string | Account status (`active`, `suspended`, `pending`) |
+| `capabilities` | string[] | Direct user-level capability grants |
+| `twoFactorEnabled` | boolean | TOTP MFA enabled status |
+| `createdAt`, `updatedAt` | Date / string | Timestamps |
+
+Unique Index: `{ email: 1 }`.
+
+### 3.2 `session` (or `sessions`)
+User active sessions:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` / `_id` | string / ObjectId | Primary key |
+| `userId` | string | Reference to `user.id` |
+| `token` | string | Session token |
+| `expiresAt` | Date | Expiration timestamp |
+| `ipAddress` | string \| null | Client IP address |
+| `userAgent` | string \| null | Client user agent |
+| `createdAt`, `updatedAt` | Date / string | Timestamps |
+
+Unique Index: `{ token: 1 }`. Index: `{ userId: 1 }`.
+
+### 3.3 `account` (or `accounts`)
+Authentication credentials and OAuth accounts:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` / `_id` | string / ObjectId | Primary key |
+| `userId` | string | Reference to `user.id` |
+| `accountId` | string | Account identifier |
+| `providerId` | string | Provider ID (`credential` for email/password) |
+| `password` | string \| null | Salted and hashed password |
+| `accessToken`, `refreshToken` | string \| null | Provider tokens |
+| `createdAt`, `updatedAt` | Date / string | Timestamps |
+
+Index: `{ userId: 1 }`, `{ providerId: 1, accountId: 1 }`.
+
+### 3.4 `verification` (or `verifications`)
+Verification tokens (email verification, password resets):
+
+| Field | Type | Description |
+|---|---|---|
+| `id` / `_id` | string / ObjectId | Primary key |
+| `identifier` | string | Target identifier (email or phone) |
+| `value` | string | Token value or hash |
+| `expiresAt` | Date | Expiration timestamp |
+| `createdAt`, `updatedAt` | Date / string | Timestamps |
+
+Index: `{ identifier: 1 }`.
+
+### 3.5 `twoFactor`
+TOTP two-factor configuration:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` / `_id` | string / ObjectId | Primary key |
+| `userId` | string | Reference to `user.id` |
+| `secret` | string | Encrypted TOTP secret |
+| `backupCodes` | string | Backup recovery codes |
+
+Index: `{ userId: 1 }`.
+
+### 3.6 `user_capabilities`
+Granular capability grants assigned to individual users:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` / `_id` | string / ObjectId | Primary key |
+| `user_id` | string | Reference to `user.id` |
+| `capability` | string | Granted capability (e.g. `masters.write.global`, `ration.read`) |
+| `unit_id` | string \| null | Target unit, or null for platform-wide scope |
+| `granted_by` | string \| null | User ID of granting admin |
+| `created_at` | string / Date | Grant timestamp |
+
+Index: `{ user_id: 1 }`, `{ user_id: 1, capability: 1, unit_id: 1 }`.
+
+### 3.7 `capability_templates`
+Role capability bundles (e.g., Bar NCO, Mess Havildar, Mess Secretary, PMC):
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Template ID |
+| `name` | string | Template display name |
+| `description` | string \| null | Description of duties and permissions |
+| `capabilities` | string[] | Array of capability identifiers |
+| `is_system` | boolean | True for seeded system templates |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+
+### 3.8 `dependants`
+Family members and dependants of officers:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Primary key |
+| `primary_profile_id` | string | Primary officer/member ID (references `user.id`) |
+| `unit_id` | string | References `units.id` |
+| `full_name` | string | Full name of dependant |
+| `relation` | string | `'spouse' \| 'child' \| 'parent'` |
+| `date_of_birth` | string \| null | Date of birth (YYYY-MM-DD) |
+| `gender` | string \| null | Gender |
+| `is_active` | boolean | Active status |
+| `notes` | string \| null | Additional notes |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+
+Index: `{ primary_profile_id: 1 }`, `{ unit_id: 1 }`.
+
+## 4. Masters & Ration Collections
+
+### 4.1 Masters catalog: `categories` → `products` → `product_variants`
 
 #### `categories`
-| Column | Type | Constraints |
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK |
-| `name` | text | NOT NULL |
-| `parent_id` | uuid | nullable, FK → `categories.id` (self-referencing tree) |
-| `created_at`, `updated_at` | timestamptz | NOT NULL |
+| `id` | string | Primary key (UUID string) |
+| `name` | string | Category name (NOT NULL) |
+| `parent_id` | string \| null | Reference to parent `categories.id` (self-referencing tree) |
+| `slug` | string \| null | Canonical slug (`alcohol`, `cold-drinks`, `cigars`, `snacks`, `ration`, `grocery`) |
+| `created_at`, `updated_at` | string / Date | Timestamps |
 
 Seeded root categories (fixed UUIDs, prefix `00000000-0000-0000-0000-00000000000N`):
 Alcohol=`…0001`, Cold Drinks=`…0002`, Cigars=`…0003`, Snacks=`…0004`, Ration=`…0005`, Grocery=`…0006`.
 
 #### `products`
-| Column | Type | Constraints |
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK |
-| `category_id` | uuid | NOT NULL, FK → `categories.id` |
-| `name` | text | NOT NULL |
-| `name_normalized` | text | **GENERATED** `lower(trim(name))` — never insert/update |
-| `description` | text | nullable |
-| `is_active` | boolean | NOT NULL |
-| `fts` | tsvector | **GENERATED — never insert/update this column** |
-| `created_at`, `updated_at` | timestamptz | NOT NULL |
-| `created_by`, `updated_by` | uuid | nullable |
+| `id` | string | Primary key (UUID string) |
+| `category_id` | string | Reference to `categories.id` |
+| `name` | string | Product name (e.g. "Old Monk XXX Rum") |
+| `name_normalized` | string | Normalized `lower(trim(name))` for deduplication |
+| `description` | string \| null | Optional description |
+| `is_active` | boolean | Active catalog flag |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+| `created_by`, `updated_by` | string \| null | User audit references |
 
-Unique: `(category_id, name_normalized)`.
+Unique Index: `{ category_id: 1, name_normalized: 1 }`.
+Index: `{ name: 1 }`, `{ name_normalized: 1 }`.
 
 **`products.unit_id` dropped** (Phase 0). Products are platform-global. Units enable variants via **`unit_catalog`** and set sale rates via **`unit_menu_rates`**. See [`FOUNDATION.md`](./FOUNDATION.md) §2.
 
 #### `unit_catalog` *(live — Phase 0 applied)*
+Unit catalog adoption:
 
-| Column | Type | Constraints |
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK |
-| `unit_id` | uuid | NOT NULL, FK → `units.id` |
-| `variant_id` | uuid | NOT NULL, FK → `product_variants.id` |
-| `is_enabled` | boolean | NOT NULL, default true |
-| `local_sku` | text | nullable |
-| `created_at`, `updated_at` | timestamptz | NOT NULL |
-| `created_by`, `updated_by` | uuid | nullable |
+| `id` | string | Primary key (UUID string) |
+| `unit_id` | string | Reference to `units.id` |
+| `variant_id` | string | Reference to `product_variants.id` |
+| `is_enabled` | boolean | Enabled for unit operations (default true) |
+| `local_sku` | string \| null | Unit-specific SKU/code |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+| `created_by`, `updated_by` | string \| null | User audit references |
 
-Unique: `(unit_id, variant_id)`.
+Unique Index: `{ unit_id: 1, variant_id: 1 }`.
 
 #### `unit_menu_rates` *(live — Phase 0 applied)*
+Committee menu price schedule:
 
-| Column | Type | Constraints |
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK |
-| `unit_id` | uuid | NOT NULL, FK → `units.id` |
-| `variant_id` | uuid | NOT NULL, FK → `product_variants.id` |
-| `rate` | numeric(12,2) | NOT NULL, `>= 0` |
-| `effective_from` | date | NOT NULL |
-| `created_at`, `updated_at` | timestamptz | NOT NULL |
-| `created_by`, `updated_by` | uuid | nullable |
+| `id` | string | Primary key (UUID string) |
+| `unit_id` | string | Reference to `units.id` |
+| `variant_id` | string | Reference to `product_variants.id` |
+| `rate` | number | Price rate (`>= 0`) |
+| `effective_from` | string | Effective date string (YYYY-MM-DD) |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+| `created_by`, `updated_by` | string \| null | User audit references |
 
-Unique: `(unit_id, variant_id, effective_from)`.
+Unique Index: `{ unit_id: 1, variant_id: 1, effective_from: 1 }`.
 
 #### `product_variants`
-| Column | Type | Constraints |
+Stockable and sellable variant units:
+
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK — **this is THE item id everywhere** (see §5 join keys) |
-| `product_id` | uuid | NOT NULL, FK → `products.id` ON DELETE CASCADE |
-| `unit_value` | numeric(12,3) | NOT NULL |
-| `unit_type` | enum `unit_type` | NOT NULL |
-| `package_type` | enum `package_type` | NOT NULL |
-| `sku` | text | nullable |
-| `is_active` | boolean | NOT NULL |
-| `created_at`, `updated_at` | timestamptz | NOT NULL |
-| `created_by`, `updated_by` | uuid | nullable |
+| `id` | string | Primary key (UUID string) — **this is THE item id everywhere** (see §6 join keys) |
+| `product_id` | string | Reference to `products.id` |
+| `unit_value` | number | Numerical size / volume |
+| `unit_type` | enum `unit_type` | Unit type (`ML`, `LITRE`, `GRAM`, `KG`, `PIECE`) |
+| `package_type` | enum `package_type` | Packaging (`BOTTLE`, `CAN`, `PACKET`, `BOX`, `LOOSE`) |
+| `sku` | string \| null | Global SKU |
+| `is_active` | boolean | Active status |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+| `created_by`, `updated_by` | string \| null | User audit references |
 
-Unique: `(product_id, unit_value, unit_type, package_type)`.
+Unique Index: `{ product_id: 1, unit_value: 1, unit_type: 1, package_type: 1 }`.
+Index: `{ product_id: 1 }`.
 
-### 3.2 Ration: `ration_scales` → `ration_scale_item_versions`
+### 4.2 Ration: `ration_scales` → `ration_scale_item_versions`
 
 #### `ration_scales`
-| Column | Type | Constraints |
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK |
-| `unit_id` | uuid | NOT NULL, FK → `units.id` |
-| `name` | text | NOT NULL |
-| `description` | text | nullable |
-| `is_active` | boolean | NOT NULL |
-| `rank_class` | enum `ration_class` | NOT NULL |
-| `terrain` | enum `ration_terrain` | NOT NULL |
-| `created_at`, `updated_at` | timestamptz | NOT NULL |
-| `created_by`, `updated_by` | uuid | nullable |
+| `id` | string | Primary key (UUID string) |
+| `unit_id` | string | Reference to `units.id` |
+| `name` | string | Scale name |
+| `description` | string \| null | Optional description |
+| `is_active` | boolean | Active flag |
+| `rank_class` | enum `ration_class` | Rank dimension (`officer`, `jco`, `or`, `civilian`) |
+| `terrain` | enum `ration_terrain` | Terrain dimension (`plains`, `desert`, etc.) |
+| `created_at`, `updated_at` | string / Date | Timestamps |
+| `created_by`, `updated_by` | string \| null | User audit references |
 
-Unique: `(unit_id, rank_class, terrain)` — one scale per unit/rank/terrain combination.
+Unique Index: `{ unit_id: 1, rank_class: 1, terrain: 1 }` — one scale per unit/rank/terrain combination.
 
-#### `ration_scale_item_versions` (SCD-2 history table)
-| Column | Type | Constraints |
+#### `ration_scale_item_versions` (SCD-2 history collection)
+| Field | Type | Constraints / Notes |
 |---|---|---|
-| `id` | uuid | PK (= `version_id` in the current-view) |
-| `scale_id` | uuid | NOT NULL, FK → `ration_scales.id` ON DELETE CASCADE |
-| `variant_id` | uuid | NOT NULL, FK → `product_variants.id` — **RENAMED from `item_id`** in the products refactor |
-| `auth_qty` | numeric(14,4) | NOT NULL, >= 0 |
-| `uom` | enum `uom` | NOT NULL |
-| `notes` | text | nullable |
-| `valid_from` | timestamptz | NOT NULL, default `now()` |
-| `valid_to` | timestamptz | nullable — **null = current row** |
-| `created_at` | timestamptz | NOT NULL |
-| `created_by` | uuid | nullable |
+| `id` | string | Primary key (UUID string) (= `version_id`) |
+| `scale_id` | string | Reference to `ration_scales.id` |
+| `variant_id` | string | Reference to `product_variants.id` |
+| `auth_qty` | number | Authorized quantity (`>= 0`) |
+| `uom` | enum `uom` | Unit of measure (`kg`, `g`, `l`, `ml`, `piece`, `pack`, `bottle`) |
+| `notes` | string \| null | Authorization notes |
+| `valid_from` | string / Date | Start timestamp (ISO string or Date) |
+| `valid_to` | string / Date \| null | End timestamp — **null indicates current open record** |
+| `created_at` | string / Date | Creation timestamp |
+| `created_by` | string \| null | User audit reference |
 
-Invariant: at most **one open row** (`valid_to IS NULL`) per `(scale_id, variant_id)`.
+Invariant: At most **one open document** (`valid_to: null` or `$exists: false`) per `{ scale_id, variant_id }`.
+Index: `{ scale_id: 1, variant_id: 1, valid_to: 1 }`.
 
-## 4. Views (all SELECT-granted to `authenticated`; never write to them)
+## 5. Aggregation Pipelines & Read Projections
 
-### `v_items_current` — legacy-items compatibility view
-One row per **variant**, presented in the shape of the dropped `items` table. Use this for any code that still thinks in "items".
+Instead of database views, read-side transformations and denormalizations are executed using MongoDB aggregation pipelines (`$match`, `$lookup`, `$unwind`, `$project`) in dedicated query modules:
 
-| Column | Meaning |
+### `listItemCurrent()` / `getItemCurrent()` — legacy-items compatibility projection
+Implemented in `lib/masters/queries.ts`. Aggregates over `product_variants` joined with `products` and `categories` to return variant records in the legacy item shape:
+
+| Field | Meaning |
 |---|---|
 | `id` | = `product_variants.id` — **a VARIANT id**, not a product id |
-| `unit_id` | always **null** (`products.unit_id` dropped; catalog is global) |
-| `category` | `item_category` derived from ROOT category name: Alcohol→`alcohol`, Cold Drinks→`soft_drink`, Cigars→`cigar`, Snacks→`grocery`, Ration→`ration`, Grocery→`grocery`, anything else→`grocery` |
+| `variant_id` | = `product_variants.id` |
+| `product_id` | = `products.id` |
+| `unit_id` | always `null` (`products.unit_id` dropped; catalog is global) |
+| `category` | mapped `item_category` derived from root category name: Alcohol→`alcohol`, Cold Drinks→`soft_drink`, Cigars→`cigar`, Snacks→`grocery`, Ration→`ration`, Grocery→`grocery` |
+| `category_name` | display category name |
 | `name` | = `products.name` |
 | `sku` | = variant sku |
 | `uom` | mapped from `unit_type`: ML→`ml`, LITRE→`l`, GRAM→`g`, KG→`kg`, PIECE→`piece` |
+| `unit_value` | numerical size/volume |
+| `unit_type` | enum `unit_type` |
+| `package_type` | enum `package_type` |
 | `is_active` | = variant `is_active` |
-| `created_at` / `updated_at` / `created_by` / `updated_by` | variant audit columns |
-| `pack_size_id` | always **null** (pack_sizes is gone) |
-| `version_id` | = variant id (legacy shape filler) |
-| `current_rate` | hardcoded `0.00` (rates left the masters domain) |
-| `current_ration_scale` | null |
-| `rate_valid_from` | timestamptz |
-| `version_notes` | null |
-| `pack_label` | display label, e.g. "750 ml Bottle" |
-| `pack_kind` | `'volume'` or `'count'` |
-| `volume_ml` | numeric, for volume packs |
-| `unit_count` | integer, for count packs |
 
-`security_invoker = on` → RLS of `products`/`product_variants` applies to the caller.
-**Generated TS types mark every column nullable** (Postgres can't infer view nullability) — null-filter `id`/`name` after selecting.
+Used by: Eligible item picker (`lib/ration/queries.ts`), CSV bulk-import name-to-id resolution (`lib/ration/actions.ts`), and bar/stock pickers.
 
-### `v_masters_search` — flat catalog search view
-One row per variant, joined to product and category. The masters list/search screens read this.
+### `listMasterItems()` — flat catalog search projection
+Implemented in `lib/masters/queries.ts`. Aggregates variants joined to products and categories with regex/text filtering on product name and normalized name. Powers the masters list and search interfaces.
 
-Columns: `variant_id`, `sku`, `is_active`, `unit_value`, `unit_type`, `package_type`, `created_at`, `updated_at`, `product_id`, `product_name`, `product_description`, `product_unit_id` (always **null** — `products.unit_id` dropped), `product_fts` (tsvector — use for full-text search), `category_id`, `category_name`, `category_parent_id`. Filter adoption via `unit_catalog`, not `product_unit_id`.
-`security_invoker = on`.
+### `getRationScaleItemsCurrent()` — current ration authorisations
+Implemented in `lib/ration/queries.ts`. Reads current open records (`valid_to: null`) from `ration_scale_item_versions`, joined via `$lookup` with `ration_scales`, `product_variants`, `products`, and `categories`. Powers ration authorisations matrices and authorisation chips in masters.
 
-### `v_ration_scale_items_current` — current ration authorisations
-Current (`valid_to IS NULL`) rows of `ration_scale_item_versions`, denormalised with scale and product info.
+### Other domain projections (rooms & inventory)
+- `getRoomsCurrent`: Aggregates room definitions, current occupancy, and furniture inventory.
+- `getUnitInventoryCurrent`: Aggregates FIFO inventory lots from `unit_inventory` with variant and product details.
 
-Columns: `version_id` (= `ration_scale_item_versions.id`), `scale_id` (FK → ration_scales), **`item_id`** (= `ration_scale_item_versions.variant_id`, aliased — it IS a `product_variants.id`), `unit_id` (= scale's unit), `scale_name`, `rank_class`, `terrain`, `scale_active`, `category` (same mapped `item_category` as `v_items_current`), `item_name` (= product name), `sku`, `auth_qty`, `uom`, `notes`, `valid_from`, `created_by`.
-Owner-rights view (no `security_invoker`).
-
-### Other current-views (same pattern, other domains)
-`v_rooms_current`, `v_unit_inventory_current` — read-side "current state" projections for rooms and inventory. Same rule applies: read the view, write the base tables.
-
-## 5. Join keys — the one id that matters
+## 6. Join keys — the one id that matters
 
 ```
 EligibleItem.id
   = MasterRow.id
-  = v_items_current.id
-  = v_masters_search.variant_id
-  = v_ration_scale_items_current.item_id
+  = itemCurrent.id
+  = itemCurrent.variant_id
+  = masterSearch.variant_id
+  = rationScaleItemCurrent.variant_id
   = ration_scale_item_versions.variant_id
   = product_variants.id
 ```
 
-**The product-variant id is THE item id in every masters/ration cross-reference.** When ration code says "item", it means a variant. Never join a ration row to `products.id`.
+**The product-variant id is THE item id in every masters/ration cross-reference.** When ration or inventory code says "item", it means a variant (`product_variants.id`). Never reference `products.id` as a stockable item or scale requirement.
 
-## 6. RPCs
+## 7. Atomic Operations & Action Helpers
 
-### `set_ration_scale_item(...)` → uuid
-The ONLY write path for ration scale authorisations. SECURITY INVOKER, performs the SCD-2 upsert (closes the open row, inserts a new one).
+### `setRationScaleItem(...)` → Promise<string>
+The canonical write path for ration scale authorisations (`lib/ration/actions.ts`). Replaces legacy stored procedures with a direct, atomic SCD-2 versioning routine:
 
-```sql
-set_ration_scale_item(
-  p_scale_id     uuid,
-  p_variant_id   uuid,        -- NOTE: p_variant_id, NOT p_item_id
-  p_auth_qty     numeric,
-  p_uom          public.uom,
-  p_notes        text         default null,
-  p_effective_at timestamptz  default now()
-) returns uuid                -- new version id
+```typescript
+await setRationScaleItem({
+  scaleId: string,
+  variantId: string,
+  authQty: number,
+  uom: string,
+  notes?: string | null,
+  effectiveAt?: string,
+  userId?: string | null,
+}): Promise<string> // returns new version id
 ```
 
-(Dropped: `set_item_rate` — do not call.)
+Logic:
+1. Queries `ration_scale_item_versions` for an open document (`scale_id`, `variant_id`, `valid_to: null`).
+2. If values match existing record, returns existing `id` (idempotent).
+3. If values changed, closes open document by setting `valid_to = effectiveAt`.
+4. Inserts new record with `valid_from = effectiveAt, valid_to = null` and returns the newly generated version `id`.
 
-## 7. The versioning pattern (`…_versions` + `v_*_current`)
+## 8. The versioning pattern (`…_versions` + current projections)
 
-Used wherever history must be auditable (currently ration authorisations; rooms/inventory use the same read-view convention):
+Used wherever history must be auditable (ration authorisations, inventory lots, tariff schedules):
 
-1. **History table** `<thing>_versions`: append-only SCD-2 rows with `valid_from` / `valid_to`. The current row has `valid_to IS NULL`; at most one open row per natural key (e.g. `(scale_id, variant_id)`).
-2. **Current view** `v_<thing>_current`: selects only open rows, denormalised with display columns. Apps read this for "what is true now"; they query the `_versions` table directly only for history timelines.
-3. **Writes** go through an RPC (e.g. `set_ration_scale_item`) which atomically closes the previous open row and inserts the new one — or, for corrections, a guarded `update` on the `_versions` table. Apps never `insert` "current" rows by hand and never write to the view.
-4. Generated TS types for views are all-nullable; the app's row types (`lib/<feature>/types.ts`) narrow them after a null-filter on the key columns.
+1. **History collection** `<thing>_versions`: append-only SCD-2 documents with `valid_from` / `valid_to`. The current document has `valid_to: null`; at most one open document per natural key (e.g. `(scale_id, variant_id)`).
+2. **Current query projections**: selects only open documents (`valid_to: null`), joining related metadata. Applications query the `_versions` collection directly only for historical timelines.
+3. **Writes** go through dedicated action helpers (e.g. `setRationScaleItem`) that atomically close the open document and insert the new version. Applications never write raw partials directly to current projections.
 
-## 8. Who reads / writes what
+## 9. Who reads / writes what & Access Control
 
-Both apps deliberately mirror each other: masters code in `lib/masters/*` + `app/(app)/masters/*`, ration code in `lib/ration/*` + `app/(app)/ration/*`. Shared row types live in `lib/<feature>/types.ts` (no `server-only`); `lib/ration/types.ts` is byte-identical across repos. The only sanctioned cross-links: ration → masters catalog via `v_items_current` (eligible-item pickers, CSV import name→id lookup) and `parseCsv` reuse; masters → ration via read-only `v_ration_scale_items_current` authorisation chips and the pure `lib/ration/mess-type` helper.
+Application-level RBAC & capability enforcement govern access:
+- **Session Authentication:** Every request is authenticated through Better Auth (`getCurrentUser()`).
+- **Capability Gates:** Mutations check `requireCapability(capability, unitId)` or `requireRole([...])` at the start of execution.
+- **Tenant Scoping:** Operational queries filter documents by `{ unit_id: caller.activeUnitId }` (or `caller.homeUnitId`).
 
-Legend: **R** = select, **W** = insert/update/delete (or RPC).
+Legend: **R** = query/read, **W** = insert/update/delete.
 
 ### Masters & ration domain
 
-| Relation | ADMIN app | USER app | Notes |
+| Collection | ADMIN app | Ops app | Notes |
 |---|---|---|---|
-| `categories` | R | R | Category tree for masters forms. Seed-managed; apps do not write. |
-| `products` | R/W | R | Global catalog only (`unit_id` dropped). Admin CRUD; ops adopt via `unit_catalog`. Never touch `fts` / `name_normalized`. |
+| `categories` | R | R | Category tree for masters forms. Seed-managed. |
+| `products` | R/W | R | Global catalog only (`unit_id` dropped). Admin CRUD; ops adopt via `unit_catalog`. |
 | `unit_catalog` | R/W | R/W | Unit adoption (`unit_id`, `variant_id`, `is_enabled`, `local_sku`). |
 | `unit_menu_rates` | R/W | R/W | Committee peg/bottle rate (`rate`, `effective_from`). Distinct from lot cost. |
 | `product_variants` | R/W | R/W | Masters CRUD. |
-| `v_masters_search` | R | R | Masters list/search (`lib/masters/queries.ts`). |
-| `v_items_current` | R | R | Legacy-item-shaped reads: ration eligible-item picker (`lib/ration/queries.ts` `listEligibleItems`), bulk-import name→id lookup (`lib/ration/actions.ts`). |
 | `ration_scales` | R/W | R/W | Scale CRUD (`lib/ration/*`). |
-| `ration_scale_item_versions` | R/W | R/W | History reads; corrective updates only — normal writes go via RPC. |
-| `v_ration_scale_items_current` | R | R | Current authorisations; also read by masters UI for authorisation chips. |
-| RPC `set_ration_scale_item` | W | W | The canonical ration authorisation write. |
+| `ration_scale_item_versions` | R/W | R/W | History reads; normal writes go via `setRationScaleItem`. |
 
-### Other shared domains (for completeness)
+### Other shared domains
 
-| Relation | ADMIN app | USER app |
+| Collection | ADMIN app | Ops app |
 |---|---|---|
-| `units`, `profiles`, `user_capabilities`, `capability_templates` | R/W | R/W |
+| `units` | R/W | R/W |
+| `user` / `users`, `profiles` | R/W | R/W |
+| `user_capabilities`, `capability_templates` | R/W | R/W |
+| `session`, `account`, `verification`, `twoFactor` | R/W | R/W |
 | `dependants` | R/W | R |
-| `bookings`, `rooms`, `room_furniture`, `unit_furniture`, `v_rooms_current` | R/W | R/W |
+| `bookings`, `rooms`, `room_furniture`, `unit_furniture` | R/W | R/W |
 | `room_bills`, `room_bill_items`, `room_bill_orders` | R/W | R/W |
-| `unit_inventory`, `v_unit_inventory_current` | R/W | R/W |
+| `unit_inventory` | R/W | R/W |
 | `attendance_days`, `attendance_absences` | R/W | R/W |
-| `bar_chits`, `bar_chit_items` | — (migration present, no code yet) | R/W |
+| `bar_chits`, `bar_chit_items` | — | R/W |
+| `mess_billing_periods`, `mess_bills`, `mess_bill_line_items` | R/W | R/W |
+| `mess_daily_p_rates`, `mess_subscriptions`, `mess_misc_debits` | R/W | R/W |
 | `idempotency_keys` | W | W |
-| `audit_log` | R | — |
+| `audit_log` | R/W | R/W |
 
-RLS summary (masters/ration): `products`/`product_variants` are global (readable to authenticated; writes need `masters.write.global` or admin). `unit_catalog` / `unit_menu_rates` scoped by `masters.read` / `masters.write` on `unit_id`. `ration_scales` / `ration_scale_item_versions` readable with `ration.read` **or** `masters.read`, writable with `ration.adjust(unit_id)`.
+Access control summary:
+- `products` / `product_variants` are global (readable to authenticated sessions; writes require `masters.write.global` or `super_admin`).
+- `unit_catalog` / `unit_menu_rates` are scoped by `masters.read` / `masters.write` on `unit_id`.
+- `ration_scales` / `ration_scale_item_versions` are readable with `ration.read` or `masters.read`, writable with `ration.adjust(unit_id)`.
+- Operational domains (`rooms.*`, `attendance.*`, `bar.*`, `billing.*`) require their respective capability scoped to `caller.activeUnitId` or `caller.homeUnitId`.
 
-## 9. Sync rules
+## 10. Sync rules
 
-1. **DB is authoritative.** When code and DB disagree, the DB wins; fix the code. Introspect the live schema read-only via PostgREST OpenAPI (`GET https://nwrjhxzlnvtubwjuzsxr.supabase.co/rest/v1/` with the service-role key) when in doubt.
-2. **Migrations are mirrored.** `supabase/migrations/` must be file-identical in both repos at all times. Sync by file copy, never by re-authoring.
-3. **Reads of the legacy item shape → `v_items_current`. Masters listing → `v_masters_search`. Current ration items → `v_ration_scale_items_current`.**
-4. **Writes never target views.** Masters mutations hit `products` / `product_variants`; ration mutations call `set_ration_scale_item` (or guarded updates on `ration_scale_item_versions`).
-5. **No `(supabase as any)` casts to bypass missing-relation type errors.** If TypeScript says a relation doesn't exist, the schema changed — port the query, don't silence the compiler.
-6. **`database.types.ts` is per-app regenerated** and may carry app-specific extras; keep each app's file compiling against the live schema, but don't expect them to be identical. Shared *domain* row types (`lib/<feature>/types.ts`) ARE expected to match across repos.
-7. **Mirror the admin reference.** The USER app's masters/ration structure intentionally mirrors `officer-mess-admin`; don't invent new structure in one repo only.
+1. **DB is authoritative.** When code and DB disagree, the DB wins; fix the code. Introspect collections and documents via MongoDB client when in doubt.
+2. **Document schemas and types are mirrored.** Shared TypeScript interfaces (`lib/<feature>/types.ts`) and Zod schemas (`lib/schemas/*`) must remain synchronized across both repos.
+3. **Reads of the legacy item shape go through query projections (`listItemCurrent`, `getItemCurrent`).**
+4. **Writes target base collections or atomic action helpers (`setRationScaleItem`).**
+5. **No `as any` casts to bypass missing-field or collection type errors.** Define clear TypeScript interfaces for document models.
+6. **Mirror the admin reference.** The Ops app masters/ration structure intentionally mirrors `mess-admin`; keep domain abstractions unified.
 
-## 10. "When you change the schema" checklist
+## 11. "When you change the schema" checklist
 
-Any schema change (DDL) must be made via a migration and propagated to both apps. In order:
+Any schema or field change must be coordinated across both apps:
 
-- [ ] Write the migration in ONE repo's `supabase/migrations/` with the next timestamp; apply it to the shared project (Supabase CLI / dashboard).
-- [ ] **Copy the migration file verbatim into the other repo's** `supabase/migrations/` (same filename, same bytes). Verify with `diff -rq` across the two directories.
-- [ ] Regenerate `lib/database.types.ts` (or equivalent) in **both** apps against the live project.
-- [ ] **Update this document in both repos** (tables/views/columns/RPCs, join keys, R/W matrix) and keep the two copies identical.
-- [ ] If a table/column was renamed or dropped, grep **BOTH** repos for every stale reference — including ones hidden behind `as any`:
-  `grep -rn "from('<old_name>'\|rpc('<old_fn>'" lib app` and `grep -rn "as any" lib | grep -i supabase`.
-- [ ] If old readers must keep working, add/extend a compatibility view (`v_*_current` pattern) in the same migration rather than leaving broken readers.
-- [ ] Check RLS/grants: new tables need policies + grants; new views need `security_invoker` decided explicitly and SELECT granted to `authenticated`.
-- [ ] Run both apps (`next build` or dev + exercise the affected pages) before considering the change done — type-checking alone does NOT catch stale relation names behind casts.
-- [ ] Commit the migration + regenerated types + doc update in each repo (separately, but in the same change set).
+- [ ] Define and update Zod schemas in `lib/schemas/` in both apps.
+- [ ] Update TypeScript document types in `lib/<feature>/types.ts` in both apps.
+- [ ] If new indexes are required, ensure index definitions are configured in MongoDB.
+- [ ] **Update this document in both repos** (collections, fields, indexes, join keys, access control matrix) and keep the two copies identical.
+- [ ] If a collection or field was renamed or dropped, grep **BOTH** repos for every stale reference — including ones hidden behind `as any`:
+  `grep -rn "collection('<old_name>'" lib app` and `grep -rn "as any" lib`.
+- [ ] If old readers must keep working, provide backwards-compatible projections in query helpers.
+- [ ] Verify access control: Ensure all mutations call `requireCapability(...)` or `requireRole(...)`.
+- [ ] Verify unit scoping: Ensure queries on unit-level collections enforce `{ unit_id }`.
+- [ ] Run both apps (`next build` or dev + exercise the affected pages) before considering the change done.
+- [ ] Commit the types and doc update in each repo.

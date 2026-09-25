@@ -1,7 +1,5 @@
 import 'server-only';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import { createClient } from '@/lib/supabase/server';
-import type { Database } from '@/lib/supabase/database.types';
+import { getDb } from '@/lib/mongo';
 
 export type {
   RosterMember,
@@ -15,10 +13,10 @@ import type {
   AttendanceDayView,
   DiningCandidate,
   MonthlyAttendance,
+  AttendanceDay,
+  AttendanceAbsence,
 } from './types';
 import type { AttendanceStatus } from '@/lib/schemas/attendance';
-
-type Sb = SupabaseClient<Database>;
 
 type ProfileRow = { id: string; display_name: string | null; full_name: string | null };
 type DependantRow = {
@@ -28,41 +26,33 @@ type DependantRow = {
   primary_profile_id: string;
 };
 
-async function loadRoster(supabase: Sb, unitId: string) {
-  const [{ data: profiles, error: pErr }, { data: deps, error: dErr }] =
-    await Promise.all([
-      supabase
-        .from('profiles')
-        .select('id, display_name, full_name')
-        .eq('unit_id', unitId)
-        .eq('is_active', true)
-        .eq('dining_in', true)
-        .order('display_name'),
-      supabase
-        .from('dependants')
-        .select('id, full_name, relation, primary_profile_id')
-        .eq('unit_id', unitId)
-        .eq('is_active', true)
-        .eq('dining_in', true)
-        .order('full_name'),
-    ]);
+async function loadRoster(unitId: string) {
+  const db = await getDb();
+  const [profiles, deps] = await Promise.all([
+    db
+      .collection('profiles')
+      .find({ unit_id: unitId, is_active: true, dining_in: true })
+      .sort({ display_name: 1 })
+      .toArray(),
+    db
+      .collection('dependants')
+      .find({ unit_id: unitId, is_active: true, dining_in: true })
+      .sort({ full_name: 1 })
+      .toArray(),
+  ]);
 
-  if (pErr) throw new Error(pErr.message);
-  if (dErr) throw new Error(dErr.message);
+  const profileRows = profiles as unknown as ProfileRow[];
+  const dependantRows = deps as unknown as DependantRow[];
 
-  const profileRows = (profiles ?? []) as ProfileRow[];
-  const dependantRows = (deps ?? []) as DependantRow[];
-
-  const sponsorIds = [...new Set(dependantRows.map((d) => d.primary_profile_id))];
+  const sponsorIds = [...new Set(dependantRows.map((d) => d.primary_profile_id).filter(Boolean))];
   let sponsorName = new Map<string, string>();
   if (sponsorIds.length > 0) {
-    const { data: sponsors, error: sErr } = await supabase
-      .from('profiles')
-      .select('id, display_name, full_name')
-      .in('id', sponsorIds);
-    if (sErr) throw new Error(sErr.message);
+    const sponsors = (await db
+      .collection('profiles')
+      .find({ id: { $in: sponsorIds } })
+      .toArray()) as unknown as ProfileRow[];
     sponsorName = new Map(
-      ((sponsors ?? []) as ProfileRow[]).map((s) => [
+      sponsors.map((s) => [
         s.id,
         s.display_name ?? s.full_name ?? 'Unknown',
       ]),
@@ -75,34 +65,27 @@ async function loadRoster(supabase: Sb, unitId: string) {
 export async function getAttendanceDay(
   unitId: string,
   date: string,
-  client?: Sb,
+  _client?: unknown,
 ): Promise<AttendanceDayView> {
-  const supabase = client ?? (await createClient());
+  const db = await getDb();
 
-  const { profileRows, dependantRows, sponsorName } = await loadRoster(
-    supabase,
-    unitId,
-  );
+  const { profileRows, dependantRows, sponsorName } = await loadRoster(unitId);
 
-  const { data: day, error: dayErr } = await supabase
-    .from('attendance_days')
-    .select('id, status')
-    .eq('unit_id', unitId)
-    .eq('attendance_date', date)
-    .maybeSingle();
-  if (dayErr) throw new Error(dayErr.message);
+  const day = (await db.collection<AttendanceDay>('attendance_days').findOne({
+    unit_id: unitId,
+    attendance_date: date,
+  })) as AttendanceDay | null;
 
   const status: AttendanceStatus = (day?.status as AttendanceStatus) ?? 'draft';
 
   const absentProfile = new Map<string, string | null>();
   const absentDependant = new Map<string, string | null>();
   if (day) {
-    const { data: absences, error: aErr } = await supabase
-      .from('attendance_absences')
-      .select('profile_id, dependant_id, reason')
-      .eq('day_id', day.id);
-    if (aErr) throw new Error(aErr.message);
-    for (const a of absences ?? []) {
+    const absences = (await db
+      .collection<AttendanceAbsence>('attendance_absences')
+      .find({ day_id: day.id })
+      .toArray()) as AttendanceAbsence[];
+    for (const a of absences) {
       if (a.profile_id) absentProfile.set(a.profile_id, a.reason ?? null);
       else if (a.dependant_id) absentDependant.set(a.dependant_id, a.reason ?? null);
     }
@@ -151,51 +134,47 @@ export async function getAttendanceDay(
 export async function listDiningCandidates(
   unitId: string,
 ): Promise<DiningCandidate[]> {
-  const supabase = await createClient();
+  const db = await getDb();
 
-  const [{ data: profiles, error: pErr }, { data: deps, error: dErr }] =
-    await Promise.all([
-      supabase
-        .from('profiles')
-        .select('id, display_name, full_name, dining_in')
-        .eq('unit_id', unitId)
-        .eq('is_active', true)
-        .order('display_name'),
-      supabase
-        .from('dependants')
-        .select('id, full_name, relation, primary_profile_id, dining_in')
-        .eq('unit_id', unitId)
-        .eq('is_active', true)
-        .order('full_name'),
-    ]);
+  const [profiles, deps] = await Promise.all([
+    db
+      .collection('profiles')
+      .find({ unit_id: unitId, is_active: true })
+      .sort({ display_name: 1 })
+      .toArray(),
+    db
+      .collection('dependants')
+      .find({ unit_id: unitId, is_active: true })
+      .sort({ full_name: 1 })
+      .toArray(),
+  ]);
 
-  if (pErr) throw new Error(pErr.message);
-  if (dErr) throw new Error(dErr.message);
+type ProfileCandidateRow = ProfileRow & { dining_in?: boolean | null };
+type DependantCandidateRow = DependantRow & { dining_in?: boolean | null };
 
   const out: DiningCandidate[] = [];
 
-  for (const p of (profiles ?? []) as (ProfileRow & { dining_in: boolean })[]) {
+  for (const p of profiles as unknown as ProfileCandidateRow[]) {
     out.push({
       person_type: 'profile',
       person_id: p.id,
       name: p.display_name ?? p.full_name ?? 'Unknown',
       relation: null,
       sponsor_name: null,
-      dining_in: p.dining_in,
+      dining_in: Boolean(p.dining_in),
     });
   }
 
-  const depRows = (deps ?? []) as (DependantRow & { dining_in: boolean })[];
-  const sponsorIds = [...new Set(depRows.map((d) => d.primary_profile_id))];
+  const depRows = deps as unknown as DependantCandidateRow[];
+  const sponsorIds = [...new Set(depRows.map((d) => d.primary_profile_id).filter(Boolean))];
   let sponsorName = new Map<string, string>();
   if (sponsorIds.length > 0) {
-    const { data: sponsors, error: sErr } = await supabase
-      .from('profiles')
-      .select('id, display_name, full_name')
-      .in('id', sponsorIds);
-    if (sErr) throw new Error(sErr.message);
+    const sponsors = (await db
+      .collection('profiles')
+      .find({ id: { $in: sponsorIds } })
+      .toArray()) as unknown as ProfileRow[];
     sponsorName = new Map(
-      ((sponsors ?? []) as ProfileRow[]).map((s) => [
+      sponsors.map((s) => [
         s.id,
         s.display_name ?? s.full_name ?? 'Unknown',
       ]),
@@ -209,7 +188,7 @@ export async function listDiningCandidates(
       name: d.full_name,
       relation: d.relation,
       sponsor_name: sponsorName.get(d.primary_profile_id) ?? null,
-      dining_in: d.dining_in,
+      dining_in: Boolean(d.dining_in),
     });
   }
 
@@ -217,7 +196,6 @@ export async function listDiningCandidates(
 }
 
 function monthBounds(month: string) {
-  // month = 'YYYY-MM'
   const [y, m] = month.split('-').map(Number);
   const start = `${month}-01`;
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -228,35 +206,34 @@ function monthBounds(month: string) {
 export async function getMonthlyAttendance(
   unitId: string,
   month: string,
-  client?: Sb,
+  _client?: unknown,
 ): Promise<MonthlyAttendance> {
-  const supabase = client ?? (await createClient());
+  const db = await getDb();
   const { start, end } = monthBounds(month);
 
-  const { profileRows, dependantRows } = await loadRoster(supabase, unitId);
+  const { profileRows, dependantRows } = await loadRoster(unitId);
   const rosterProfiles = new Set(profileRows.map((p) => p.id));
   const rosterDependants = new Set(dependantRows.map((d) => d.id));
   const rosterTotal = rosterProfiles.size + rosterDependants.size;
 
-  const { data: dayRows, error: dErr } = await supabase
-    .from('attendance_days')
-    .select('id, attendance_date, status')
-    .eq('unit_id', unitId)
-    .gte('attendance_date', start)
-    .lte('attendance_date', end);
-  if (dErr) throw new Error(dErr.message);
+  const dayRows = (await db
+    .collection<AttendanceDay>('attendance_days')
+    .find({
+      unit_id: unitId,
+      attendance_date: { $gte: start, $lte: end },
+    })
+    .toArray()) as AttendanceDay[];
 
   const days: MonthlyAttendance['days'] = {};
-  const dayIds = (dayRows ?? []).map((d) => d.id);
+  const dayIds = dayRows.map((d) => d.id);
 
   const absentByDay = new Map<string, number>();
   if (dayIds.length > 0) {
-    const { data: absences, error: aErr } = await supabase
-      .from('attendance_absences')
-      .select('day_id, profile_id, dependant_id')
-      .in('day_id', dayIds);
-    if (aErr) throw new Error(aErr.message);
-    for (const a of absences ?? []) {
+    const absences = (await db
+      .collection<AttendanceAbsence>('attendance_absences')
+      .find({ day_id: { $in: dayIds } })
+      .toArray()) as AttendanceAbsence[];
+    for (const a of absences) {
       const inRoster =
         (a.profile_id && rosterProfiles.has(a.profile_id)) ||
         (a.dependant_id && rosterDependants.has(a.dependant_id));
@@ -267,7 +244,7 @@ export async function getMonthlyAttendance(
 
   let sum = 0;
   let recorded = 0;
-  for (const d of dayRows ?? []) {
+  for (const d of dayRows) {
     const present = Math.max(0, rosterTotal - (absentByDay.get(d.id) ?? 0));
     days[d.attendance_date] = {
       date: d.attendance_date,

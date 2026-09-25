@@ -333,16 +333,6 @@ export function isArrearBill(bill: ArrearSourceBill, periodStartDate: string): b
   return Number(bill.total_amount) - Number(bill.paid_amount ?? 0) > 0;
 }
 
-/** Unpaid published/overdue bills whose period ended before this cycle starts. */
-export function sumArrears(bills: ArrearSourceBill[], periodStartDate: string): number {
-  let total = 0;
-  for (const bill of bills) {
-    if (!isArrearBill(bill, periodStartDate)) continue;
-    total += Number(bill.total_amount) - Number(bill.paid_amount ?? 0);
-  }
-  return Math.round(total * 100) / 100;
-}
-
 export function groupMemberArrears(
   bills: ArrearSourceBill[],
   periodStartDate: string
@@ -357,10 +347,6 @@ export function groupMemberArrears(
     map.set(id, Math.round(amount * 100) / 100);
   }
   return map;
-}
-
-export function sumChargeAmounts(charges: Array<{ amount: number }>): number {
-  return Math.round(charges.reduce((sum, charge) => sum + Number(charge.amount), 0) * 100) / 100;
 }
 
 export type MessBillAmountParts = {

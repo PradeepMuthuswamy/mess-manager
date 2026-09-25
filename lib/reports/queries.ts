@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import type { PRatePoint, UnitReportSnapshot } from './types';
 
 const SETTLED_ROOM_STATUSES = ['paid', 'transferred_to_mess_bill'] as const;
@@ -20,95 +20,118 @@ export async function getUnitReport(
   start: string,
   end: string,
 ): Promise<UnitReportSnapshot> {
-  const supabase = await createClient();
-
-  const [pRatesRes, barRes, roomsRes, billsRes, rationRes] = await Promise.all([
-    supabase
-      .from('mess_daily_p_rates')
-      .select('rate_date, rate_per_diner')
-      .eq('unit_id', unitId)
-      .gte('rate_date', start)
-      .lte('rate_date', end)
-      .order('rate_date', { ascending: true }),
-    supabase
-      .from('bar_chits')
-      .select('total_amount')
-      .eq('unit_id', unitId)
-      .eq('status', 'finalized')
-      .is('booking_id', null)
-      .gte('date', start)
-      .lte('date', end),
-    supabase
-      .from('room_bills')
-      .select('total_amount, paid_at, updated_at, payment_status, status')
-      .eq('unit_id', unitId)
-      .or(
-        'payment_status.in.(paid,transferred_to_mess_bill),status.in.(paid,transferred_to_mess_bill)',
-      ),
-    supabase
-      .from('mess_bills')
-      .select('total_amount, paid_amount')
-      .eq('unit_id', unitId)
-      .in('status', [...OPEN_MESS_BILL_STATUSES]),
-    supabase
-      .from('ration_stock_transactions')
-      .select('variant_id, type, quantity, rate, transaction_date, created_at')
-      .eq('unit_id', unitId)
-      .lte('transaction_date', end),
+  const [pRatesCol, barCol, roomsCol, billsCol, rationCol] = await Promise.all([
+    getCollection('mess_daily_p_rates'),
+    getCollection('bar_chits'),
+    getCollection('room_bills'),
+    getCollection('mess_bills'),
+    getCollection('ration_stock_transactions'),
   ]);
 
-  if (pRatesRes.error) throw new Error(pRatesRes.error.message);
-  if (barRes.error) throw new Error(barRes.error.message);
-  if (roomsRes.error) throw new Error(roomsRes.error.message);
-  if (billsRes.error) throw new Error(billsRes.error.message);
-  if (rationRes.error) throw new Error(rationRes.error.message);
+  const [pRatesDocs, barDocs, roomsDocs, billsDocs, rationDocs] = await Promise.all([
+    pRatesCol
+      .find({
+        unit_id: unitId,
+        rate_date: { $gte: start, $lte: end },
+      })
+      .sort({ rate_date: 1 })
+      .toArray(),
+    barCol
+      .find({
+        unit_id: unitId,
+        status: 'finalized',
+        booking_id: null,
+        date: { $gte: start, $lte: end },
+      })
+      .toArray(),
+    roomsCol
+      .find({
+        unit_id: unitId,
+        $or: [
+          { payment_status: { $in: ['paid', 'transferred_to_mess_bill'] } },
+          { status: { $in: ['paid', 'transferred_to_mess_bill'] } },
+        ],
+      })
+      .toArray(),
+    billsCol
+      .find({
+        unit_id: unitId,
+        status: { $in: [...OPEN_MESS_BILL_STATUSES] },
+      })
+      .toArray(),
+    rationCol
+      .find({
+        unit_id: unitId,
+        transaction_date: { $lte: end },
+      })
+      .toArray(),
+  ]);
 
-  const pRates: PRatePoint[] = (pRatesRes.data ?? []).map((row) => ({
-    date: row.rate_date,
+  const pRates: PRatePoint[] = pRatesDocs.map((row: Record<string, unknown>) => ({
+    date: String(row.rate_date),
     rate: Number(row.rate_per_diner),
   }));
 
-  const barSalesTotal = (barRes.data ?? []).reduce(
-    (sum, row) => sum + Number(row.total_amount),
+type BarChitDoc = {
+  total_amount?: number | null;
+};
+
+type RoomBillDoc = {
+  total_amount?: number | null;
+  payment_status?: string | null;
+  status?: string | null;
+  paid_at?: string | null;
+  updated_at?: string | null;
+};
+
+  const barSalesTotal = (barDocs as unknown as BarChitDoc[]).reduce(
+    (sum: number, row: BarChitDoc) => sum + Number(row.total_amount ?? 0),
     0,
   );
 
   const settled = new Set<string>(SETTLED_ROOM_STATUSES);
-  const guestRoomRevenue = (roomsRes.data ?? []).reduce((sum, row) => {
-    if (!settled.has(row.payment_status) && !settled.has(row.status)) return sum;
-    const settledOn = isoDatePrefix(row.paid_at) ?? isoDatePrefix(row.updated_at);
-    if (!inInclusiveRange(settledOn, start, end)) return sum;
-    return sum + Number(row.total_amount);
-  }, 0);
+  const guestRoomRevenue = (roomsDocs as unknown as RoomBillDoc[]).reduce(
+    (sum: number, row: RoomBillDoc) => {
+      const paymentStatus = row.payment_status ?? '';
+      const status = row.status ?? '';
+      if (!settled.has(paymentStatus) && !settled.has(status)) return sum;
+      const settledOn = isoDatePrefix(row.paid_at) ?? isoDatePrefix(row.updated_at);
+      if (!inInclusiveRange(settledOn, start, end)) return sum;
+      return sum + Number(row.total_amount ?? 0);
+    },
+    0,
+  );
 
   // Issued − returned in the window, valued at each variant's last receipt rate
   // as of `end` (receipts before the window still set the rate).
   const lastRateByVariant = new Map<string, { rate: number; date: string; at: string }>();
   const netQtyByVariant = new Map<string, number>();
-  for (const tx of rationRes.data ?? []) {
-    const qty = Number(tx.quantity);
+  for (const tx of rationDocs) {
+    const qty = Number(tx.quantity ?? 0);
+    const variantId = String(tx.variant_id);
+    const txDate = String(tx.transaction_date);
     if (tx.type === 'receipt') {
       const rate = Number(tx.rate);
       if (!Number.isFinite(rate)) continue;
       const createdAt = tx.created_at ?? '';
-      const prev = lastRateByVariant.get(tx.variant_id);
+      const prev = lastRateByVariant.get(variantId);
       const newer =
         !prev ||
-        tx.transaction_date > prev.date ||
-        (tx.transaction_date === prev.date && createdAt >= prev.at);
+        txDate > prev.date ||
+        (txDate === prev.date && createdAt >= prev.at);
       if (newer) {
-        lastRateByVariant.set(tx.variant_id, {
+        lastRateByVariant.set(variantId, {
           rate,
-          date: tx.transaction_date,
+          date: txDate,
           at: createdAt,
         });
       }
       continue;
     }
-    if (!inInclusiveRange(tx.transaction_date, start, end)) continue;
-    const cur = netQtyByVariant.get(tx.variant_id) ?? 0;
-    if (tx.type === 'consumption') netQtyByVariant.set(tx.variant_id, cur + qty);
-    else if (tx.type === 'return_to_source') netQtyByVariant.set(tx.variant_id, cur - qty);
+    if (!inInclusiveRange(txDate, start, end)) continue;
+    const cur = netQtyByVariant.get(variantId) ?? 0;
+    if (tx.type === 'consumption') netQtyByVariant.set(variantId, cur + qty);
+    else if (tx.type === 'return_to_source') netQtyByVariant.set(variantId, cur - qty);
   }
 
   let rationNetQty = 0;
@@ -122,8 +145,8 @@ export async function getUnitReport(
 
   let outstandingDues = 0;
   let outstandingCount = 0;
-  for (const row of billsRes.data ?? []) {
-    const remaining = Number(row.total_amount) - Number(row.paid_amount);
+  for (const row of billsDocs) {
+    const remaining = Number(row.total_amount ?? 0) - Number(row.paid_amount ?? 0);
     if (remaining <= 0) continue;
     outstandingDues += remaining;
     outstandingCount += 1;

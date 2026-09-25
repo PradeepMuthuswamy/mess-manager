@@ -1,8 +1,9 @@
 import 'server-only';
+import { randomBytes } from 'node:crypto';
+import { getCollection } from '@/lib/mongo';
 
 /**
- * Email-verification link types accepted by /auth/confirm (mirrors
- * Supabase EmailOtpType minus phone types).
+ * Email-verification link types accepted by /auth/confirm.
  */
 export type AuthEmailLinkType =
   | 'recovery'
@@ -11,109 +12,174 @@ export type AuthEmailLinkType =
   | 'signup'
   | 'email_change';
 
+export interface VerificationDoc {
+  token: string;
+  value: string;
+  identifier: string;
+  type: AuthEmailLinkType;
+  expiresAt: Date;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
+  used?: boolean;
+  usedAt?: Date;
+}
+
 /**
  * Builds a first-party verification link for auth emails.
  *
- * We deliberately do NOT use `properties.action_link` from
- * `auth.admin.generateLink()` — that URL goes through GoTrue's
- * `/auth/v1/verify` endpoint, which returns the session in the URL
- * fragment (`#access_token=...`). Fragments never reach the server, so
- * the SSR cookie session is never established and the user lands on
- * the landing page unauthenticated.
- *
- * Instead we link to our own `/auth/confirm` route with the
- * `hashed_token`, which verifies server-side via `verifyOtp()` and
- * sets the session cookies before redirecting to `next`.
+ * Link format: ${siteUrl}/auth/confirm?token=...&type=...
  */
 export function buildAuthConfirmLink(opts: {
   type: AuthEmailLinkType;
-  hashedToken: string;
-  next: string;
+  token?: string;
+  hashedToken?: string;
+  next?: string;
   /** Override the app origin — e.g. the admin console sending an invite
    * for an ops-role account links to the user app instead of itself. */
   baseUrl?: string;
 }): string {
   const siteUrl =
     opts.baseUrl ?? process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
+  const tokenVal = opts.token ?? opts.hashedToken ?? '';
   const params = new URLSearchParams({
-    token_hash: opts.hashedToken,
+    token: tokenVal,
     type: opts.type,
-    next: opts.next,
   });
+  if (opts.next) {
+    params.set('next', opts.next);
+  }
   return `${siteUrl}/auth/confirm?${params.toString()}`;
+}
+
+export function getExpirationForType(type: AuthEmailLinkType | string): Date {
+  const now = Date.now();
+  if (type === 'invite') {
+    return new Date(now + 24 * 60 * 60 * 1000); // 24 hours
+  }
+  return new Date(now + 60 * 60 * 1000); // 1 hour for reset / recovery / magiclink
+}
+
+export async function generateVerificationToken(opts: {
+  identifier: string;
+  type: AuthEmailLinkType;
+  metadata?: Record<string, unknown>;
+  expiresInMs?: number;
+}): Promise<{ token: string; expiresAt: Date }> {
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = opts.expiresInMs
+    ? new Date(Date.now() + opts.expiresInMs)
+    : getExpirationForType(opts.type);
+
+  const col = await getCollection<VerificationDoc>('verifications');
+  await col.insertOne({
+    token,
+    value: token,
+    identifier: opts.identifier.toLowerCase().trim(),
+    type: opts.type,
+    expiresAt,
+    createdAt: new Date(),
+    metadata: opts.metadata ?? {},
+    used: false,
+  });
+
+  return { token, expiresAt };
+}
+
+export async function verifyAuthToken(
+  token: string,
+  type?: AuthEmailLinkType | string,
+): Promise<{ valid: boolean; verification?: VerificationDoc; error?: string }> {
+  if (!token) return { valid: false, error: 'Token is required' };
+  const col = await getCollection<VerificationDoc>('verifications');
+  const query: Record<string, unknown> = {
+    $or: [{ token }, { value: token }],
+    used: { $ne: true },
+  };
+  if (type) {
+    query.type = type;
+  }
+  const verification = await col.findOne(query);
+  if (!verification) {
+    return { valid: false, error: 'Token not found or already used' };
+  }
+  if (new Date() > new Date(verification.expiresAt)) {
+    return { valid: false, error: 'Token has expired' };
+  }
+  return { valid: true, verification };
+}
+
+export async function markTokenUsed(token: string): Promise<void> {
+  const col = await getCollection<VerificationDoc>('verifications');
+  await col.updateOne(
+    { $or: [{ token }, { value: token }] },
+    { $set: { used: true, usedAt: new Date() } },
+  );
 }
 
 export type IssuedAuthConfirmLink = {
   error: { message: string } | null;
-  /** First-party /auth/confirm URL, or null when generateLink failed. */
+  /** First-party /auth/confirm URL, or null when token generation failed. */
   link: string | null;
+  token: string | null;
   userId: string | null;
   email: string | undefined;
 };
 
-type AuthLinkClient = {
-  auth: {
-    admin: {
-      generateLink: (
-        params:
-          | {
-              type: 'invite';
-              email: string;
-              options?: { data?: { [key: string]: string | number | boolean | null | undefined } };
-            }
-          | { type: 'recovery' | 'magiclink'; email: string },
-      ) => Promise<{
-        data: {
-          user: { id: string; email?: string } | null;
-          properties: { hashed_token?: string } | null;
-        } | null;
-        error: { message: string } | null;
-      }>;
-    };
-  };
-};
-
 /**
- * generateLink + first-party /auth/confirm URL.
+ * generateToken + first-party /auth/confirm URL.
+ * Stored in MongoDB verifications collection with expiration.
  * Callers still decide who may request the link, which origin to use,
  * and which error to show.
  */
 export async function issueAuthConfirmLink(
-  admin: AuthLinkClient,
-  opts: {
+  arg1: unknown,
+  arg2?: unknown,
+): Promise<IssuedAuthConfirmLink> {
+  const opts = (arg2 ?? arg1) as {
     type: 'invite' | 'recovery' | 'magiclink';
     email: string;
-    next: string;
-    data?: { [key: string]: string | number | boolean | null | undefined };
+    next?: string;
+    data?: Record<string, unknown>;
     baseUrl?: string;
-  },
-): Promise<IssuedAuthConfirmLink> {
-  const { data, error } = await admin.auth.admin.generateLink(
-    opts.type === 'invite'
-      ? {
-          type: 'invite',
-          email: opts.email,
-          options: { data: opts.data ?? {} },
-        }
-      : { type: opts.type, email: opts.email },
-  );
+    expiresInMs?: number;
+  };
 
-  const hashedToken = data?.properties?.hashed_token;
-  const userId = data?.user?.id ?? null;
-  const email = data?.user?.email;
-  if (error || !hashedToken) {
-    return { error, link: null, userId, email };
-  }
-
-  return {
-    error: null,
-    userId,
-    email,
-    link: buildAuthConfirmLink({
+  try {
+    const { token } = await generateVerificationToken({
+      identifier: opts.email,
       type: opts.type,
-      hashedToken,
+      metadata: opts.data,
+      expiresInMs: opts.expiresInMs,
+    });
+
+    const link = buildAuthConfirmLink({
+      type: opts.type,
+      token,
       next: opts.next,
       baseUrl: opts.baseUrl,
-    }),
-  };
+    });
+
+    return {
+      error: null,
+      link,
+      token,
+      userId: (opts.data?.userId as string | undefined) ?? (opts.data?.id as string | undefined) ?? null,
+      email: opts.email,
+    };
+  } catch (err: unknown) {
+    console.error('Error issuing auth confirm link:', err);
+    const message =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : 'Failed to issue auth confirmation link';
+    return {
+      error: { message },
+      link: null,
+      token: null,
+      userId: null,
+      email: opts.email,
+    };
+  }
 }

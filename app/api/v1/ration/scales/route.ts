@@ -1,10 +1,14 @@
 import { NextRequest } from 'next/server';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser } from '@/lib/api/auth';
+import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
 import { createScaleSchema, listScalesQuerySchema } from '@/lib/schemas';
+import { userHasCapability } from '@/lib/auth/capabilities';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
+import { getCollection } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
+import type { RationScale } from '@/lib/ration/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -19,23 +23,23 @@ export const GET = withRoute(async (req: NextRequest) => {
 
   const unitId = parsed.data.unit_id ?? ctx.user.activeUnitId;
   if (!unitId) throw Errors.badRequest('unit_id is required');
+  if (!userHasCapability(ctx.user, 'ration.read', unitId)) {
+    throw Errors.forbidden('Requires capability: ration.read');
+  }
 
-  let q = ctx.supabase
-    .from('ration_scales')
-    .select('id, unit_id, name, description, is_active, rank_class, terrain, created_at, updated_at, created_by, updated_by')
-    .eq('unit_id', unitId)
-    .order('rank_class')
-    .order('terrain')
-    .order('name')
-    .limit(parsed.data.limit);
+  const col = await getCollection<RationScale>('ration_scales');
+  const filter: Record<string, unknown> = { unit_id: unitId };
+  if (parsed.data.active_only) filter.is_active = true;
+  if (parsed.data.q) filter.name = { $regex: parsed.data.q, $options: 'i' };
+  if (parsed.data.rank_class) filter.rank_class = parsed.data.rank_class;
+  if (parsed.data.terrain) filter.terrain = parsed.data.terrain;
 
-  if (parsed.data.active_only) q = q.eq('is_active', true);
-  if (parsed.data.q) q = q.ilike('name', `%${parsed.data.q}%`);
-  if (parsed.data.rank_class) q = q.eq('rank_class', parsed.data.rank_class);
-  if (parsed.data.terrain) q = q.eq('terrain', parsed.data.terrain);
+  const data = await col
+    .find(filter)
+    .sort({ rank_class: 1, terrain: 1, name: 1 })
+    .limit(parsed.data.limit)
+    .toArray();
 
-  const { data, error } = await q;
-  if (error) throw Errors.internal(error.message);
   return ok({ data, meta: { next_cursor: null, has_more: false } });
 });
 
@@ -44,7 +48,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = createScaleSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const ctx = await requireApiUser(req);
+  const ctx = await requireApiCapability(req, 'ration.adjust', parsed.data.unit_id);
   await checkRateLimit(req, 'write', ctx.user.id);
 
   const idemKey = getIdempotencyKey(req);
@@ -53,20 +57,43 @@ export const POST = withRoute(async (req: NextRequest) => {
     if (replay) return replay;
   }
 
-  const { data, error } = await ctx.supabase
-    .from('ration_scales')
-    .insert({
-      unit_id: parsed.data.unit_id,
-      name: parsed.data.name,
-      rank_class: parsed.data.rank_class,
-      terrain: parsed.data.terrain,
-      description: parsed.data.description ?? null,
-    })
-    .select()
-    .single();
-  if (error?.code === '23505') throw Errors.conflict('A scale for that rank class and terrain already exists in this unit');
-  if (error || !data) throw Errors.internal(error?.message ?? 'create failed');
+  const col = await getCollection<RationScale>('ration_scales');
+  const existing = await col.findOne({
+    unit_id: parsed.data.unit_id,
+    rank_class: parsed.data.rank_class,
+    terrain: parsed.data.terrain,
+  });
+  if (existing) {
+    throw Errors.conflict('A scale for that rank class and terrain already exists in this unit');
+  }
 
-  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, data);
-  return created(data, `/api/v1/ration/scales/${data.id}`);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const doc: RationScale = {
+    id,
+    unit_id: parsed.data.unit_id,
+    name: parsed.data.name,
+    rank_class: parsed.data.rank_class,
+    terrain: parsed.data.terrain,
+    description: parsed.data.description ?? null,
+    is_active: true,
+    created_at: now,
+    updated_at: now,
+    created_by: ctx.user.id,
+    updated_by: ctx.user.id,
+  };
+
+  await col.insertOne(doc);
+
+  await writeAudit({
+    table_name: 'ration_scales',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: ctx.user.id,
+    active_unit_id: parsed.data.unit_id,
+    new_data: doc as never,
+  });
+
+  if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, doc);
+  return created(doc, `/api/v1/ration/scales/${doc.id}`);
 });

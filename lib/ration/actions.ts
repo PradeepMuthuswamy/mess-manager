@@ -1,9 +1,11 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection, getDb } from '@/lib/mongo';
 import { requireUser } from '@/lib/auth/require-role';
 import { requireCapability, userHasCapability } from '@/lib/auth/require-capability';
+import { writeAudit } from '@/lib/audit/write-audit';
+import { getAttendanceDay } from '@/lib/attendance/queries';
 import {
   createScaleSchema,
   updateScaleSchema,
@@ -13,12 +15,7 @@ import {
   createRationStockTransactionSchema,
 } from '@/lib/schemas/ration';
 import { bulkImportScaleRowSchema, type BulkImportScaleRow } from './bulk-import';
-import type { Database } from '@/lib/supabase/database.types';
-import type { RationScaleItemVersionRow } from './types';
-
-type Sb = Awaited<ReturnType<typeof createClient>>;
-
-type RationScaleUpdate = Database['public']['Tables']['ration_scales']['Update'];
+import type { RationScale, RationScaleItemVersionRow } from './types';
 
 export type BulkImportScaleResult = {
   total: number;
@@ -48,67 +45,130 @@ async function requireRationIssueOrAdjust(unitId: string) {
 }
 
 async function assertAttendanceFinalized(
-  supabase: Sb,
   unitId: string,
   date: string,
 ): Promise<{ error: string } | null> {
-  const { data: day, error } = await supabase
-    .from('attendance_days')
-    .select('status')
-    .eq('unit_id', unitId)
-    .eq('attendance_date', date)
-    .maybeSingle();
-  if (error) return { error: error.message };
-  if (!day) {
-    return {
-      error:
-        'Attendance for this date is missing. Finalize attendance before posting ration consumption.',
-    };
-  }
-  if (day.status !== 'finalized') {
-    return {
-      error:
-        'Attendance for this date is still draft. Finalize attendance before posting ration consumption.',
-    };
+  try {
+    const day = await getAttendanceDay(unitId, date);
+    if (!day) {
+      return {
+        error:
+          'Attendance for this date is missing. Finalize attendance before posting ration consumption.',
+      };
+    }
+    if (day.status !== 'finalized') {
+      return {
+        error:
+          'Attendance for this date is still draft. Finalize attendance before posting ration consumption.',
+      };
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { error: msg || 'Failed to check attendance status' };
   }
   return null;
 }
 
 async function lastReceiptRateByVariant(
-  supabase: Sb,
   unitId: string,
   variantIds: string[],
 ): Promise<Map<string, number>> {
   const rates = new Map<string, number>();
   if (variantIds.length === 0) return rates;
-  const { data } = await supabase
-    .from('ration_stock_transactions')
-    .select('variant_id, rate')
-    .eq('unit_id', unitId)
-    .eq('type', 'receipt')
-    .in('variant_id', variantIds)
-    .order('transaction_date', { ascending: false })
-    .order('created_at', { ascending: false });
-  for (const row of data ?? []) {
-    if (rates.has(row.variant_id)) continue;
+
+  const col = await getCollection('ration_stock_transactions');
+  const rows = await col
+    .find({
+      unit_id: unitId,
+      type: 'receipt',
+      variant_id: { $in: variantIds },
+    })
+    .sort({ transaction_date: -1, created_at: -1 })
+    .toArray();
+
+  for (const row of rows) {
+    const vId = String(row.variant_id);
+    if (rates.has(vId)) continue;
     const rate = Number(row.rate);
-    rates.set(row.variant_id, Number.isFinite(rate) ? rate : 0);
+    rates.set(vId, Number.isFinite(rate) ? rate : 0);
   }
   return rates;
 }
 
 async function deleteConsumptionStockTxs(
-  supabase: Sb,
   unitId: string,
   transactionDate: string,
 ) {
-  return supabase
-    .from('ration_stock_transactions')
-    .delete()
-    .eq('unit_id', unitId)
-    .eq('transaction_date', transactionDate)
-    .eq('type', 'consumption');
+  const col = await getCollection('ration_stock_transactions');
+  return col.deleteMany({
+    unit_id: unitId,
+    transaction_date: transactionDate,
+    type: 'consumption',
+  });
 }
+
+/**
+ * Direct replacement for Postgres RPC `set_ration_scale_item`.
+ * Manages SCD-2 versioning directly in `ration_scale_item_versions` collection.
+ */
+export async function directSetRationScaleItem(params: {
+  scaleId: string;
+  variantId: string;
+  authQty: number;
+  uom: string;
+  notes?: string | null;
+  effectiveAt?: string;
+  userId?: string | null;
+}): Promise<string> {
+  const versionsCol = await getCollection('ration_scale_item_versions');
+  const effective = params.effectiveAt || new Date().toISOString();
+  const now = new Date().toISOString();
+
+  const existing = await versionsCol.findOne({
+    scale_id: params.scaleId,
+    variant_id: params.variantId,
+    $or: [{ valid_to: null }, { valid_to: { $exists: false } }],
+  });
+
+  if (
+    existing &&
+    Number(existing.auth_qty) === Number(params.authQty) &&
+    existing.uom === params.uom &&
+    (existing.notes ?? '') === (params.notes ?? '')
+  ) {
+    return String(existing.id);
+  }
+
+  if (existing) {
+    await versionsCol.updateMany(
+      {
+        scale_id: params.scaleId,
+        variant_id: params.variantId,
+        $or: [{ valid_to: null }, { valid_to: { $exists: false } }],
+      },
+      { $set: { valid_to: effective } },
+    );
+  }
+
+  const newId = crypto.randomUUID();
+  const newDoc = {
+    id: newId,
+    scale_id: params.scaleId,
+    variant_id: params.variantId,
+    auth_qty: params.authQty,
+    uom: params.uom,
+    notes: params.notes ?? null,
+    valid_from: effective,
+    valid_to: null,
+    created_by: params.userId ?? null,
+    created_at: now,
+  };
+  await versionsCol.insertOne(newDoc);
+
+  return newId;
+}
+
+export const setRationScaleItem = directSetRationScaleItem;
 
 export async function createScaleAction(_prev: unknown, formData: FormData) {
   const parsed = createScaleSchema.safeParse({
@@ -121,23 +181,46 @@ export async function createScaleAction(_prev: unknown, formData: FormData) {
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
   await requireCapability('ration.adjust', parsed.data.unit_id);
+  const user = await requireUser();
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('ration_scales')
-    .insert({
-      unit_id: parsed.data.unit_id,
-      name: parsed.data.name,
-      rank_class: parsed.data.rank_class,
-      terrain: parsed.data.terrain,
-      description: parsed.data.description ?? null,
-    })
-    .select('id')
-    .single();
-  if (error || !data) return { error: error?.message ?? 'Could not create scale' };
+  const col = await getCollection<RationScale>('ration_scales');
+  const existing = await col.findOne({
+    unit_id: parsed.data.unit_id,
+    rank_class: parsed.data.rank_class,
+    terrain: parsed.data.terrain,
+  });
+  if (existing) {
+    return { error: 'A scale for that rank class and terrain already exists in this unit' };
+  }
+
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const doc: RationScale = {
+    id,
+    unit_id: parsed.data.unit_id,
+    name: parsed.data.name,
+    rank_class: parsed.data.rank_class,
+    terrain: parsed.data.terrain,
+    description: parsed.data.description ?? null,
+    is_active: true,
+    created_at: now,
+    updated_at: now,
+    created_by: user.id,
+    updated_by: user.id,
+  };
+
+  await col.insertOne(doc);
+  await writeAudit({
+    table_name: 'ration_scales',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: user.id,
+    active_unit_id: parsed.data.unit_id,
+    new_data: doc as unknown as Record<string, unknown>,
+  });
 
   revalidateRation();
-  return { ok: true, id: data.id };
+  return { ok: true, id };
 }
 
 export type BulkUpdateScaleResult = {
@@ -158,23 +241,21 @@ export async function bulkUpdateScaleItemsAction(input: {
   const parsed = bulkUpdateScaleItemsSchema.safeParse(input);
   if (!parsed.success) return { error: 'Invalid input' };
 
-  const supabase = await createClient();
-  const { data: scale } = await supabase
-    .from('ration_scales')
-    .select('id, unit_id')
-    .eq('id', parsed.data.scale_id)
-    .maybeSingle();
-  if (!scale) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const scale = await scalesCol.findOne({ id: parsed.data.scale_id });
+  if (!scale || !scale.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.adjust', scale.unit_id);
+  const user = await requireUser();
 
-  const { data: current, error: curErr } = await supabase
-    .from('ration_scale_item_versions')
-    .select('variant_id, auth_qty, uom')
-    .eq('scale_id', parsed.data.scale_id)
-    .is('valid_to', null)
-    .in('variant_id', parsed.data.item_ids);
-  if (curErr) return { error: curErr.message };
+  const versionsCol = await getCollection<RationScaleItemVersionRow>('ration_scale_item_versions');
+  const current = await versionsCol
+    .find({
+      scale_id: parsed.data.scale_id,
+      $or: [{ valid_to: null }, { valid_to: { $exists: false } }],
+      variant_id: { $in: parsed.data.item_ids },
+    })
+    .toArray();
 
   const result: BulkUpdateScaleResult = {
     attempted: parsed.data.item_ids.length,
@@ -187,7 +268,7 @@ export async function bulkUpdateScaleItemsAction(input: {
   const effective = new Date().toISOString();
 
   for (const itemId of parsed.data.item_ids) {
-    const row = (current ?? []).find((r) => r.variant_id === itemId);
+    const row = current.find((r) => r.variant_id === itemId);
     if (!row) {
       result.skipped++;
       result.errors.push({ item_id: itemId, message: 'No open authorisation' });
@@ -213,20 +294,22 @@ export async function bulkUpdateScaleItemsAction(input: {
     }
     next = Math.round(next * 10000) / 10000;
 
-    const { error: rpcErr } = await supabase.rpc('set_ration_scale_item', {
-      p_scale_id: parsed.data.scale_id,
-      p_variant_id: itemId,
-      p_auth_qty: next,
-      p_uom: row.uom,
-      ...(parsed.data.notes ? { p_notes: parsed.data.notes } : {}),
-      p_effective_at: effective,
-    });
-    if (rpcErr) {
+    try {
+      await directSetRationScaleItem({
+        scaleId: parsed.data.scale_id,
+        variantId: itemId,
+        authQty: next,
+        uom: String(row.uom),
+        notes: parsed.data.notes ?? row.notes,
+        effectiveAt: effective,
+        userId: user.id,
+      });
+      result.updated++;
+    } catch (err: unknown) {
       result.failed++;
-      result.errors.push({ item_id: itemId, message: rpcErr.message });
-      continue;
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push({ item_id: itemId, message: msg || 'Update failed' });
     }
-    result.updated++;
   }
 
   revalidateRation(parsed.data.scale_id);
@@ -245,23 +328,32 @@ export async function updateScaleAction(_prev: unknown, formData: FormData) {
   });
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase
-    .from('ration_scales')
-    .select('unit_id')
-    .eq('id', id)
-    .maybeSingle();
-  if (!existing) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const existing = await scalesCol.findOne({ id });
+  if (!existing || !existing.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.adjust', existing.unit_id);
+  const user = await requireUser();
 
-  const patch: RationScaleUpdate = {};
+  const patch: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    updated_by: user.id,
+  };
   if (parsed.data.name !== undefined) patch.name = parsed.data.name;
   if (parsed.data.description !== undefined) patch.description = parsed.data.description ?? null;
   if (parsed.data.is_active !== undefined) patch.is_active = parsed.data.is_active;
 
-  const { error } = await supabase.from('ration_scales').update(patch).eq('id', id);
-  if (error) return { error: error.message };
+  await scalesCol.updateOne({ id }, { $set: patch });
+
+  await writeAudit({
+    table_name: 'ration_scales',
+    row_pk: id,
+    op: 'UPDATE',
+    changed_by: user.id,
+    active_unit_id: existing.unit_id,
+    old_data: existing as unknown as Record<string, unknown>,
+    new_data: patch,
+  });
 
   revalidateRation(id);
   return { ok: true };
@@ -271,21 +363,30 @@ export async function deleteScaleAction(_prev: unknown, formData: FormData) {
   const id = String(formData.get('id') ?? '');
   if (!id) return { error: 'Missing id' };
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase
-    .from('ration_scales')
-    .select('unit_id')
-    .eq('id', id)
-    .maybeSingle();
-  if (!existing) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const existing = await scalesCol.findOne({ id });
+  if (!existing || !existing.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.adjust', existing.unit_id);
+  const user = await requireUser();
 
-  const { error } = await supabase
-    .from('ration_scales')
-    .update({ is_active: false })
-    .eq('id', id);
-  if (error) return { error: error.message };
+  const patch = {
+    is_active: false,
+    updated_at: new Date().toISOString(),
+    updated_by: user.id,
+  };
+
+  await scalesCol.updateOne({ id }, { $set: patch });
+
+  await writeAudit({
+    table_name: 'ration_scales',
+    row_pk: id,
+    op: 'UPDATE',
+    changed_by: user.id,
+    active_unit_id: existing.unit_id,
+    old_data: existing as unknown as Record<string, unknown>,
+    new_data: patch,
+  });
 
   revalidateRation(id);
   return { ok: true };
@@ -304,30 +405,45 @@ export async function upsertScaleItemAction(_prev: unknown, formData: FormData) 
   });
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: scale } = await supabase
-    .from('ration_scales')
-    .select('unit_id')
-    .eq('id', scaleId)
-    .maybeSingle();
-  if (!scale) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const scale = await scalesCol.findOne({ id: scaleId });
+  if (!scale || !scale.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.adjust', scale.unit_id);
+  const user = await requireUser();
 
-  const { data, error } = await supabase.rpc('set_ration_scale_item', {
-    p_scale_id: scaleId,
-    p_variant_id: parsed.data.item_id,
-    p_auth_qty: parsed.data.auth_qty,
-    p_uom: parsed.data.uom,
-    ...(parsed.data.notes != null ? { p_notes: parsed.data.notes } : {}),
-    p_effective_at: parsed.data.effective_at
-      ? new Date(parsed.data.effective_at).toISOString()
-      : new Date().toISOString(),
+  const effective = parsed.data.effective_at
+    ? new Date(parsed.data.effective_at).toISOString()
+    : new Date().toISOString();
+
+  const versionId = await directSetRationScaleItem({
+    scaleId,
+    variantId: parsed.data.item_id,
+    authQty: parsed.data.auth_qty,
+    uom: parsed.data.uom,
+    notes: parsed.data.notes ?? null,
+    effectiveAt: effective,
+    userId: user.id,
   });
-  if (error) return { error: error.message };
+
+  await writeAudit({
+    table_name: 'ration_scale_item_versions',
+    row_pk: versionId,
+    op: 'INSERT',
+    changed_by: user.id,
+    active_unit_id: scale.unit_id,
+    new_data: {
+      scale_id: scaleId,
+      variant_id: parsed.data.item_id,
+      auth_qty: parsed.data.auth_qty,
+      uom: parsed.data.uom,
+      notes: parsed.data.notes ?? null,
+      valid_from: effective,
+    },
+  });
 
   revalidateRation(scaleId);
-  return { ok: true, version_id: data };
+  return { ok: true, version_id: versionId };
 }
 
 export async function removeScaleItemAction(_prev: unknown, formData: FormData) {
@@ -335,24 +451,33 @@ export async function removeScaleItemAction(_prev: unknown, formData: FormData) 
   const itemId = String(formData.get('item_id') ?? '');
   if (!scaleId || !itemId) return { error: 'Missing scale_id or item_id' };
 
-  const supabase = await createClient();
-  const { data: scale } = await supabase
-    .from('ration_scales')
-    .select('unit_id')
-    .eq('id', scaleId)
-    .maybeSingle();
-  if (!scale) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const scale = await scalesCol.findOne({ id: scaleId });
+  if (!scale || !scale.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.adjust', scale.unit_id);
+  const user = await requireUser();
 
-  // Close the currently-open version (valid_to is null) for this (scale, item).
-  const { error } = await supabase
-    .from('ration_scale_item_versions')
-    .update({ valid_to: new Date().toISOString() })
-    .eq('scale_id', scaleId)
-    .eq('variant_id', itemId)
-    .is('valid_to', null);
-  if (error) return { error: error.message };
+  const versionsCol = await getCollection('ration_scale_item_versions');
+  const now = new Date().toISOString();
+
+  await versionsCol.updateMany(
+    {
+      scale_id: scaleId,
+      variant_id: itemId,
+      $or: [{ valid_to: null }, { valid_to: { $exists: false } }],
+    },
+    { $set: { valid_to: now } },
+  );
+
+  await writeAudit({
+    table_name: 'ration_scale_item_versions',
+    row_pk: `${scaleId}:${itemId}`,
+    op: 'UPDATE',
+    changed_by: user.id,
+    active_unit_id: scale.unit_id,
+    new_data: { valid_to: now },
+  });
 
   revalidateRation(scaleId);
   return { ok: true };
@@ -364,15 +489,12 @@ export async function bulkImportScaleItemsAction(input: {
 }): Promise<{ ok?: boolean; result?: BulkImportScaleResult; error?: string }> {
   if (!input.scale_id) return { error: 'Missing scale_id' };
 
-  const supabase = await createClient();
-  const { data: scale } = await supabase
-    .from('ration_scales')
-    .select('id, unit_id')
-    .eq('id', input.scale_id)
-    .maybeSingle();
-  if (!scale) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const scale = await scalesCol.findOne({ id: input.scale_id });
+  if (!scale || !scale.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.adjust', scale.unit_id);
+  const user = await requireUser();
 
   const result: BulkImportScaleResult = {
     total: input.rows.length,
@@ -380,6 +502,9 @@ export async function bulkImportScaleItemsAction(input: {
     failed: 0,
     errors: [],
   };
+
+  const db = await getDb();
+  const effective = new Date().toISOString();
 
   for (let i = 0; i < input.rows.length; i++) {
     const rowNumber = i + 1;
@@ -396,20 +521,29 @@ export async function bulkImportScaleItemsAction(input: {
     }
     const row: BulkImportScaleRow = parsed.data;
 
-    // Resolve item_id by name within unit (or global), restricted to ration/grocery.
-    const { data: matches, error: lookupErr } = await supabase
-      .from('v_items_current')
-      .select('id, name')
-      .ilike('name', row.item_name)
-      .in('category', ['ration', 'grocery'])
-      .eq('is_active', true)
-      .or(`unit_id.is.null,unit_id.eq.${scale.unit_id}`)
-      .limit(2);
-    if (lookupErr) {
-      result.failed++;
-      result.errors.push({ rowNumber, name: row.item_name, message: lookupErr.message });
-      continue;
-    }
+    // Resolve item_id by name in MongoDB
+    const pipeline: Record<string, unknown>[] = [
+      {
+        $match: {
+          name: { $regex: `^${row.item_name.trim()}$`, $options: 'i' },
+          is_active: { $ne: false },
+        },
+      },
+      {
+        $lookup: {
+          from: 'product_variants',
+          localField: 'id',
+          foreignField: 'product_id',
+          as: 'variants',
+        },
+      },
+      { $unwind: '$variants' },
+      { $match: { 'variants.is_active': { $ne: false } } },
+      { $limit: 2 },
+    ];
+
+    const matches = await db.collection('products').aggregate(pipeline).toArray();
+
     if (!matches || matches.length === 0) {
       result.failed++;
       result.errors.push({
@@ -429,56 +563,61 @@ export async function bulkImportScaleItemsAction(input: {
       continue;
     }
 
-    const { error: rpcErr } = await supabase.rpc('set_ration_scale_item', {
-      p_scale_id: input.scale_id,
-      p_variant_id: matches[0].id!,
-      p_auth_qty: row.auth_qty,
-      p_uom: row.uom,
-      ...(row.notes != null ? { p_notes: row.notes } : {}),
-      p_effective_at: new Date().toISOString(),
-    });
-    if (rpcErr) {
+    try {
+      await directSetRationScaleItem({
+        scaleId: input.scale_id,
+        variantId: matches[0].variants.id,
+        authQty: row.auth_qty,
+        uom: row.uom,
+        notes: row.notes ?? null,
+        effectiveAt: effective,
+        userId: user.id,
+      });
+      result.inserted++;
+    } catch (err: unknown) {
       result.failed++;
-      result.errors.push({ rowNumber, name: row.item_name, message: rpcErr.message });
-      continue;
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push({ rowNumber, name: row.item_name, message: msg || 'Import failed' });
     }
-    result.inserted++;
   }
 
   revalidateRation(input.scale_id);
   return { ok: true, result };
 }
 
-// Read-only helper exposed as a server action so client components can fetch
-// version history on demand without round-tripping a full page refresh. Still
-// gated by `ration.read` against the scale's unit.
 export async function getScaleItemHistoryAction(
   scaleId: string,
   itemId: string,
 ): Promise<{ ok?: boolean; rows?: RationScaleItemVersionRow[]; error?: string }> {
   if (!scaleId || !itemId) return { error: 'Missing scale_id or item_id' };
 
-  const supabase = await createClient();
-  const { data: scale } = await supabase
-    .from('ration_scales')
-    .select('unit_id')
-    .eq('id', scaleId)
-    .maybeSingle();
-  if (!scale) return { error: 'Scale not found' };
+  const scalesCol = await getCollection<RationScale>('ration_scales');
+  const scale = await scalesCol.findOne({ id: scaleId });
+  if (!scale || !scale.unit_id) return { error: 'Scale not found' };
 
   await requireCapability('ration.read', scale.unit_id);
 
-  const { data, error } = await supabase
-    .from('ration_scale_item_versions')
-    .select(
-      'id, scale_id, variant_id, auth_qty, uom, notes, valid_from, valid_to, created_at, created_by',
-    )
-    .eq('scale_id', scaleId)
-    .eq('variant_id', itemId)
-    .order('valid_from', { ascending: false });
-  if (error) return { error: error.message };
+  const versionsCol = await getCollection('ration_scale_item_versions');
+  const rows = await versionsCol
+    .find({ scale_id: scaleId, variant_id: itemId })
+    .sort({ valid_from: -1 })
+    .toArray();
 
-  return { ok: true, rows: (data ?? []) as RationScaleItemVersionRow[] };
+  return {
+    ok: true,
+    rows: rows.map((r: Record<string, unknown>) => ({
+      id: String(r.id),
+      scale_id: String(r.scale_id),
+      variant_id: String(r.variant_id),
+      auth_qty: Number(r.auth_qty),
+      uom: String(r.uom),
+      notes: r.notes ? String(r.notes) : null,
+      valid_from: String(r.valid_from),
+      valid_to: r.valid_to ? String(r.valid_to) : null,
+      created_at: String(r.created_at),
+      created_by: r.created_by ? String(r.created_by) : null,
+    })),
+  };
 }
 
 export async function postDailyRationConsumptionAction(input: {
@@ -495,57 +634,73 @@ export async function postDailyRationConsumptionAction(input: {
   const { unit_id, consumption_date, items } = parsed.data;
 
   await requireRationIssueOrAdjust(unit_id);
+  const user = await requireUser();
 
-  const supabase = await createClient();
-  const attendanceErr = await assertAttendanceFinalized(
-    supabase,
-    unit_id,
-    consumption_date,
-  );
+  const attendanceErr = await assertAttendanceFinalized(unit_id, consumption_date);
   if (attendanceErr) return attendanceErr;
 
-  const { error } = await supabase
-    .from('ration_consumptions')
-    .upsert(
-      items.map((i) => ({
+  const consCol = await getCollection('ration_consumptions');
+  const now = new Date().toISOString();
+
+  for (const item of items) {
+    await consCol.updateOne(
+      {
         unit_id,
         consumption_date,
-        variant_id: i.variant_id,
-        quantity: i.quantity,
-      })),
-      { onConflict: 'unit_id,consumption_date,variant_id' },
+        variant_id: item.variant_id,
+      },
+      {
+        $set: {
+          quantity: item.quantity,
+          updated_at: now,
+          updated_by: user.id,
+        },
+        $setOnInsert: {
+          id: crypto.randomUUID(),
+          created_at: now,
+          created_by: user.id,
+        },
+      },
+      { upsert: true },
     );
-
-  if (error) return { error: error.message };
+  }
 
   if (items.length > 0) {
-    const { error: delTxErr } = await deleteConsumptionStockTxs(
-      supabase,
-      unit_id,
-      consumption_date,
-    );
-    if (delTxErr) return { error: delTxErr.message };
+    await deleteConsumptionStockTxs(unit_id, consumption_date);
 
     const rates = await lastReceiptRateByVariant(
-      supabase,
       unit_id,
       items.map((i) => i.variant_id),
     );
-    const { error: insTxErr } = await supabase
-      .from('ration_stock_transactions')
-      .insert(
-        items.map((i) => ({
-          unit_id,
-          variant_id: i.variant_id,
-          transaction_date: consumption_date,
-          type: 'consumption',
-          quantity: Number(i.quantity),
-          rate: rates.get(i.variant_id) ?? 0,
-          amount: 0,
-        })),
-      );
-    if (insTxErr) return { error: insTxErr.message };
+
+    const txCol = await getCollection('ration_stock_transactions');
+    const newTxs = items.map((i) => ({
+      id: crypto.randomUUID(),
+      unit_id,
+      variant_id: i.variant_id,
+      transaction_date: consumption_date,
+      type: 'consumption',
+      quantity: Number(i.quantity),
+      rate: rates.get(i.variant_id) ?? 0,
+      amount: 0,
+      source: null,
+      notes: null,
+      created_at: now,
+      updated_at: now,
+      created_by: user.id,
+      updated_by: user.id,
+    }));
+    await txCol.insertMany(newTxs);
   }
+
+  await writeAudit({
+    table_name: 'ration_consumptions',
+    row_pk: `${unit_id}:${consumption_date}`,
+    op: 'INSERT',
+    changed_by: user.id,
+    active_unit_id: unit_id,
+    new_data: { items_count: items.length },
+  });
 
   revalidateRationLedger();
   return { ok: true };
@@ -558,22 +713,23 @@ export async function rollbackDailyRationConsumptionAction(input: {
   if (!input.unit_id || !input.consumption_date) return { error: 'Missing input' };
 
   await requireRationIssueOrAdjust(input.unit_id);
+  const user = await requireUser();
 
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from('ration_consumptions')
-    .delete()
-    .eq('unit_id', input.unit_id)
-    .eq('consumption_date', input.consumption_date);
+  const consCol = await getCollection('ration_consumptions');
+  await consCol.deleteMany({
+    unit_id: input.unit_id,
+    consumption_date: input.consumption_date,
+  });
 
-  if (error) return { error: error.message };
+  await deleteConsumptionStockTxs(input.unit_id, input.consumption_date);
 
-  const { error: txErr } = await deleteConsumptionStockTxs(
-    supabase,
-    input.unit_id,
-    input.consumption_date,
-  );
-  if (txErr) return { error: txErr.message };
+  await writeAudit({
+    table_name: 'ration_consumptions',
+    row_pk: `${input.unit_id}:${input.consumption_date}`,
+    op: 'DELETE',
+    changed_by: user.id,
+    active_unit_id: input.unit_id,
+  });
 
   revalidateRationLedger();
   return { ok: true };
@@ -602,7 +758,6 @@ export async function createRationStockTransactionAction(input: {
     return { error: 'Invalid input' };
   }
 
-  // Sibling schema may allow signed adjustment qty, or still require positive().
   const coerced = { ...input, quantity, rate, amount: Math.abs(amount) };
   let parsed = createRationStockTransactionSchema.safeParse(coerced);
   if (!parsed.success && input.type === 'adjustment') {
@@ -615,9 +770,13 @@ export async function createRationStockTransactionAction(input: {
 
   const { unit_id } = parsed.data;
   await requireCapability('ration.adjust', unit_id);
+  const user = await requireUser();
 
-  const supabase = await createClient();
-  const { error } = await supabase.from('ration_stock_transactions').insert({
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const txCol = await getCollection('ration_stock_transactions');
+  const doc = {
+    id,
     unit_id,
     variant_id: parsed.data.variant_id,
     transaction_date: parsed.data.transaction_date,
@@ -627,12 +786,22 @@ export async function createRationStockTransactionAction(input: {
     amount: parsed.data.amount,
     source: parsed.data.source || null,
     notes: parsed.data.notes || null,
-  });
+    created_at: now,
+    updated_at: now,
+    created_by: user.id,
+    updated_by: user.id,
+  };
+  await txCol.insertOne(doc);
 
-  if (error) return { error: error.message };
+  await writeAudit({
+    table_name: 'ration_stock_transactions',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: user.id,
+    active_unit_id: unit_id,
+    new_data: doc,
+  });
 
   revalidateRationLedger();
   return { ok: true };
 }
-
-

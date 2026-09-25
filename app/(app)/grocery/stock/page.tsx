@@ -7,6 +7,7 @@ import { StockTable } from '@/app/(app)/_shared/stock-table/stock-table';
 import {
   CATEGORY_META,
   slugFromCategory,
+  type Category,
   type InventoryCategory,
 } from '@/lib/masters/categories';
 import type { MasterItemPick } from '@/lib/stock/types';
@@ -33,7 +34,7 @@ export default async function GroceryStockPage({
 }) {
   const { q, page, sortBy, sortOrder } = await searchParams;
 
-  // Single Supabase SSR round trip: fetch the user once, then gate against the
+  // Single MongoDB round trip: fetch the user once, then gate against the
   // active unit with the pure helper instead of calling requireCapability
   // (which would re-run requireUser internally). Keeps the unit-scoped check.
   const user = await requireUser();

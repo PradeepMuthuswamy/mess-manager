@@ -20,8 +20,10 @@ import {
   type Capability,
 } from '@/lib/auth/types';
 
+import type { TemplateOption } from '@/lib/users/types';
+
 interface PermissionsTabProps {
-  templates: any[];
+  templates: TemplateOption[];
 }
 
 export function PermissionsTab({ templates }: PermissionsTabProps) {

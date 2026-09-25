@@ -65,12 +65,14 @@ export const FUNCTIONAL_ROLES = [
   }
 ] as const;
 
+import type { UserRow, UnitOption, TemplateOption } from '@/lib/users/types';
+
 interface UserFormDialogProps {
   open: boolean;
   onClose: () => void;
-  user?: any | null; // Null when inviting, user object when editing
-  units: any[];
-  templates: any[];
+  user?: UserRow | null; // Null when inviting, user object when editing
+  units: UnitOption[];
+  templates: TemplateOption[];
 }
 
 export function UserFormDialog({
@@ -161,7 +163,7 @@ export function UserFormDialog({
         });
 
         if (res.ok) {
-          toast.success('Invitation email sent.');
+          toast.success('User record saved.');
           onClose();
         } else {
           fail(res.error || 'Failed to send invitation.');

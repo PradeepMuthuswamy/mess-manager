@@ -1,5 +1,6 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
+
+import { getDb } from '@/lib/mongo';
 import type { MessingMealType, MessingBillingMode } from '@/lib/schemas/messing';
 import { messingMealTypeEnum, MESSING_MEAL_TYPE_LABEL } from '@/lib/schemas/messing';
 import { calculateMemberMessingCycle } from '@/lib/billing/compute';
@@ -17,23 +18,24 @@ import type {
   MessingFlatRateRow,
 } from './types';
 
+function cleanDoc<T>(doc: Record<string, unknown> | null | undefined): T {
+  if (!doc) return doc as unknown as T;
+  const { _id, ...rest } = doc;
+  return rest as unknown as T;
+}
+
 /**
  * Returns all flat rate records (past and current) sorted by valid_from desc, then meal_type asc.
  */
-export async function getFlatRatesHistory(unitId: string) {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('messing_flat_rates')
-    .select('*')
-    .eq('unit_id', unitId)
-    .order('valid_from', { ascending: false })
-    .order('meal_type', { ascending: true });
+export async function getFlatRatesHistory(unitId: string): Promise<MessingFlatRateRow[]> {
+  const db = await getDb();
+  const docs = await db
+    .collection('messing_flat_rates')
+    .find({ unit_id: unitId })
+    .sort({ valid_from: -1, meal_type: 1 })
+    .toArray();
 
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data ?? [];
+  return docs.map((d) => cleanDoc<MessingFlatRateRow>(d));
 }
 
 /**
@@ -43,28 +45,23 @@ export async function getActiveFlatRates(
   unitId: string,
   dateStr: string
 ): Promise<Record<MessingMealType, number>> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from('messing_flat_rates')
-    .select('meal_type, rate')
-    .eq('unit_id', unitId)
-    .lte('valid_from', dateStr)
-    .or(`valid_to.is.null,valid_to.gte.${dateStr}`);
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  const db = await getDb();
+  const docs = await db
+    .collection('messing_flat_rates')
+    .find({
+      unit_id: unitId,
+      valid_from: { $lte: dateStr },
+      $or: [{ valid_to: null }, { valid_to: { $gte: dateStr } }],
+    })
+    .toArray();
 
   const mapping = {} as Record<MessingMealType, number>;
   for (const m of messingMealTypeEnum) {
     mapping[m] = 0;
   }
 
-  if (data) {
-    for (const row of data) {
-      mapping[row.meal_type as MessingMealType] = Number(row.rate);
-    }
+  for (const row of docs) {
+    mapping[row.meal_type as MessingMealType] = Number(row.rate);
   }
 
   return mapping;
@@ -77,16 +74,13 @@ export async function getDailyExpenditure(
   unitId: string,
   dateStr: string
 ): Promise<MessDailyExpenditureRow | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_daily_expenditures')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('expenditure_date', dateStr)
-    .maybeSingle();
+  const db = await getDb();
+  const doc = await db.collection('mess_daily_expenditures').findOne({
+    unit_id: unitId,
+    expenditure_date: dateStr,
+  });
 
-  if (error) throw new Error(error.message);
-  return data;
+  return cleanDoc<MessDailyExpenditureRow | null>(doc);
 }
 
 /**
@@ -96,16 +90,13 @@ export async function getDailyPRate(
   unitId: string,
   dateStr: string
 ): Promise<MessDailyPRateRow | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_daily_p_rates')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('rate_date', dateStr)
-    .maybeSingle();
+  const db = await getDb();
+  const doc = await db.collection('mess_daily_p_rates').findOne({
+    unit_id: unitId,
+    rate_date: dateStr,
+  });
 
-  if (error) throw new Error(error.message);
-  return data;
+  return cleanDoc<MessDailyPRateRow | null>(doc);
 }
 
 /**
@@ -116,37 +107,19 @@ export async function getMonthlyPRates(
   startDate: string,
   endDate: string
 ): Promise<MessDailyPRateRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_daily_p_rates')
-    .select('*')
-    .eq('unit_id', unitId)
-    .gte('rate_date', startDate)
-    .lte('rate_date', endDate)
-    .order('rate_date', { ascending: true });
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_daily_p_rates')
+    .find({
+      unit_id: unitId,
+      rate_date: { $gte: startDate, $lte: endDate },
+    })
+    .sort({ rate_date: 1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return docs.map((d) => cleanDoc<MessDailyPRateRow>(d));
 }
 
-/**
- * Last N calendar days of stored P-rates (inclusive of today).
- */
-export async function getRecentPRates(
-  unitId: string,
-  days: number
-): Promise<MessDailyPRateRow[]> {
-  const safeDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 7;
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(start.getDate() - (safeDays - 1));
-
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const toIso = (d: Date) =>
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-  return getMonthlyPRates(unitId, toIso(start), toIso(end));
-}
 
 /**
  * Fetches meal cuts for a member in a date range.
@@ -157,18 +130,18 @@ export async function getMemberMealCuts(
   startDate: string,
   endDate: string
 ): Promise<MessMealCutRow[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_meal_cuts')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('profile_id', profileId)
-    .gte('cut_date', startDate)
-    .lte('cut_date', endDate)
-    .order('cut_date', { ascending: false });
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_meal_cuts')
+    .find({
+      unit_id: unitId,
+      profile_id: profileId,
+      cut_date: { $gte: startDate, $lte: endDate },
+    })
+    .sort({ cut_date: -1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return docs.map((d) => cleanDoc<MessMealCutRow>(d));
 }
 
 /**
@@ -180,22 +153,23 @@ export async function listGuestMeals(
   endDate: string,
   hostProfileId?: string
 ): Promise<GuestMealRow[]> {
-  const supabase = await createClient();
-  let query = supabase
-    .from('guest_meals')
-    .select('*')
-    .eq('unit_id', unitId)
-    .gte('meal_date', startDate)
-    .lte('meal_date', endDate)
-    .order('meal_date', { ascending: false });
+  const db = await getDb();
+  const query: Record<string, unknown> = {
+    unit_id: unitId,
+    meal_date: { $gte: startDate, $lte: endDate },
+  };
 
   if (hostProfileId) {
-    query = query.eq('host_profile_id', hostProfileId);
+    query.host_profile_id = hostProfileId;
   }
 
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const docs = await db
+    .collection('guest_meals')
+    .find(query)
+    .sort({ meal_date: -1 })
+    .toArray();
+
+  return docs.map((d) => cleanDoc<GuestMealRow>(d));
 }
 
 /**
@@ -210,34 +184,25 @@ export async function getDinerTodayStatus(
   profileId: string,
   dateStr: string
 ): Promise<DinerTodayMessingView> {
-  const supabase = await createClient();
+  const db = await getDb();
 
   // 1. Get unit messing billing mode
-  const { data: unitData } = await supabase
-    .from('units')
-    .select('messing_billing_mode')
-    .eq('id', unitId)
-    .single();
-
+  const unitData = await db.collection('units').findOne({ id: unitId });
   const billingMode: MessingBillingMode =
     (unitData?.messing_billing_mode as MessingBillingMode) ?? 'P_REGISTER_SPLIT';
 
   // 2. Check general attendance: see if marked absent
-  const { data: dayRow } = await supabase
-    .from('attendance_days')
-    .select('id')
-    .eq('unit_id', unitId)
-    .eq('attendance_date', dateStr)
-    .maybeSingle();
+  const dayRow = await db.collection('attendance_days').findOne({
+    unit_id: unitId,
+    attendance_date: dateStr,
+  });
 
   let isAttendingDay = true;
   if (dayRow) {
-    const { data: absence } = await supabase
-      .from('attendance_absences')
-      .select('id')
-      .eq('day_id', dayRow.id)
-      .eq('profile_id', profileId)
-      .maybeSingle();
+    const absence = await db.collection('attendance_absences').findOne({
+      day_id: dayRow.id,
+      profile_id: profileId,
+    });
 
     if (absence) {
       isAttendingDay = false;
@@ -245,16 +210,18 @@ export async function getDinerTodayStatus(
   }
 
   // 3. Fetch meal cuts for today
-  const { data: cuts } = await supabase
-    .from('mess_meal_cuts')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('profile_id', profileId)
-    .eq('cut_date', dateStr);
+  const cuts = await db
+    .collection('mess_meal_cuts')
+    .find({
+      unit_id: unitId,
+      profile_id: profileId,
+      cut_date: dateStr,
+    })
+    .toArray();
 
   const cutMap = new Map<MessingMealType, MessMealCutRow>();
-  for (const c of cuts ?? []) {
-    cutMap.set(c.meal_type as MessingMealType, c);
+  for (const c of cuts) {
+    cutMap.set(c.meal_type as MessingMealType, cleanDoc<MessMealCutRow>(c));
   }
 
   // 4. Fetch flat rates
@@ -309,26 +276,27 @@ export async function getDinerTodayStatus(
  * Meal-cut requests awaiting Havildar / attendance.write approval.
  */
 export async function listRequestedMealCuts(unitId: string): Promise<RequestedMealCutView[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_meal_cuts')
-    .select('*')
-    .eq('unit_id', unitId)
-    .eq('status', 'requested')
-    .order('cut_date', { ascending: false });
+  const db = await getDb();
+  const docs = await db
+    .collection('mess_meal_cuts')
+    .find({
+      unit_id: unitId,
+      status: 'requested',
+    })
+    .sort({ cut_date: -1 })
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  const rows = data ?? [];
+  const rows = docs.map((d) => cleanDoc<MessMealCutRow>(d));
   const ids = [...new Set(rows.map((r) => r.profile_id))];
 
   const names = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: profiles, error: pErr } = await supabase
-      .from('profiles')
-      .select('id, display_name, full_name, rank')
-      .in('id', ids);
-    if (pErr) throw new Error(pErr.message);
-    for (const p of profiles ?? []) {
+    const profiles = await db
+      .collection('profiles')
+      .find({ id: { $in: ids } })
+      .toArray();
+
+    for (const p of profiles) {
       const label = [p.rank, p.display_name ?? p.full_name].filter(Boolean).join(' ');
       names.set(p.id, label || 'Unknown');
     }
@@ -369,22 +337,21 @@ export async function getMemberCycleMtd(
   profileId: string,
   asOfDate: string,
 ): Promise<CycleMtdView | null> {
-  const supabase = await createClient();
+  const db = await getDb();
 
-  const { data: containing, error: containingErr } = await supabase
-    .from('mess_billing_periods')
-    .select('*')
-    .eq('unit_id', unitId)
-    .lte('start_date', asOfDate)
-    .gte('end_date', asOfDate)
-    .in('status', ['open', 'draft', 'published'])
-    .order('start_date', { ascending: false })
+  const containing = await db
+    .collection('mess_billing_periods')
+    .find({
+      unit_id: unitId,
+      start_date: { $lte: asOfDate },
+      end_date: { $gte: asOfDate },
+      status: { $in: ['open', 'draft', 'published'] },
+    })
+    .sort({ start_date: -1 })
     .limit(1)
-    .maybeSingle();
+    .toArray();
 
-  if (containingErr) throw new Error(containingErr.message);
-
-  const period = containing ?? (await getCurrentBillingPeriod(unitId));
+  const period = containing[0] ?? (await getCurrentBillingPeriod(unitId));
   if (!period) return null;
 
   const start = period.start_date;
@@ -410,11 +377,7 @@ export async function getMemberCycleMtd(
   };
 
   try {
-    const { data: unitData } = await supabase
-      .from('units')
-      .select('messing_billing_mode')
-      .eq('id', unitId)
-      .single();
+    const unitData = await db.collection('units').findOne({ id: unitId });
 
     const billingMode: MessingBillingMode =
       (unitData?.messing_billing_mode as MessingBillingMode) ?? 'P_REGISTER_SPLIT';
@@ -424,13 +387,14 @@ export async function getMemberCycleMtd(
       end: parseISO(clampedAsOf),
     }).map((d) => format(d, 'yyyy-MM-dd'));
 
-    const [{ data: days }, pRateRows, cuts, flatHistory] = await Promise.all([
-      supabase
-        .from('attendance_days')
-        .select('id, attendance_date')
-        .eq('unit_id', unitId)
-        .gte('attendance_date', start)
-        .lte('attendance_date', clampedAsOf),
+    const [days, pRateRows, cuts, flatHistory] = await Promise.all([
+      db
+        .collection('attendance_days')
+        .find({
+          unit_id: unitId,
+          attendance_date: { $gte: start, $lte: clampedAsOf },
+        })
+        .toArray(),
       getMonthlyPRates(unitId, start, clampedAsOf),
       getMemberMealCuts(unitId, profileId, start, clampedAsOf),
       getFlatRatesHistory(unitId),
@@ -441,15 +405,15 @@ export async function getMemberCycleMtd(
     const absentDates = new Set<string>();
 
     if (dayRows.length > 0) {
-      const { data: absences } = await supabase
-        .from('attendance_absences')
-        .select('day_id')
-        .eq('profile_id', profileId)
-        .in(
-          'day_id',
-          dayRows.map((d) => d.id),
-        );
-      for (const a of absences ?? []) {
+      const absences = await db
+        .collection('attendance_absences')
+        .find({
+          profile_id: profileId,
+          day_id: { $in: dayRows.map((d) => d.id) },
+        })
+        .toArray();
+
+      for (const a of absences) {
         const date = dayById.get(a.day_id);
         if (date) absentDates.add(date);
       }

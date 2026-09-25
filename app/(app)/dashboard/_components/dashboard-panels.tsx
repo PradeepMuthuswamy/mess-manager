@@ -1,6 +1,6 @@
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { AuthUser } from '@/lib/auth/types';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import { getDinerTodayStatus } from '@/lib/messing/queries';
 import { listPendingRegisters } from '@/lib/messing/register-queries';
 import { getMyMessBills } from '@/lib/billing/queries';
@@ -61,7 +61,6 @@ export async function DashboardPanels({
   diningIn,
 }: DashboardPanelsProps) {
   const date = todayIso();
-  const supabase = await createClient();
   const hasWidget = (id: WidgetId) => widgetIds.includes(id);
   const canApproveRegister =
     !skipWriteCtas && unitId ? userHasCapability(user, 'messing.approve', unitId) : false;
@@ -82,15 +81,38 @@ export async function DashboardPanels({
     unitId ? getDinerTodayStatus(unitId, user.id, date).catch(() => null) : Promise.resolve(null),
     getMyMessBills(user.id).catch(() => []),
     unitId
-      ? supabase
-          .from('bookings')
-          .select('id, guest_name, check_in_date, check_out_date, status, room:room_id (name)')
-          .eq('unit_id', unitId)
-          .eq('host_profile_id', user.id)
-          .in('status', ['confirmed', 'checked_in'])
-          .gte('check_out_date', date)
-          .order('check_in_date', { ascending: true })
-          .then(({ data, error }) => (error ? [] : (data ?? [])))
+      ? (async () => {
+          try {
+            const bookingsCol = await getCollection('bookings');
+            const rawBookings = await bookingsCol
+              .find({
+                unit_id: unitId,
+                host_profile_id: user.id,
+                status: { $in: ['confirmed', 'checked_in'] },
+                check_out_date: { $gte: date },
+              })
+              .sort({ check_in_date: 1 })
+              .toArray();
+
+            if (rawBookings.length === 0) return [];
+
+            const roomIds = Array.from(new Set(rawBookings.map((b: Record<string, unknown>) => b.room_id).filter(Boolean)));
+            const roomsCol = await getCollection('rooms');
+            const rooms = await roomsCol.find({ id: { $in: roomIds } }).toArray();
+            const roomMap = new Map(rooms.map((r: Record<string, unknown>) => [String(r.id || r._id), String(r.name)]));
+
+            return rawBookings.map((b: Record<string, unknown>) => ({
+              id: String(b.id || b._id),
+              guest_name: b.guest_name ? String(b.guest_name) : null,
+              check_in_date: String(b.check_in_date),
+              check_out_date: String(b.check_out_date),
+              status: String(b.status),
+              room: b.room_id ? { name: roomMap.get(String(b.room_id)) ?? null } : null,
+            }));
+          } catch {
+            return [];
+          }
+        })()
       : Promise.resolve([]),
     unitId ? listUnitBulletins(unitId, 3).catch(() => []) : Promise.resolve([]),
     unitId ? listUpcomingParties(unitId, date).catch(() => []) : Promise.resolve([]),

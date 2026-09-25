@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { requireUser } from '@/lib/auth/require-role';
 import { userHasCapability } from '@/lib/auth/capabilities';
 import type { Role } from '@/lib/auth/types';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 import { composeDashboardWidgets } from '@/lib/dashboard/compose';
 import { defaultEnabledModules, getEnabledModules } from '@/lib/dashboard/modules';
 import { SecretaryShortcuts } from './_components/secretary-shortcuts';
@@ -19,6 +19,7 @@ const ROLE_LABEL: Record<Role, string> = {
   manager: 'Manager',
   unit_admin: 'Unit Admin',
   super_admin: 'Super Admin',
+  admin: 'Super Admin',
   mess_secretary: 'Mess Secretary',
   mess_havildar: 'Mess Havildar',
   bar_nco: 'Bar NCO',
@@ -27,18 +28,21 @@ const ROLE_LABEL: Record<Role, string> = {
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  const unitId = user.activeUnitId ?? user.homeUnitId;
-  const supabase = await createClient();
+  const unitId = user.activeUnitId ?? user.homeUnitId ?? null;
 
-  const [{ data: profile }, { data: unit }, enabledModules] = await Promise.all([
-    supabase
-      .from('profiles')
-      .select('rank, service_no, full_name, display_name, dining_in')
-      .eq('id', user.id)
-      .maybeSingle(),
+  const [profilesCol, unitsCol] = await Promise.all([
+    getCollection('profiles'),
+    getCollection('units'),
+  ]);
+
+  const [profile, unit, enabledModules] = await Promise.all([
+    profilesCol.findOne(
+      { id: user.id },
+      { projection: { rank: 1, service_no: 1, full_name: 1, display_name: 1, dining_in: 1 } }
+    ),
     unitId
-      ? supabase.from('units').select('id, name, code').eq('id', unitId).maybeSingle()
-      : Promise.resolve({ data: null }),
+      ? unitsCol.findOne({ id: unitId }, { projection: { id: 1, name: 1, code: 1 } })
+      : Promise.resolve(null),
     unitId
       ? getEnabledModules(unitId).catch(() => defaultEnabledModules())
       : Promise.resolve(defaultEnabledModules()),
@@ -106,7 +110,7 @@ export default async function DashboardPage() {
           unitId={unitId}
           widgetIds={widgetIds}
           skipWriteCtas={skipWriteCtas}
-          roleLabel={ROLE_LABEL[user.role]}
+          roleLabel={ROLE_LABEL[user.role as Role] ?? 'Member'}
           displayName={displayName}
           email={user.email}
           rank={profile?.rank ?? null}

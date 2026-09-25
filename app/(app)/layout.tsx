@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from './_components/app-sidebar';
 import { AppNavbar } from './_components/app-navbar';
 import { requireUser } from '@/lib/auth/require-role';
-import { createClient } from '@/lib/supabase/server';
+import { listActiveUnitsForSwitcher } from '@/lib/units/queries';
 import { ModalStyleProvider } from '@/lib/preferences/modal-style-context';
 import { readUiPreferences } from '@/lib/preferences/cookie';
 import { AppContextProvider } from '@/lib/auth/context';
@@ -19,15 +19,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const [units, enabledModules] = await Promise.all([
     user.role === 'super_admin'
-      ? (async () => {
-          const supabase = await createClient();
-          const { data } = await supabase
-            .from('units')
-            .select('id, name, code')
-            .eq('is_active', true)
-            .order('name');
-          return data ?? [];
-        })()
+      ? listActiveUnitsForSwitcher()
       : Promise.resolve([] as { id: string; name: string; code: string }[]),
     unitId
       ? getEnabledModules(unitId).catch(() => defaultEnabledModules())

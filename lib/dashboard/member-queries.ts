@@ -1,5 +1,5 @@
 import 'server-only';
-import { createClient } from '@/lib/supabase/server';
+import { getCollection } from '@/lib/mongo';
 
 export type MemberBarChit = {
   id: string;
@@ -13,21 +13,21 @@ export async function listMyBarChits(
   profileId: string,
   sinceDate: string,
 ): Promise<MemberBarChit[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('bar_chits')
-    .select('id, date, status, total_amount')
-    .eq('unit_id', unitId)
-    .eq('profile_id', profileId)
-    .gte('date', sinceDate)
-    .order('date', { ascending: false })
-    .limit(10);
+  const col = await getCollection('bar_chits');
+  const docs = await col
+    .find({
+      unit_id: unitId,
+      profile_id: profileId,
+      date: { $gte: sinceDate },
+    })
+    .sort({ date: -1 })
+    .limit(10)
+    .toArray();
 
-  if (error) throw new Error(error.message);
-  return (data ?? []).map((row) => ({
-    id: row.id,
-    date: row.date,
-    status: row.status,
-    total_amount: Number(row.total_amount),
+  return docs.map((row: Record<string, unknown>) => ({
+    id: String(row.id || row._id),
+    date: String(row.date),
+    status: String(row.status),
+    total_amount: Number(row.total_amount ?? 0),
   }));
 }

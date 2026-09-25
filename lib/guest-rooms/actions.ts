@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import type { ClientSession, Filter, Document } from 'mongodb';
+import { getDb, getCollection, getMongoClient } from '@/lib/mongo';
 import { requireCapability } from '@/lib/auth/require-capability';
 import {
   createRoomSchema,
@@ -17,15 +18,50 @@ import {
   checkOutBookingSchema,
   CheckOutBookingInput,
 } from '@/lib/schemas/guest-rooms';
-import { Database } from '@/lib/supabase/database.types';
-import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Booking, Room } from './types';
-
-type Sb = SupabaseClient<Database>;
 
 const GUEST_ROOMS_PATH = '/guest-rooms';
 
-const UNIQUE_VIOLATION = '23505';
+async function runInTransactionOrFallback(
+  fn: (session?: ClientSession) => Promise<void>,
+): Promise<void> {
+  const client = await getMongoClient();
+  let session: ClientSession | undefined;
+  try {
+    session = client.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await fn(session);
+      });
+      return;
+    } catch (txnError: unknown) {
+      const msg = txnError instanceof Error ? txnError.message : '';
+      if (
+        msg.includes('replica set') ||
+        msg.includes('Transaction numbers')
+      ) {
+        await fn();
+        return;
+      }
+      throw txnError;
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : '';
+    if (
+      msg.includes('replica set') ||
+      msg.includes('Transaction numbers') ||
+      !session
+    ) {
+      await fn();
+      return;
+    }
+    throw err;
+  } finally {
+    if (session) {
+      await session.endSession().catch(() => {});
+    }
+  }
+}
 
 async function changedBooking(
   bookingId: string,
@@ -66,22 +102,33 @@ export async function createFurnitureItemAction(input: unknown) {
 
   await requireCapability('rooms.manage', parsed.data.unit_id);
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('unit_furniture')
-    .insert(parsed.data)
-    .select('*')
-    .single();
+  const col = await getCollection('unit_furniture');
+  const existing = await col.findOne({
+    unit_id: parsed.data.unit_id,
+    name: {
+      $regex: new RegExp(`^${parsed.data.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    },
+  });
 
-  if (error) {
-    if (error.code === UNIQUE_VIOLATION) {
-      return { error: 'A furniture item with that name already exists in this unit.' };
-    }
-    return { error: error.message };
+  if (existing) {
+    return { error: 'A furniture item with that name already exists in this unit.' };
   }
 
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const doc = {
+    id,
+    unit_id: parsed.data.unit_id,
+    name: parsed.data.name,
+    kind: parsed.data.kind || 'furniture',
+    created_at: now,
+    updated_at: now,
+  };
+
+  await col.insertOne(doc);
+
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, data };
+  return { ok: true, data: doc };
 }
 
 // --- Room Actions ---
@@ -92,90 +139,124 @@ export async function createRoomAction(input: unknown) {
 
   await requireCapability('rooms.manage', parsed.data.unit_id);
 
-  const supabase = await createClient();
+  const roomsCol = await getCollection('rooms');
+  const existing = await roomsCol.findOne({
+    unit_id: parsed.data.unit_id,
+    name: {
+      $regex: new RegExp(`^${parsed.data.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    },
+  });
+
+  if (existing) {
+    return { error: 'A room with that name already exists in this unit.' };
+  }
+
   const { inventory, ...roomFields } = parsed.data;
+  const roomId = crypto.randomUUID();
+  const now = new Date().toISOString();
 
-  const { data: newRoom, error } = await supabase
-    .from('rooms')
-    .insert(roomFields)
-    .select('id')
-    .single();
+  const newRoomDoc = {
+    id: roomId,
+    unit_id: parsed.data.unit_id,
+    name: roomFields.name,
+    room_type: roomFields.room_type || 'Standard',
+    nightly_rate: Number(roomFields.nightly_rate || 0),
+    status: roomFields.status || 'available',
+    created_at: now,
+    updated_at: now,
+  };
 
-  if (error) return { error: error.message };
+  await roomsCol.insertOne(newRoomDoc);
 
   if (inventory && inventory.length > 0) {
+    const furnitureCol = await getCollection('room_furniture');
     const rows = inventory.map((row) => ({
-      room_id: newRoom.id,
+      id: crypto.randomUUID(),
+      room_id: roomId,
       furniture_id: row.furniture_id,
       quantity: row.quantity,
       condition: row.condition,
       notes: row.notes ?? null,
+      created_at: now,
+      updated_at: now,
     }));
 
-    const { error: invError } = await supabase.from('room_furniture').insert(rows);
-    if (invError) {
-      await supabase.from('rooms').delete().eq('id', newRoom.id);
-      return { error: invError.message };
-    }
+    await furnitureCol.insertMany(rows);
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return changedRoom(parsed.data.unit_id, newRoom.id);
+  return changedRoom(parsed.data.unit_id, roomId);
 }
 
 export async function updateRoomAction(id: string, input: unknown) {
   const parsed = updateRoomSchema.safeParse(input);
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase.from('rooms').select('unit_id').eq('id', id).single();
+  const roomsCol = await getCollection('rooms');
+  const existing = await roomsCol.findOne({ id });
   if (!existing) return { error: 'Room not found' };
 
   await requireCapability('rooms.manage', existing.unit_id);
 
   const { inventory, ...roomFields } = parsed.data;
+  const now = new Date().toISOString();
 
-  const { error } = await supabase
-    .from('rooms')
-    .update(roomFields)
-    .eq('id', id);
+  if (roomFields.name && roomFields.name !== existing.name) {
+    const dup = await roomsCol.findOne({
+      unit_id: existing.unit_id,
+      id: { $ne: id },
+      name: {
+        $regex: new RegExp(`^${roomFields.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      },
+    });
+    if (dup) {
+      return { error: 'A room with that name already exists in this unit.' };
+    }
+  }
 
-  if (error) return { error: error.message };
+  await roomsCol.updateOne(
+    { id },
+    {
+      $set: {
+        ...roomFields,
+        ...(roomFields.nightly_rate != null ? { nightly_rate: Number(roomFields.nightly_rate) } : {}),
+        updated_at: now,
+      },
+    },
+  );
 
   if (inventory) {
-    const { data: existingRows, error: readError } = await supabase
-      .from('room_furniture')
-      .select('id, furniture_id')
-      .eq('room_id', id);
-
-    if (readError) return { error: readError.message };
+    const roomFurnitureCol = await getCollection('room_furniture');
+    const existingRows = await roomFurnitureCol.find({ room_id: id }).toArray();
 
     const incomingIds = new Set(inventory.map((row) => row.furniture_id));
-    const toDelete = (existingRows ?? []).filter((row) => !incomingIds.has(row.furniture_id));
+    const toDelete = (existingRows ?? []).filter((row: Document) => !incomingIds.has(row.furniture_id));
 
     if (toDelete.length > 0) {
-      const { error: deleteError } = await supabase
-        .from('room_furniture')
-        .delete()
-        .in('id', toDelete.map((row) => row.id));
-
-      if (deleteError) return { error: deleteError.message };
+      await roomFurnitureCol.deleteMany({
+        id: { $in: toDelete.map((row: Document) => row.id) },
+      });
     }
 
     if (inventory.length > 0) {
-      const rows = inventory.map((row) => ({
-        room_id: id,
-        furniture_id: row.furniture_id,
-        quantity: row.quantity,
-        condition: row.condition,
-        notes: row.notes ?? null,
-      }));
-
-      const { error: upsertError } = await supabase
-        .from('room_furniture')
-        .upsert(rows, { onConflict: 'room_id,furniture_id' });
-
-      if (upsertError) return { error: upsertError.message };
+      for (const row of inventory) {
+        await roomFurnitureCol.updateOne(
+          { room_id: id, furniture_id: row.furniture_id },
+          {
+            $set: {
+              quantity: row.quantity,
+              condition: row.condition,
+              notes: row.notes ?? null,
+              updated_at: now,
+            },
+            $setOnInsert: {
+              id: crypto.randomUUID(),
+              created_at: now,
+            },
+          },
+          { upsert: true },
+        );
+      }
     }
   }
 
@@ -185,22 +266,26 @@ export async function updateRoomAction(id: string, input: unknown) {
 
 // --- Booking Actions ---
 
-async function isRoomAvailable(supabase: Sb, roomId: string, checkIn: string, checkOut: string, excludeBookingId?: string) {
-  let q = supabase
-    .from('bookings')
-    .select('id')
-    .eq('room_id', roomId)
-    .neq('status', 'cancelled')
-    .lt('check_in_date', checkOut)
-    .gt('check_out_date', checkIn);
-  
+async function isRoomAvailable(
+  roomId: string,
+  checkIn: string,
+  checkOut: string,
+  excludeBookingId?: string,
+): Promise<boolean> {
+  const bookingsCol = await getCollection('bookings');
+  const query: Filter<Document> = {
+    room_id: roomId,
+    status: { $ne: 'cancelled' },
+    check_in_date: { $lt: checkOut },
+    check_out_date: { $gt: checkIn },
+  };
+
   if (excludeBookingId) {
-    q = q.neq('id', excludeBookingId);
+    query.id = { $ne: excludeBookingId };
   }
 
-  const { data, error } = await q;
-  if (error) throw error;
-  return (data?.length ?? 0) === 0;
+  const count = await bookingsCol.countDocuments(query);
+  return count === 0;
 }
 
 export async function createBookingAction(input: CreateBookingInput) {
@@ -211,64 +296,163 @@ export async function createBookingAction(input: CreateBookingInput) {
     return { error: 'A sponsoring host officer is required when charging to mess bill.' };
   }
 
-  await requireCapability('rooms.booking.write', parsed.data.unit_id);
+  const user = await requireCapability('rooms.booking.write', parsed.data.unit_id);
 
-  const supabase = await createClient();
-
-  // H4: Verify room belongs to this unit
-  const { data: room } = await supabase
-    .from('rooms')
-    .select('id')
-    .eq('id', parsed.data.room_id)
-    .eq('unit_id', parsed.data.unit_id)
-    .maybeSingle();
+  const roomsCol = await getCollection('rooms');
+  const room = await roomsCol.findOne({
+    id: parsed.data.room_id,
+    unit_id: parsed.data.unit_id,
+  });
   if (!room) return { error: 'Room not found in this unit' };
-  
-  const available = await isRoomAvailable(supabase, parsed.data.room_id, parsed.data.check_in_date, parsed.data.check_out_date);
+
+  const available = await isRoomAvailable(
+    parsed.data.room_id,
+    parsed.data.check_in_date,
+    parsed.data.check_out_date,
+  );
   if (!available) return { error: 'Room is not available for the selected dates' };
 
-  const { data, error } = await supabase
-    .from('bookings')
-    .insert({
-      ...parsed.data,
-      created_by: (await supabase.auth.getUser()).data.user?.id
-    })
-    .select('id, room_id')
-    .single();
+  const bookingsCol = await getCollection('bookings');
+  const bookingId = crypto.randomUUID();
+  const now = new Date().toISOString();
 
-  // C1: Handle exclusion constraint violation (concurrent double-booking)
-  if (error) {
-    if (error.code === '23P01') {
-      return { error: 'Room is not available for the selected dates (conflict detected)' };
-    }
-    return { error: error.message };
-  }
+  const bookingDoc = {
+    id: bookingId,
+    unit_id: parsed.data.unit_id,
+    room_id: parsed.data.room_id,
+    guest_name: parsed.data.guest_name,
+    guest_rank: parsed.data.guest_rank ?? null,
+    guest_phone: parsed.data.guest_phone ?? null,
+    guest_email: parsed.data.guest_email ?? null,
+    check_in_date: parsed.data.check_in_date,
+    check_out_date: parsed.data.check_out_date,
+    status: parsed.data.status || 'confirmed',
+    booking_category: parsed.data.booking_category || 'MEMBER_GUEST',
+    host_profile_id: parsed.data.host_profile_id ?? null,
+    settlement_type: parsed.data.settlement_type || 'DIRECT_SETTLEMENT',
+    special_requests: parsed.data.special_requests ?? null,
+    created_by: user.id,
+    created_at: now,
+    updated_at: now,
+  };
+
+  await bookingsCol.insertOne(bookingDoc);
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return changedBooking(data.id, [data.room_id]);
+  return changedBooking(bookingId, [parsed.data.room_id]);
+}
+
+/**
+ * Atomic check-in operation directly using MongoDB transactions or atomic updates.
+ * Updates booking status -> creates draft bill -> seeds initial tariff lines (rent + food).
+ */
+export async function executeCheckInBooking(bookingId: string): Promise<{
+  booking_id: string;
+  bill_id: string;
+  room_id: string;
+  unit_id: string;
+}> {
+  const db = await getDb();
+  const bookingsCol = db.collection('bookings');
+  const roomsCol = db.collection('rooms');
+  const unitsCol = db.collection('units');
+  const roomBillsCol = db.collection('room_bills');
+  const roomBillItemsCol = db.collection('room_bill_items');
+
+  const booking = await bookingsCol.findOne({ id: bookingId });
+  if (!booking) throw new Error('Booking not found');
+  if (booking.status !== 'confirmed') {
+    throw new Error(`Only confirmed bookings can be checked in (current: ${booking.status})`);
+  }
+
+  const room = await roomsCol.findOne({ id: booking.room_id });
+  if (!room) throw new Error('Room not found');
+
+  const unit = await unitsCol.findOne({ id: booking.unit_id });
+  const foodRate = Number(unit?.guest_food_per_night ?? 900);
+
+  const checkIn = new Date(booking.check_in_date);
+  const checkOut = new Date(booking.check_out_date);
+  const nights = Math.max(1, Math.ceil((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24)));
+
+  const now = new Date().toISOString();
+  const billId = crypto.randomUUID();
+
+  await runInTransactionOrFallback(async (session) => {
+    // 1. Flip booking status
+    await bookingsCol.updateOne(
+      { id: bookingId, status: 'confirmed' },
+      {
+        $set: {
+          status: 'checked_in',
+          actual_check_in: now,
+          updated_at: now,
+        },
+      },
+      { session },
+    );
+
+    // 2. Create draft bill
+    const billDoc = {
+      id: billId,
+      unit_id: booking.unit_id,
+      booking_id: bookingId,
+      total_amount: 0,
+      status: 'draft',
+      payment_status: 'draft',
+      settlement_type: booking.settlement_type || 'DIRECT_SETTLEMENT',
+      paid_amount: 0,
+      created_at: now,
+      updated_at: now,
+    };
+    await roomBillsCol.insertOne(billDoc, { session });
+
+    // 3. Seed tariff lines (room rent + food)
+    const items = [
+      {
+        id: crypto.randomUUID(),
+        bill_id: billId,
+        category: 'room_rent',
+        description: `Room Rent - ${room.room_type || 'Room'} (${nights} nights)`,
+        amount: Number(room.nightly_rate || 0),
+        quantity: nights,
+        variant_id: null,
+        created_at: now,
+      },
+      {
+        id: crypto.randomUUID(),
+        bill_id: billId,
+        category: 'food',
+        description: `Food Bill (all meals) (${nights} days)`,
+        amount: foodRate,
+        quantity: nights,
+        variant_id: null,
+        created_at: now,
+      },
+    ];
+    await roomBillItemsCol.insertMany(items, { session });
+  });
+
+  return {
+    booking_id: bookingId,
+    bill_id: billId,
+    room_id: booking.room_id,
+    unit_id: booking.unit_id,
+  };
 }
 
 export async function checkInAction(bookingId: string) {
-  // Peek the booking to discover unit_id for the capability check (RLS-gated).
-  const supabase = await createClient();
-  const { data: peek } = await supabase
-    .from('bookings')
-    .select('unit_id, room_id')
-    .eq('id', bookingId)
-    .maybeSingle();
-
+  const bookingsCol = await getCollection('bookings');
+  const peek = await bookingsCol.findOne({ id: bookingId });
   if (!peek) return { error: 'Booking not found' };
+
   await requireCapability('rooms.booking.write', peek.unit_id);
 
-  // C2: Atomic check-in — booking status + bill + tariff items in one
-  // PG transaction via a SECURITY DEFINER function.
-  const { error } = await supabase.rpc('check_in_booking', {
-    p_booking_id: bookingId,
-  });
-
-  if (error) {
-    // Surface the PG exception message cleanly
-    const msg = error.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-in failed';
+  try {
+    await executeCheckInBooking(bookingId);
+  } catch (error: unknown) {
+    const rawMsg = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Check-in failed';
+    const msg = rawMsg.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-in failed';
     return { error: msg };
   }
 
@@ -280,201 +464,209 @@ export async function addBillItemAction(billId: string, input: CreateBillItemInp
   const parsed = createBillItemSchema.safeParse(input);
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: bill } = await supabase
-    .from('room_bills')
-    .select('unit_id, status, booking_id')
-    .eq('id', billId)
-    .single();
+  const db = await getDb();
+  const bill = await db.collection('room_bills').findOne({ id: billId });
   if (!bill) return { error: 'Bill not found' };
   if (bill.status !== 'draft') return { error: 'Cannot add items to a finalized bill' };
 
   await requireCapability('rooms.booking.write', bill.unit_id);
 
-  // M4: If order_id is specified, ensure it belongs to this bill
   if (parsed.data.order_id) {
-    const { data: order } = await supabase
-      .from('room_bill_orders')
-      .select('id')
-      .eq('id', parsed.data.order_id)
-      .eq('bill_id', billId)
-      .maybeSingle();
+    const order = await db
+      .collection('room_bill_orders')
+      .findOne({ id: parsed.data.order_id, bill_id: billId });
     if (!order) return { error: 'Order not found for this bill' };
   }
 
-  const { error } = await supabase.from('room_bill_items').insert({
-    bill_id: billId,
-    ...parsed.data
-  });
+  const itemId = crypto.randomUUID();
+  const now = new Date().toISOString();
 
-  if (error) return { error: error.message };
+  await db.collection('room_bill_items').insertOne({
+    id: itemId,
+    bill_id: billId,
+    category: parsed.data.category,
+    description: parsed.data.description,
+    amount: Number(parsed.data.amount),
+    quantity: Number(parsed.data.quantity || 1),
+    variant_id: parsed.data.variant_id ?? null,
+    meal_type: parsed.data.meal_type ?? null,
+    order_id: parsed.data.order_id ?? null,
+    created_at: now,
+  });
 
   revalidatePath(GUEST_ROOMS_PATH);
   return { ok: true, bookingId: bill.booking_id };
 }
 
-export async function createBillOrderAction(input: unknown) {
-  const parsed = createBillOrderSchema.safeParse(input);
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
-
-  // Peek the bill (RLS-gated) to discover the unit, then verify the
-  // capability explicitly so the failure mode is a clean 403.
-  const supabase = await createClient();
-  const { data: bill } = await supabase
-    .from('room_bills')
-    .select('unit_id, status, booking_id')
-    .eq('id', parsed.data.bill_id)
-    .maybeSingle();
-  if (!bill) return { error: 'Bill not found' };
-
-  await requireCapability('rooms.booking.write', bill.unit_id);
-
-  if (bill.status !== 'draft') return { error: 'Cannot modify a finalized bill' };
-
-  // Omit undefined occurred_at so the DB default applies.
-  const { occurred_at, ...rest } = parsed.data;
-  const insertRow = occurred_at === undefined ? rest : { ...rest, occurred_at };
-
-  const { data, error } = await supabase
-    .from('room_bill_orders')
-    .insert(insertRow)
-    .select('id')
-    .single();
-
-  if (error) return { error: error.message };
-
-  revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, data: data.id, bookingId: bill.booking_id };
-}
-
-type BillItemWithBill = {
-  id: string;
-  bill: { unit_id: string; status: string; booking_id: string } | null;
-};
 
 export async function deleteBillItemAction(itemId: string) {
-  const supabase = await createClient();
-  const { data: peek } = await supabase
-    .from('room_bill_items')
-    .select('id, bill:room_bills(unit_id, status, booking_id)')
-    .eq('id', itemId)
-    .maybeSingle();
-  if (!peek) return { error: 'Item not found' };
+  const db = await getDb();
+  const item = await db.collection('room_bill_items').findOne({ id: itemId });
+  if (!item) return { error: 'Item not found' };
 
-  const row = peek as unknown as BillItemWithBill;
-  if (!row.bill) return { error: 'Item not found' };
+  const bill = await db.collection('room_bills').findOne({ id: item.bill_id });
+  if (!bill) return { error: 'Item not found' };
 
-  await requireCapability('rooms.booking.write', row.bill.unit_id);
+  await requireCapability('rooms.booking.write', bill.unit_id);
+  if (bill.status !== 'draft') return { error: 'Cannot modify a finalized bill' };
 
-  if (row.bill.status !== 'draft') return { error: 'Cannot modify a finalized bill' };
-
-  const { error } = await supabase.from('room_bill_items').delete().eq('id', itemId);
-  if (error) return { error: error.message };
+  await db.collection('room_bill_items').deleteOne({ id: itemId });
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, bookingId: row.bill.booking_id };
+  return { ok: true, bookingId: bill.booking_id };
 }
 
-type BillOrderWithBill = {
-  id: string;
-  bill: { unit_id: string; status: string; booking_id: string } | null;
-};
-
-export async function deleteBillOrderAction(orderId: string) {
-  const supabase = await createClient();
-  const { data: peek } = await supabase
-    .from('room_bill_orders')
-    .select('id, bill:room_bills(unit_id, status, booking_id)')
-    .eq('id', orderId)
-    .maybeSingle();
-  if (!peek) return { error: 'Order not found' };
-
-  const row = peek as unknown as BillOrderWithBill;
-  if (!row.bill) return { error: 'Order not found' };
-
-  await requireCapability('rooms.booking.write', row.bill.unit_id);
-
-  if (row.bill.status !== 'draft') return { error: 'Cannot modify a finalized bill' };
-
-  // Child bill items have an ON DELETE CASCADE FK to the order, so
-  // deleting the order row removes its items too.
-  const { error } = await supabase.from('room_bill_orders').delete().eq('id', orderId);
-  if (error) return { error: error.message };
-
-  revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, bookingId: row.bill.booking_id };
-}
-
-type CheckoutBookingRow = Database['public']['Tables']['bookings']['Row'] & {
-  bill: { id: string }[];
-};
-
-type BarChitForSync = {
-  id: string;
-  date: string;
-  guest_name: string | null;
-  total_amount: number;
-  items: { variant_id: string }[] | null;
-};
 
 export async function syncBarChitsToRoomBillAction(bookingId: string) {
-  const supabase = await createClient();
-  const { data: booking } = await supabase
-    .from('bookings')
-    .select('unit_id')
-    .eq('id', bookingId)
-    .maybeSingle();
+  const db = await getDb();
+  const booking = await db.collection('bookings').findOne({ id: bookingId });
   if (!booking) return { error: 'Booking not found' };
 
   await requireCapability('rooms.booking.write', booking.unit_id);
 
-  const { data: bill, error: billErr } = await supabase
-    .from('room_bills')
-    .select('id, status')
-    .eq('booking_id', bookingId)
-    .maybeSingle();
-  if (billErr) return { error: billErr.message };
+  const bill = await db.collection('room_bills').findOne({ booking_id: bookingId });
   if (!bill) return { error: 'Bill not found' };
   if (bill.status !== 'draft') return { error: 'Cannot sync bar chits to a finalized bill' };
 
-  const { data: chits, error: chitsErr } = await supabase
-    .from('bar_chits')
-    .select('id, date, guest_name, total_amount, items:bar_chit_items(variant_id)')
-    .eq('booking_id', bookingId);
-  if (chitsErr) return { error: chitsErr.message };
-
-  const { data: existing, error: existingErr } = await supabase
-    .from('room_bill_items')
-    .select('bar_chit_id')
-    .eq('bill_id', bill.id)
-    .not('bar_chit_id', 'is', null);
-  if (existingErr) return { error: existingErr.message };
+  const chits = await db.collection('bar_chits').find({ booking_id: bookingId }).toArray();
+  const existingItems = await db
+    .collection('room_bill_items')
+    .find({ bill_id: bill.id, bar_chit_id: { $ne: null } })
+    .toArray();
 
   const alreadySynced = new Set(
-    (existing ?? []).map((row) => row.bar_chit_id).filter((id): id is string => Boolean(id)),
+    existingItems.map((item: Document) => item.bar_chit_id).filter(Boolean),
   );
 
-  const rows = ((chits ?? []) as unknown as BarChitForSync[])
-    .filter((chit) => !alreadySynced.has(chit.id))
-    .map((chit) => ({
-      bill_id: bill.id,
-      category: 'bar',
-      description: `Bar — ${chit.guest_name ?? 'Guest'} (${chit.date})`,
-      amount: Number(chit.total_amount),
-      quantity: 1,
-      variant_id: chit.items?.[0]?.variant_id ?? null,
-      bar_chit_id: chit.id,
-    }));
+  const unSyncedChits = chits.filter((chit: Document) => !alreadySynced.has(chit.id));
+  if (unSyncedChits.length === 0) {
+    return { ok: true, bookingId, inserted: 0 };
+  }
+
+  const chitIds = unSyncedChits.map((c: Document) => c.id);
+  const chitItems = await db
+    .collection('bar_chit_items')
+    .find({ chit_id: { $in: chitIds } })
+    .toArray();
+  const chitItemMap = new Map<string, Document>();
+  for (const ci of chitItems) {
+    if (!chitItemMap.has(ci.chit_id)) {
+      chitItemMap.set(ci.chit_id, ci);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const rows = unSyncedChits.map((chit: Document) => ({
+    id: crypto.randomUUID(),
+    bill_id: bill.id,
+    category: 'bar',
+    description: `Bar — ${chit.guest_name ?? 'Guest'} (${chit.date})`,
+    amount: Number(chit.total_amount || 0),
+    quantity: 1,
+    variant_id: chitItemMap.get(chit.id)?.variant_id ?? null,
+    bar_chit_id: chit.id,
+    created_at: now,
+  }));
 
   if (rows.length > 0) {
-    const { error: insertErr } = await supabase.from('room_bill_items').insert(rows);
-    if (insertErr && insertErr.code !== UNIQUE_VIOLATION) {
-      return { error: insertErr.message };
-    }
+    await db.collection('room_bill_items').insertMany(rows);
   }
 
   revalidatePath(GUEST_ROOMS_PATH);
   return { ok: true, bookingId, inserted: rows.length };
+}
+
+/**
+ * Atomic checkout operation directly using MongoDB transactions or atomic updates.
+ * Updates booking status to checked_out -> computes total amount from items -> finalizes bill.
+ */
+export async function executeFinalizeCheckout(params: {
+  bookingId: string;
+  settlementType: 'DIRECT_SETTLEMENT' | 'CHARGE_TO_HOST';
+  hostProfileId?: string | null;
+  folioNumber?: string | null;
+  paidAmount?: number | null;
+  paymentMethod?: string | null;
+  paymentRef?: string | null;
+}): Promise<{
+  booking_id: string;
+  bill_id: string;
+  room_id: string;
+  unit_id: string;
+  total: number;
+}> {
+  const db = await getDb();
+  const bookingsCol = db.collection('bookings');
+  const roomBillsCol = db.collection('room_bills');
+  const roomBillItemsCol = db.collection('room_bill_items');
+
+  const booking = await bookingsCol.findOne({ id: params.bookingId });
+  if (!booking) throw new Error('Booking not found');
+  if (booking.status !== 'checked_in') {
+    throw new Error(`Only checked-in bookings can be checked out (current: ${booking.status})`);
+  }
+
+  const effectiveHost = params.hostProfileId || booking.host_profile_id;
+  if (params.settlementType === 'CHARGE_TO_HOST' && !effectiveHost) {
+    throw new Error('Cannot transfer bill to mess account: No sponsoring host officer assigned');
+  }
+
+  const bill = await roomBillsCol.findOne({ booking_id: params.bookingId });
+  if (!bill) throw new Error('Bill not found');
+
+  const items = await roomBillItemsCol.find({ bill_id: bill.id }).toArray();
+  const total = items.reduce(
+    (sum, item: Document) => sum + Number(item.amount || 0) * Number(item.quantity || 1),
+    0,
+  );
+
+  const isDirect = params.settlementType === 'DIRECT_SETTLEMENT';
+  const now = new Date().toISOString();
+
+  await runInTransactionOrFallback(async (session) => {
+    // 1. Update booking
+    await bookingsCol.updateOne(
+      { id: params.bookingId, status: 'checked_in' },
+      {
+        $set: {
+          status: 'checked_out',
+          actual_check_out: now,
+          settlement_type: params.settlementType,
+          host_profile_id: effectiveHost ?? null,
+          updated_at: now,
+        },
+      },
+      { session },
+    );
+
+    // 2. Finalize bill
+    await roomBillsCol.updateOne(
+      { id: bill.id },
+      {
+        $set: {
+          status: isDirect ? 'paid' : 'transferred_to_mess_bill',
+          total_amount: total,
+          settlement_type: params.settlementType,
+          payment_status: isDirect ? 'paid' : 'transferred_to_mess_bill',
+          paid_amount: isDirect ? (params.paidAmount ?? total) : 0,
+          paid_at: isDirect ? now : null,
+          payment_method: isDirect ? (params.paymentMethod || 'cash') : null,
+          payment_reference: isDirect ? (params.paymentRef || null) : null,
+          folio_number: params.folioNumber || null,
+          updated_at: now,
+        },
+      },
+      { session },
+    );
+  });
+
+  return {
+    booking_id: params.bookingId,
+    bill_id: bill.id,
+    room_id: booking.room_id,
+    unit_id: booking.unit_id,
+    total,
+  };
 }
 
 export async function checkOutAction(input: string | CheckOutBookingInput) {
@@ -484,24 +676,18 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
 
   const options = parsed.data;
   const bookingId = options.booking_id;
-  const settlementExplicit =
-    typeof input !== 'string' && input.settlement_type != null;
+  const settlementExplicit = typeof input !== 'string' && input.settlement_type != null;
 
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('bookings')
-    .select('*, bill:room_bills(id)')
-    .eq('id', bookingId)
-    .single();
+  const db = await getDb();
+  const booking = await db.collection('bookings').findOne({ id: bookingId });
+  if (!booking) return { error: 'Booking not found' };
 
-  if (!data) return { error: 'Booking not found' };
-
-  const booking = data as unknown as CheckoutBookingRow;
   await requireCapability('rooms.booking.write', booking.unit_id);
+  if (booking.status !== 'checked_in') {
+    return { error: 'Only checked-in bookings can be checked out' };
+  }
 
-  if (booking.status !== 'checked_in') return { error: 'Only checked-in bookings can be checked out' };
-
-  const bill = booking.bill?.[0];
+  const bill = await db.collection('room_bills').findOne({ booking_id: bookingId });
   if (!bill) return { error: 'Bill not found' };
 
   const settlementType = settlementExplicit
@@ -509,7 +695,6 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
     : (booking.settlement_type ?? options.settlement_type);
 
   const hostId = options.host_profile_id ?? booking.host_profile_id;
-
   if (settlementType === 'CHARGE_TO_HOST' && !hostId) {
     return {
       error:
@@ -517,30 +702,27 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
     };
   }
 
-  // Sync bar chits before finalizing (complex query logic stays in app layer)
   const syncResult = await syncBarChitsToRoomBillAction(bookingId);
   if ('error' in syncResult) return { error: syncResult.error };
 
-  // Generate folio number
   const now = new Date();
   const yearMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
   const folioSuffix = bill.id.replace(/-/g, '').slice(0, 6).toUpperCase();
   const folioNumber = `FOLIO-${yearMonth}-${folioSuffix}`;
 
-  // C2: Atomic checkout — booking update + bill finalization in one PG
-  // transaction via a SECURITY DEFINER function.
-  const { error: rpcErr } = await supabase.rpc('finalize_checkout', {
-    p_booking_id: bookingId,
-    p_settlement_type: settlementType,
-    p_host_profile_id: hostId ?? null,
-    p_folio_number: folioNumber,
-    p_paid_amount: options.paid_amount ?? null,
-    p_payment_method: options.payment_method ?? null,
-    p_payment_ref: options.payment_reference ?? null,
-  });
-
-  if (rpcErr) {
-    const msg = rpcErr.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-out failed';
+  try {
+    await executeFinalizeCheckout({
+      bookingId,
+      settlementType,
+      hostProfileId: hostId ?? null,
+      folioNumber,
+      paidAmount: options.paid_amount ?? null,
+      paymentMethod: options.payment_method ?? null,
+      paymentRef: options.payment_reference ?? null,
+    });
+  } catch (err: unknown) {
+    const rawMsg = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Check-out failed';
+    const msg = rawMsg.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-out failed';
     return { error: msg };
   }
 
@@ -548,228 +730,102 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
   return changedBooking(bookingId, [booking.room_id]);
 }
 
-
 export async function cancelBookingAction(bookingId: string) {
-  const supabase = await createClient();
-  const { data: booking } = await supabase
-    .from('bookings')
-    .select('unit_id, room_id, status')
-    .eq('id', bookingId)
-    .single();
+  const db = await getDb();
+  const booking = await db.collection('bookings').findOne({ id: bookingId });
   if (!booking) return { error: 'Booking not found' };
-  await requireCapability('rooms.booking.write', booking.unit_id);
 
+  await requireCapability('rooms.booking.write', booking.unit_id);
   if (booking.status !== 'confirmed') return { error: 'Only confirmed bookings can be cancelled' };
 
-  const { error } = await supabase
-    .from('bookings')
-    .update({ status: 'cancelled' })
-    .eq('id', bookingId);
-
-  if (error) return { error: error.message };
+  await db.collection('bookings').updateOne(
+    { id: bookingId },
+    { $set: { status: 'cancelled', updated_at: new Date().toISOString() } },
+  );
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function undoCheckInAction(bookingId: string) {
-  const supabase = await createClient();
-  const { data: booking } = await supabase
-    .from('bookings')
-    .select('unit_id, room_id, status')
-    .eq('id', bookingId)
-    .single();
-
+  const db = await getDb();
+  const booking = await db.collection('bookings').findOne({ id: bookingId });
   if (!booking) return { error: 'Booking not found' };
-  await requireCapability('rooms.booking.write', booking.unit_id);
 
+  await requireCapability('rooms.booking.write', booking.unit_id);
   if (booking.status !== 'checked_in') return { error: 'Only checked-in bookings can be reverted' };
 
-  const { error: updErr } = await supabase
-    .from('bookings')
-    .update({
-      status: 'confirmed',
-      actual_check_in: null
-    })
-    .eq('id', bookingId);
+  const now = new Date().toISOString();
+  await db.collection('bookings').updateOne(
+    { id: bookingId },
+    {
+      $set: {
+        status: 'confirmed',
+        actual_check_in: null,
+        updated_at: now,
+      },
+    },
+  );
 
-  if (updErr) return { error: updErr.message };
-
-  const { error: billErr } = await supabase
-    .from('room_bills')
-    .delete()
-    .eq('booking_id', bookingId);
-
-  if (billErr) return { error: billErr.message };
+  const bills = await db.collection('room_bills').find({ booking_id: bookingId }).toArray();
+  const billIds = bills.map((b: Document) => b.id);
+  if (billIds.length > 0) {
+    await db.collection('room_bill_items').deleteMany({ bill_id: { $in: billIds } });
+    await db.collection('room_bill_orders').deleteMany({ bill_id: { $in: billIds } });
+    await db.collection('room_bills').deleteMany({ booking_id: bookingId });
+  }
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(bookingId, [booking.room_id]);
 }
 
 export async function undoCheckOutAction(bookingId: string) {
-  const supabase = await createClient();
-  const { data: booking } = await supabase
-    .from('bookings')
-    .select('unit_id, room_id, status')
-    .eq('id', bookingId)
-    .single();
-
+  const db = await getDb();
+  const booking = await db.collection('bookings').findOne({ id: bookingId });
   if (!booking) return { error: 'Booking not found' };
-  await requireCapability('rooms.booking.write', booking.unit_id);
 
+  await requireCapability('rooms.booking.write', booking.unit_id);
   if (booking.status !== 'checked_out') return { error: 'Only checked-out bookings can be reverted' };
 
-  const { error: updErr } = await supabase
-    .from('bookings')
-    .update({
-      status: 'checked_in',
-      actual_check_out: null
-    })
-    .eq('id', bookingId);
+  const now = new Date().toISOString();
+  await db.collection('bookings').updateOne(
+    { id: bookingId },
+    {
+      $set: {
+        status: 'checked_in',
+        actual_check_out: null,
+        updated_at: now,
+      },
+    },
+  );
 
-  if (updErr) return { error: updErr.message };
-
-  const { error: billErr } = await supabase
-    .from('room_bills')
-    .update({
-      status: 'draft',
-      total_amount: 0,
-      payment_status: 'draft',
-      folio_number: null,
-      paid_amount: 0,
-      paid_at: null,
-      payment_method: null,
-      payment_reference: null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('booking_id', bookingId);
-
-  if (billErr) return { error: billErr.message };
+  await db.collection('room_bills').updateOne(
+    { booking_id: bookingId },
+    {
+      $set: {
+        status: 'draft',
+        total_amount: 0,
+        payment_status: 'draft',
+        folio_number: null,
+        paid_amount: 0,
+        paid_at: null,
+        payment_method: null,
+        payment_reference: null,
+        updated_at: now,
+      },
+    },
+  );
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(bookingId, [booking.room_id]);
 }
 
-export async function updateStayAndRatesAction(
-  billId: string,
-  input: {
-    checkIn: string;
-    checkOut: string;
-    nightlyRate: number;
-    foodRate: number;
-  }
+
+export async function fetchAvailableRoomsAction(
+  unitId: string,
+  checkIn: string,
+  checkOut: string,
 ) {
-  // C3: Validate input with Zod (date ordering, non-negative rates)
-  const { updateStayAndRatesSchema } = await import('@/lib/schemas/guest-rooms');
-  const parsed = updateStayAndRatesSchema.safeParse(input);
-  if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
-
-  const supabase = await createClient();
-  
-  // 1. Fetch bill and associated booking and room details
-  const { data: bill, error: billErr } = await supabase
-    .from('room_bills')
-    .select('*, booking:bookings(*, room:rooms(*))')
-    .eq('id', billId)
-    .single();
-
-  if (billErr || !bill) return { error: 'Bill not found' };
-  
-  const booking = bill.booking;
-  if (!booking) return { error: 'Associated booking not found' };
-  
-  // 2. Validate capability
-  await requireCapability('rooms.booking.write', bill.unit_id);
-  
-  // 3. Ensure bill is draft
-  if (bill.status !== 'draft') return { error: 'Stay and rates can only be edited for draft bills' };
-
-  // C3: Check availability if dates changed
-  const datesChanged =
-    parsed.data.checkIn !== booking.check_in_date ||
-    parsed.data.checkOut !== booking.check_out_date;
-
-  if (datesChanged) {
-    const available = await isRoomAvailable(
-      supabase,
-      booking.room_id,
-      parsed.data.checkIn,
-      parsed.data.checkOut,
-      booking.id, // exclude current booking
-    );
-    if (!available) {
-      return { error: 'Room is not available for the updated dates' };
-    }
-  }
-
-  // 4. Calculate stay nights
-  const nights = Math.max(1, Math.ceil((new Date(parsed.data.checkOut).getTime() - new Date(parsed.data.checkIn).getTime()) / (1000 * 60 * 60 * 24)));
-
-  // 5. Update the booking dates
-  const { error: bookingErr } = await supabase
-    .from('bookings')
-    .update({
-      check_in_date: parsed.data.checkIn,
-      check_out_date: parsed.data.checkOut,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', booking.id);
-
-  if (bookingErr) return { error: bookingErr.message };
-
-  // 6. Recalculate/Upsert Room Rent item
-  const { data: existingRent } = await supabase
-    .from('room_bill_items')
-    .select('id')
-    .eq('bill_id', billId)
-    .eq('category', 'room_rent')
-    .maybeSingle();
-
-  const rentRow = {
-    bill_id: billId,
-    category: 'room_rent',
-    description: `Room Rent - ${booking.room?.room_type || 'Stay'} (${nights} nights)`,
-    amount: parsed.data.nightlyRate,
-    quantity: nights,
-    variant_id: null
-  };
-
-  if (existingRent) {
-    await supabase.from('room_bill_items').update(rentRow).eq('id', existingRent.id);
-  } else {
-    await supabase.from('room_bill_items').insert(rentRow);
-  }
-
-  // 7. Recalculate/Upsert Food Bill item
-  const { data: existingFood } = await supabase
-    .from('room_bill_items')
-    .select('id')
-    .eq('bill_id', billId)
-    .eq('category', 'food')
-    .is('meal_type', null)
-    .maybeSingle();
-
-  const foodRow = {
-    bill_id: billId,
-    category: 'food',
-    description: `Food Bill (all meals) (${nights} days)`,
-    amount: parsed.data.foodRate,
-    quantity: nights,
-    variant_id: null,
-    meal_type: null
-  };
-
-  if (existingFood) {
-    await supabase.from('room_bill_items').update(foodRow).eq('id', existingFood.id);
-  } else {
-    await supabase.from('room_bill_items').insert(foodRow);
-  }
-
-  revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, bookingId: booking.id };
-}
-
-export async function fetchAvailableRoomsAction(unitId: string, checkIn: string, checkOut: string) {
   await requireCapability('rooms.read', unitId);
   const { getAvailableRooms } = await import('./queries');
   try {
@@ -784,12 +840,8 @@ export async function updateBookingAction(id: string, input: UpdateBookingInput)
   const parsed = updateBookingSchema.safeParse(input);
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: existing } = await supabase
-    .from('bookings')
-    .select('unit_id, room_id, check_in_date, check_out_date, host_profile_id, settlement_type')
-    .eq('id', id)
-    .single();
+  const db = await getDb();
+  const existing = await db.collection('bookings').findOne({ id });
   if (!existing) return { error: 'Booking not found' };
 
   await requireCapability('rooms.booking.write', existing.unit_id);
@@ -809,34 +861,32 @@ export async function updateBookingAction(id: string, input: UpdateBookingInput)
     checkIn !== existing.check_in_date ||
     checkOut !== existing.check_out_date
   ) {
-    const available = await isRoomAvailable(supabase, roomId, checkIn, checkOut, id);
+    const available = await isRoomAvailable(roomId, checkIn, checkOut, id);
     if (!available) return { error: 'Room is not available for the selected dates' };
   }
 
-  const { error } = await supabase
-    .from('bookings')
-    .update(parsed.data)
-    .eq('id', id);
-
-  if (error) return { error: error.message };
+  const now = new Date().toISOString();
+  await db.collection('bookings').updateOne(
+    { id },
+    {
+      $set: {
+        ...parsed.data,
+        updated_at: now,
+      },
+    },
+  );
 
   revalidatePath(GUEST_ROOMS_PATH);
   return changedBooking(id, [existing.room_id, roomId]);
 }
 
 export async function deleteBookingAction(bookingId: string) {
-  const supabase = await createClient();
-  const { data: booking } = await supabase
-    .from('bookings')
-    .select('unit_id, room_id, status')
-    .eq('id', bookingId)
-    .single();
+  const db = await getDb();
+  const booking = await db.collection('bookings').findOne({ id: bookingId });
   if (!booking) return { error: 'Booking not found' };
+
   await requireCapability('rooms.booking.write', booking.unit_id);
 
-  // H2: Only confirmed or cancelled bookings can be deleted.
-  // checked_in / checked_out bookings carry financial records (bills,
-  // payments) that must not be silently cascaded away.
   if (booking.status === 'checked_in' || booking.status === 'checked_out') {
     return {
       error:
@@ -844,23 +894,16 @@ export async function deleteBookingAction(bookingId: string) {
     };
   }
 
-  // 1. Get any bills associated with this booking (shouldn't exist for
-  //    confirmed/cancelled, but clean up defensively).
-  const { data: bills } = await supabase.from('room_bills').select('id').eq('booking_id', bookingId);
-  const billIds = bills?.map(b => b.id) || [];
+  const bills = await db.collection('room_bills').find({ booking_id: bookingId }).toArray();
+  const billIds = bills.map((b: Document) => b.id);
 
   if (billIds.length > 0) {
-    // Delete room bill items for these bills
-    await supabase.from('room_bill_items').delete().in('bill_id', billIds);
-    // Delete room bill orders for these bills
-    await supabase.from('room_bill_orders').delete().in('bill_id', billIds);
-    // Delete the bills themselves
-    await supabase.from('room_bills').delete().in('id', billIds);
+    await db.collection('room_bill_items').deleteMany({ bill_id: { $in: billIds } });
+    await db.collection('room_bill_orders').deleteMany({ bill_id: { $in: billIds } });
+    await db.collection('room_bills').deleteMany({ id: { $in: billIds } });
   }
 
-  // 2. Delete the booking
-  const { error } = await supabase.from('bookings').delete().eq('id', bookingId);
-  if (error) return { error: error.message };
+  await db.collection('bookings').deleteOne({ id: bookingId });
 
   revalidatePath(GUEST_ROOMS_PATH);
   return {
@@ -871,18 +914,10 @@ export async function deleteBookingAction(bookingId: string) {
 }
 
 export async function fetchBookingWithBillAction(id: string) {
-  // We don't know the booking's unit_id until we read it; do an
-  // RLS-gated peek first (returns null for bookings the caller can't
-  // see), then verify the capability for that unit explicitly so the
-  // failure mode is a clean 403 rather than a silent "no rows".
-  const supabase = await createClient();
-  const { data: peek, error: peekErr } = await supabase
-    .from('bookings')
-    .select('unit_id')
-    .eq('id', id)
-    .maybeSingle();
-  if (peekErr) return { error: peekErr.message };
+  const db = await getDb();
+  const peek = await db.collection('bookings').findOne({ id });
   if (!peek) return { error: 'Booking not found' };
+
   await requireCapability('rooms.read', peek.unit_id);
 
   const { getBookingById } = await import('./queries');
@@ -895,16 +930,10 @@ export async function fetchBookingWithBillAction(id: string) {
 }
 
 export async function fetchRoomInventoryAction(roomId: string) {
-  // Peek the room's unit (RLS-gated) then verify rooms.read explicitly so
-  // the failure mode is a clean 403, not a silent empty list.
-  const supabase = await createClient();
-  const { data: peek, error: peekErr } = await supabase
-    .from('rooms')
-    .select('unit_id')
-    .eq('id', roomId)
-    .maybeSingle();
-  if (peekErr) return { error: peekErr.message };
+  const db = await getDb();
+  const peek = await db.collection('rooms').findOne({ id: roomId });
   if (!peek) return { error: 'Room not found' };
+
   await requireCapability('rooms.read', peek.unit_id);
 
   const { getRoomInventory } = await import('./queries');
@@ -916,20 +945,6 @@ export async function fetchRoomInventoryAction(roomId: string) {
   }
 }
 
-export async function fetchDailyBookingStatsAction(
-  unitId: string,
-  from: string,
-  to: string,
-) {
-  await requireCapability('rooms.read', unitId);
-  const { getDailyBookingStats } = await import('./queries');
-  try {
-    const stats = await getDailyBookingStats(unitId, from, to);
-    return { data: stats };
-  } catch (error: unknown) {
-    return { error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-}
 
 export async function fetchMonthBookingsAction(
   unitId: string,
@@ -982,39 +997,34 @@ export async function fetchUnitFurnitureAction(unitId: string) {
 export async function updateBillItemAction(
   itemId: string,
   amount: number,
-  quantity: number
+  quantity: number,
 ) {
   const { updateBillItemSchema } = await import('@/lib/schemas/guest-rooms');
   const parsed = updateBillItemSchema.safeParse({ amount, quantity });
   if (!parsed.success) return { error: 'Invalid input', details: parsed.error.flatten() };
 
-  const supabase = await createClient();
-  const { data: peek } = await supabase
-    .from('room_bill_items')
-    .select('id, bill:room_bills(unit_id, status, booking_id)')
-    .eq('id', itemId)
-    .maybeSingle();
+  const db = await getDb();
+  const item = await db.collection('room_bill_items').findOne({ id: itemId });
+  if (!item) return { error: 'Item not found' };
 
-  if (!peek) return { error: 'Item not found' };
-  
-  const row = peek as unknown as BillItemWithBill;
-  if (!row.bill) return { error: 'Item not found' };
-  if (row.bill.status !== 'draft') return { error: 'Cannot modify a finalized bill' };
+  const bill = await db.collection('room_bills').findOne({ id: item.bill_id });
+  if (!bill) return { error: 'Item not found' };
+  if (bill.status !== 'draft') return { error: 'Cannot modify a finalized bill' };
 
-  await requireCapability('rooms.booking.write', row.bill.unit_id);
+  await requireCapability('rooms.booking.write', bill.unit_id);
 
-  const { error } = await supabase
-    .from('room_bill_items')
-    .update({
-      amount: parsed.data.amount,
-      quantity: parsed.data.quantity
-    })
-    .eq('id', itemId);
-
-  if (error) return { error: error.message };
+  await db.collection('room_bill_items').updateOne(
+    { id: itemId },
+    {
+      $set: {
+        amount: parsed.data.amount,
+        quantity: parsed.data.quantity,
+      },
+    },
+  );
 
   revalidatePath(GUEST_ROOMS_PATH);
-  return { ok: true, bookingId: row.bill.booking_id };
+  return { ok: true, bookingId: bill.booking_id };
 }
 
 export async function fetchHostProfilesAction(unitId: string) {

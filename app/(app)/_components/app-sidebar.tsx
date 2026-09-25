@@ -47,7 +47,7 @@ function NavLink({
     return (
       <SidebarMenuItem>
         <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
-          <Link href={item.href}>
+          <Link href={item.href} prefetch={false}>
             <NavIcon name={item.icon} />
             <span>{item.label}</span>
           </Link>
@@ -70,7 +70,7 @@ function NavLink({
           return (
             <SidebarMenuSubItem key={child.label}>
               <SidebarMenuSubButton asChild isActive={childActive}>
-                <Link href={child.href!}>
+                <Link href={child.href!} prefetch={false}>
                   <NavIcon name={child.icon} />
                   <span>{child.label}</span>
                 </Link>

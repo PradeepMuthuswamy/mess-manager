@@ -7,9 +7,10 @@
 | **[`SHARED-DATA-MODEL.md`](./SHARED-DATA-MODEL.md)** | Cross-repo DB contract (sync with admin app) |
 | **[`design-system.md`](./design-system.md)** | UI tokens and conventions |
 | **[`phases/`](./phases/)** | Phase 1–4 field specs and gap registers |
+| **[`NEXTJS-16-PROXY.md`](./NEXTJS-16-PROXY.md)** | Next.js 16 proxy architecture & routing security |
 | **[`ADMIN-SYNC-AUDIT.md`](./ADMIN-SYNC-AUDIT.md)** | 2026-09-10 ADMIN ↔ OPS sync audit (docs, migrations, ownership) |
 
 **Start here:** [`FOUNDATION.md`](./FOUNDATION.md) for “what we’re building and why.”  
 **Implementing a module:** requirements § + matching phase doc in `phases/`.
 
-**Hosted database:** CommandHQ project **Mess**, ref `nwrjhxzlnvtubwjuzsxr` — [`FOUNDATION.md`](./FOUNDATION.md) §6.
+**Database:** MongoDB cluster, database **`mess`** — [`FOUNDATION.md`](./FOUNDATION.md) §6.

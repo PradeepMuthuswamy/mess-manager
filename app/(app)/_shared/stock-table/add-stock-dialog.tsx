@@ -22,7 +22,7 @@ import {
 import { createLotsAction } from '@/lib/stock/actions';
 import type { MasterItemPick } from '@/lib/stock/types';
 import { CATEGORY_META, slugFromCategory } from '@/lib/masters/categories';
-import type { Category, InventoryCategory } from '@/lib/masters/categories';
+import type { Category } from '@/lib/masters/categories';
 import {
   derivedUnitsPerPack,
   servingLabel,
@@ -161,7 +161,7 @@ export function AddStockDialog({
   onCreateMasterItem,
 }: {
   open: boolean;
-  category: InventoryCategory;
+  category: Category;
   masterItems: MasterItemPick[];
   extraItems: MasterItemPick[];
   itemId: string;

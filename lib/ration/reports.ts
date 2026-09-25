@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { createClient } from '@/lib/supabase/server';
+import { getCollection, getDb } from '@/lib/mongo';
 import { getMonthlyAttendance } from '@/lib/attendance/queries';
 import type { AttendanceStatus } from '@/lib/attendance/types';
 
@@ -49,7 +49,6 @@ export async function getRationMonthlyReport(
   month: string,
 ): Promise<RationMonthlyReport> {
   const { start, end } = monthBounds(month);
-  const supabase = await createClient();
 
   const attendance = await getMonthlyAttendance(unitId, month);
 
@@ -64,41 +63,50 @@ export async function getRationMonthlyReport(
   const totalPresent = days.reduce((sum, d) => sum + d.present_count, 0);
   const finalizedDays = days.filter((d) => d.status === 'finalized').length;
 
-  const { data: consumptions, error: consErr } = await supabase
-    .from('ration_consumptions')
-    .select('variant_id, quantity, consumption_date')
-    .eq('unit_id', unitId)
-    .gte('consumption_date', start)
-    .lte('consumption_date', end);
-  if (consErr) throw new Error(consErr.message);
+  const consCol = await getCollection('ration_consumptions');
+  const consumptions = await consCol
+    .find({
+      unit_id: unitId,
+      consumption_date: { $gte: start, $lte: end },
+    })
+    .toArray();
 
   const byVariant = new Map<
     string,
     { quantity: number; dates: Set<string> }
   >();
-  for (const row of consumptions ?? []) {
-    const cur = byVariant.get(row.variant_id) ?? {
+  for (const row of consumptions) {
+    const vId = String(row.variant_id);
+    const cur = byVariant.get(vId) ?? {
       quantity: 0,
       dates: new Set<string>(),
     };
     cur.quantity += Number(row.quantity);
-    cur.dates.add(row.consumption_date);
-    byVariant.set(row.variant_id, cur);
+    cur.dates.add(String(row.consumption_date));
+    byVariant.set(vId, cur);
   }
 
   const variantIds = [...byVariant.keys()];
   const nameById = new Map<string, { name: string; uom: string }>();
   if (variantIds.length > 0) {
-    const { data: items, error: itemErr } = await supabase
-      .from('v_items_current')
-      .select('id, name, uom')
-      .in('id', variantIds);
-    if (itemErr) throw new Error(itemErr.message);
-    for (const item of items ?? []) {
-      if (!item.id) continue;
-      nameById.set(item.id, {
-        name: item.name ?? 'Unknown',
-        uom: item.uom ?? '',
+    const db = await getDb();
+    const pipeline: Record<string, unknown>[] = [
+      { $match: { id: { $in: variantIds } } },
+      {
+        $lookup: {
+          from: 'products',
+          localField: 'product_id',
+          foreignField: 'id',
+          as: 'product',
+        },
+      },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    ];
+    const items = await db.collection('product_variants').aggregate(pipeline).toArray();
+    for (const item of items) {
+      nameById.set(String(item.id), {
+        name: item.product?.name ? String(item.product.name) : 'Unknown',
+        uom: item.unit_type ? String(item.unit_type).toLowerCase() : '',
       });
     }
   }

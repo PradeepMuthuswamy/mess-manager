@@ -1,14 +1,11 @@
 import { NextRequest } from 'next/server';
+import { getCollection } from '@/lib/mongo';
 import { withRoute, ok, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
-import { requireApiUser } from '@/lib/api/auth';
-import { userHasCapability } from '@/lib/auth/capabilities';
-import { opsInviteBlock } from '@/lib/users/invite-rules';
+import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
 import { inviteUserSchema, listUsersQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
-import { sendInvitationEmail } from '@/lib/email/resend';
-import { issueAuthConfirmLink } from '@/lib/auth/email-links';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,29 +13,33 @@ export const runtime = 'nodejs';
 export const GET = withRoute(async (req: NextRequest) => {
   const ctx = await requireApiUser(req);
   await checkRateLimit(req, 'read', ctx.user.id);
+  if (!['super_admin', 'unit_admin'].includes(ctx.user.role)) throw Errors.forbidden();
   const url = new URL(req.url);
   const parsed = listUsersQuerySchema.safeParse(Object.fromEntries(url.searchParams));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  const wantUnit = ctx.user.role === 'unit_admin' ? ctx.user.homeUnitId : parsed.data.unit_id ?? null;
-  let q = ctx.supabase.from('profiles')
-    .select('id, email, full_name, role, unit_id, is_active, rank, service_no, display_name, created_at, updated_at')
-    .order('full_name', { ascending: true })
-    .limit(parsed.data.limit);
-  if (parsed.data.active_only) q = q.eq('is_active', true);
-  if (parsed.data.role) {
-    q = q.eq('role', parsed.data.role);
-  }
-  if (wantUnit) q = q.eq('unit_id', wantUnit);
-  if (parsed.data.q) q = q.ilike('full_name', `%${parsed.data.q}%`);
+  const wantUnit = ['unit_admin', 'mess_secretary'].includes(ctx.user.role) ? ctx.user.homeUnitId : parsed.data.unit_id ?? null;
+  const profilesCol = await getCollection('profiles');
+  const query: Record<string, unknown> = {};
+  if (parsed.data.active_only) query.is_active = true;
+  if (parsed.data.role) query.role = parsed.data.role;
+  if (wantUnit) query.unit_id = wantUnit;
+  if (parsed.data.q) query.full_name = { $regex: parsed.data.q, $options: 'i' };
 
-  const { data, error } = await q;
-  if (error) throw Errors.internal(error.message);
-  return ok({ data, meta: { next_cursor: null, has_more: false } });
+  try {
+    const data = await profilesCol.find(query)
+      .sort({ full_name: 1 })
+      .limit(parsed.data.limit || 100)
+      .project({ _id: 0, id: 1, email: 1, full_name: 1, role: 1, unit_id: 1, is_active: 1, rank: 1, service_no: 1, display_name: 1, created_at: 1, updated_at: 1 })
+      .toArray();
+    return ok({ data, meta: { next_cursor: null, has_more: false } });
+  } catch (error: unknown) {
+    throw Errors.internal((error instanceof Error ? error.message : String(error)));
+  }
 });
 
 export const POST = withRoute(async (req: NextRequest) => {
-  const ctx = await requireApiUser(req);
+  const ctx = await requireApiCapability(req, 'users.invite');
   await checkRateLimit(req, 'write', ctx.user.id);
   const bodyText = await req.text();
   const idemKey = getIdempotencyKey(req);
@@ -49,72 +50,46 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = inviteUserSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
 
-  if (!userHasCapability(ctx.user, 'users.invite', parsed.data.unit_id)) {
-    throw Errors.forbidden('Requires capability: users.invite');
-  }
-  const blocked = opsInviteBlock(parsed.data.role);
-  if (blocked) throw Errors.forbidden(blocked);
-  if (ctx.user.role !== 'super_admin' && parsed.data.unit_id !== ctx.user.homeUnitId) {
-    throw Errors.forbidden('Cannot invite into other units');
+  // Only super_admin may set role to super_admin or unit_admin; unit_admin can only invite as user/manager into their own unit
+  if (ctx.user.role !== 'super_admin') {
+    if (parsed.data.role === 'super_admin' || parsed.data.role === 'unit_admin') {
+      throw Errors.forbidden('Only super_admin may grant elevated roles');
+    }
+    if (['unit_admin', 'mess_secretary'].includes(ctx.user.role)) {
+      if (parsed.data.unit_id && parsed.data.unit_id !== ctx.user.homeUnitId) {
+        throw Errors.forbidden('Cannot invite into other units');
+      }
+    }
   }
 
-  const targetUnit = parsed.data.unit_id;
+  const targetUnit = parsed.data.unit_id ?? null;
+  const invitedUserId = crypto.randomUUID();
 
-  const invited = await issueAuthConfirmLink(ctx.admin, {
-    type: 'invite',
-    email: parsed.data.email,
-    next: '/accept-invite',
-    data: {
-      ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
+  const profilesCol = await getCollection('profiles');
+  await profilesCol.updateOne(
+    { id: invitedUserId },
+    { $set: {
       role: parsed.data.role,
       unit_id: targetUnit,
-    },
-  });
-  if (invited.error || !invited.link || !invited.userId) {
-    throw Errors.conflict(invited.error?.message ?? 'Could not invite');
-  }
-  const invitedUserId = invited.userId;
+      ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
+      updated_at: new Date()
+    }}
+  );
 
-  await ctx.admin.from('profiles').update({
-    role: parsed.data.role,
-    unit_id: targetUnit,
-    ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-  }).eq('id', invitedUserId);
-
-  // Get unit name for custom invite email
-  let unitName = 'Officers\' Mess';
-  if (targetUnit) {
-    const { data: unitData } = await ctx.admin.from('units').select('name').eq('id', targetUnit).maybeSingle();
-    if (unitData?.name) unitName = unitData.name;
-  }
-
-  try {
-    await sendInvitationEmail({
-      email: parsed.data.email,
-      fullName: parsed.data.full_name || undefined,
-      inviteLink: invited.link,
-      unitName,
-      role: parsed.data.role,
-    });
-  } catch (err) {
-    console.error('Failed to send invitation email via Resend in API:', err);
-    throw Errors.internal('Could not send the invitation email.');
-  }
-
+  const capsCol = await getCollection('user_capabilities');
   // Apply capability template if provided
   if (parsed.data.capability_template_id && targetUnit) {
-    const { data: tpl } = await ctx.admin
-      .from('capability_templates')
-      .select('capabilities')
-      .eq('id', parsed.data.capability_template_id)
-      .single();
+    const tplCol = await getCollection('capability_templates');
+    const tpl = await tplCol.findOne({ id: parsed.data.capability_template_id }, { projection: { capabilities: 1 } });
     if (tpl) {
       const rows = (tpl.capabilities as string[]).map((c) => ({
         user_id: invitedUserId,
         capability: c as never,
         unit_id: targetUnit,
       }));
-      if (rows.length) await ctx.admin.from('user_capabilities').upsert(rows);
+      for (const row of rows) {
+        await capsCol.updateOne({ user_id: row.user_id, capability: row.capability, unit_id: row.unit_id }, { $set: row }, { upsert: true });
+      }
     }
   }
   // Apply explicit capabilities[] if provided
@@ -124,10 +99,12 @@ export const POST = withRoute(async (req: NextRequest) => {
       capability: c as never,
       unit_id: targetUnit,
     }));
-    await ctx.admin.from('user_capabilities').upsert(rows);
+    for (const row of rows) {
+      await capsCol.updateOne({ user_id: row.user_id, capability: row.capability, unit_id: row.unit_id }, { $set: row }, { upsert: true });
+    }
   }
 
-  const body = { id: invitedUserId, email: invited.email };
+  const body = { id: invitedUserId, email: parsed.data.email };
   if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, body);
   return created(body, `/api/v1/users/${invitedUserId}`);
 });

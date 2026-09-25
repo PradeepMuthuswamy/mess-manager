@@ -20,14 +20,8 @@ export const authSlice = createSlice({
     setAuthUser: (state, action: PayloadAction<AuthUser | null>) => {
       state.user = action.payload;
     },
-    setActiveUnit: (state, action: PayloadAction<string | null>) => {
-      if (state.user) {
-        state.user.activeUnitId = action.payload;
-        state.user.isAllUnits = action.payload === null || action.payload === 'all';
-      }
-    },
   },
 });
 
-export const { setAuthUser, setActiveUnit } = authSlice.actions;
+export const { setAuthUser } = authSlice.actions;
 export default authSlice.reducer;
