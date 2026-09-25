@@ -2,7 +2,8 @@
 
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
+import type { Document } from 'mongodb';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { requireUser } from '@/lib/auth/require-role';
 import { userHasCapability } from '@/lib/auth/capabilities';
@@ -38,10 +39,10 @@ import {
   totalMessBillAmount,
 } from './compute';
 import { notifyBillsPublished } from './notify';
-import type { Database } from '@/lib/supabase/database.types';
+import type { MessBill, MessBillLineItem, MessBillingPeriod } from './types';
 
-type MessBillInsert = Database['public']['Tables']['mess_bills']['Insert'];
-type MessBillLineInsert = Database['public']['Tables']['mess_bill_line_items']['Insert'];
+type MessBillInsert = MessBill;
+type MessBillLineInsert = MessBillLineItem;
 type BillingMark = { is_billed: boolean; billed_period_id: string | null };
 
 const EMPTY_FLAT_RATES: Record<MessingMealType, number> = {
@@ -60,7 +61,6 @@ function roundMoney(value: number): number {
 }
 
 async function resetChargesForPeriod(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   periodId: string
 ): Promise<string | null> {
   const tables = [
@@ -71,44 +71,34 @@ async function resetChargesForPeriod(
   ] as const;
   const reset: BillingMark = { is_billed: false, billed_period_id: null };
 
+  const db = await getDb();
   for (const table of tables) {
-    const { error } = await (
-      supabase.from(table) as unknown as {
-        update: (values: BillingMark) => {
-          eq: (
-            column: 'billed_period_id',
-            value: string
-          ) => PromiseLike<{ error: { message: string } | null }>;
-        };
-      }
-    )
-      .update(reset)
-      .eq('billed_period_id', periodId);
-    if (error) {
-      return `Failed to unmark ${table} for re-run: ${error.message}`;
+    try {
+      await db.collection(table).updateMany(
+        { billed_period_id: periodId },
+        { $set: reset }
+      );
+    } catch (err) {
+      return `Failed to unmark ${table} for re-run: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
   return null;
 }
 
 async function markChargesBilled(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   table: 'guest_meals' | 'mess_misc_debits' | 'mess_party_charges' | 'room_bills',
   ids: string[],
   periodId: string
 ): Promise<void> {
   if (ids.length === 0) return;
-  const { error } = await (
-    supabase.from(table) as unknown as {
-      update: (values: BillingMark) => {
-        in: (column: 'id', values: string[]) => PromiseLike<{ error: { message: string } | null }>;
-      };
-    }
-  )
-    .update({ is_billed: true, billed_period_id: periodId })
-    .in('id', ids);
-  if (error) {
-    console.error(`Failed to mark ${table} billed:`, error.message);
+  const db = await getDb();
+  try {
+    await db.collection(table).updateMany(
+      { id: { $in: ids } },
+      { $set: { is_billed: true, billed_period_id: periodId } }
+    );
+  } catch (error) {
+    console.error(`Failed to mark ${table} billed:`, error);
   }
 }
 
@@ -126,27 +116,30 @@ export async function createBillingPeriodAction(input: unknown): Promise<ActionR
   const { unit_id, name, start_date, end_date, billing_year, billing_month } = parsed.data;
   await requireCapability('billing.draft', unit_id);
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('mess_billing_periods')
-    .insert({
-      unit_id,
-      name,
-      start_date,
-      end_date,
-      billing_year,
-      billing_month,
-      status: 'open',
-    })
-    .select()
-    .single();
+  const db = await getDb();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const newPeriod: MessBillingPeriod = {
+    id,
+    unit_id,
+    name,
+    start_date,
+    end_date,
+    billing_year,
+    billing_month,
+    status: 'open',
+    created_at: now,
+    updated_at: now,
+  };
 
-  if (error) {
-    return { error: `Failed to create billing period: ${error.message}` };
+  try {
+    await db.collection('mess_billing_periods').insertOne(newPeriod);
+  } catch (error) {
+    return { error: `Failed to create billing period: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   revalidatePath('/billing');
-  return { ok: true, data };
+  return { ok: true, data: newPeriod };
 }
 
 /**
@@ -162,23 +155,19 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
 
   const { unit_id, billing_period_id } = parsed.data;
   await requireCapability('billing.draft', unit_id);
-  const supabase = await createClient();
+  const db = await getDb();
 
-  const { data: period, error: periodErr } = await supabase
-    .from('mess_billing_periods')
-    .select('*')
-    .eq('id', billing_period_id)
-    .single();
-
-  if (periodErr || !period) {
+  const periodDoc = await db.collection('mess_billing_periods').findOne({ id: billing_period_id });
+  if (!periodDoc) {
     return { error: 'Billing period not found' };
   }
+  const period = periodDoc as unknown as MessBillingPeriod;
 
   if (period.status === 'published' || period.status === 'closed') {
     return { error: 'Cannot recalculate a published or closed billing period' };
   }
 
-  const unmarkError = await resetChargesForPeriod(supabase, billing_period_id);
+  const unmarkError = await resetChargesForPeriod(billing_period_id);
   if (unmarkError) {
     return { error: unmarkError };
   }
@@ -187,34 +176,39 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
   const { dueDate } = deriveStandardBillingCycle(billing_year, billing_month);
   const cycleDates = calculateCycleDates(start_date, end_date);
 
-  const { data: unitData } = await supabase
-    .from('units')
-    .select('messing_billing_mode')
-    .eq('id', unit_id)
-    .single();
-
+  const unitData = await db.collection('units').findOne({ id: unit_id });
   const billingMode: MessingBillingMode =
     (unitData?.messing_billing_mode as MessingBillingMode) ?? 'P_REGISTER_SPLIT';
 
-  const { data: members, error: memErr } = await supabase
-    .from('profiles')
-    .select('id, full_name, service_no, rank, dining_in')
-    .eq('unit_id', unit_id);
+  const membersDocs = await db
+    .collection('profiles')
+    .find({ unit_id })
+    .project({ id: 1, full_name: 1, service_no: 1, rank: 1, dining_in: 1 })
+    .toArray();
 
-  if (memErr || !members || members.length === 0) {
+  if (!membersDocs || membersDocs.length === 0) {
     return { error: 'No members found in this unit to bill.' };
   }
 
-  const { data: pRates } = await supabase
-    .from('mess_daily_p_rates')
-    .select('*')
-    .eq('unit_id', unit_id)
-    .gte('rate_date', start_date)
-    .lte('rate_date', end_date);
+  const members = membersDocs.map((m: Document) => ({
+    id: m.id as string,
+    full_name: (m.full_name as string) ?? null,
+    service_no: (m.service_no as string) ?? null,
+    rank: (m.rank as string) ?? null,
+    dining_in: Boolean(m.dining_in),
+  }));
+
+  const pRatesDocs = await db
+    .collection('mess_daily_p_rates')
+    .find({
+      unit_id,
+      rate_date: { $gte: start_date, $lte: end_date },
+    })
+    .toArray();
 
   const pRateMap = new Map<string, number>();
-  for (const r of pRates ?? []) {
-    pRateMap.set(r.rate_date, Number(r.rate_per_diner));
+  for (const r of pRatesDocs) {
+    pRateMap.set(r.rate_date as string, Number(r.rate_per_diner));
   }
 
   let registerStatusByDate: Map<string, string | null>;
@@ -227,41 +221,48 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
   }
   const approvedPRates = filterApprovedPRates(pRateMap, registerStatusByDate);
 
-  const { data: attendanceDays } = await supabase
-    .from('attendance_days')
-    .select('id, attendance_date')
-    .eq('unit_id', unit_id)
-    .gte('attendance_date', start_date)
-    .lte('attendance_date', end_date);
+  const attendanceDaysDocs = await db
+    .collection('attendance_days')
+    .find({
+      unit_id,
+      attendance_date: { $gte: start_date, $lte: end_date },
+    })
+    .project({ id: 1, attendance_date: 1 })
+    .toArray();
 
   const attendanceByDate = new Map<string, { id: string; attendance_date: string }>();
-  for (const d of attendanceDays ?? []) {
-    attendanceByDate.set(d.attendance_date, d);
+  for (const d of attendanceDaysDocs) {
+    attendanceByDate.set(d.attendance_date as string, { id: d.id as string, attendance_date: d.attendance_date as string });
   }
 
-  const dayIds = (attendanceDays ?? []).map((d) => d.id);
-  const { data: absences } =
+  const dayIds = attendanceDaysDocs.map((d: Document) => d.id as string);
+  const absencesDocs =
     dayIds.length > 0
-      ? await supabase.from('attendance_absences').select('day_id, profile_id').in('day_id', dayIds)
-      : { data: [] as Array<{ day_id: string; profile_id: string | null }> };
+      ? await db
+          .collection('attendance_absences')
+          .find({ day_id: { $in: dayIds } })
+          .project({ day_id: 1, profile_id: 1 })
+          .toArray()
+      : [];
 
   const absenteeSet = new Set<string>();
-  for (const a of absences ?? []) {
+  for (const a of absencesDocs) {
     if (a.profile_id) {
       absenteeSet.add(`${a.day_id}:${a.profile_id}`);
     }
   }
 
-  const { data: mealCuts } = await supabase
-    .from('mess_meal_cuts')
-    .select('*')
-    .eq('unit_id', unit_id)
-    .gte('cut_date', start_date)
-    .lte('cut_date', end_date)
-    .eq('status', 'approved');
+  const mealCutsDocs = await db
+    .collection('mess_meal_cuts')
+    .find({
+      unit_id,
+      cut_date: { $gte: start_date, $lte: end_date },
+      status: 'approved',
+    })
+    .toArray();
 
   const cutSet = new Set<string>();
-  for (const c of mealCuts ?? []) {
+  for (const c of mealCutsDocs) {
     cutSet.add(`${c.profile_id}:${c.cut_date}:${c.meal_type}`);
   }
 
@@ -311,11 +312,18 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     memberGuestMeals.set(gm.host_profile_id, list);
   }
 
-  const { data: subscriptions } = await supabase
-    .from('mess_subscriptions')
-    .select('*')
-    .eq('unit_id', unit_id)
-    .eq('is_active', true);
+  const subscriptionsDocs = await db
+    .collection('mess_subscriptions')
+    .find({ unit_id, is_active: true })
+    .toArray();
+  const subscriptions = subscriptionsDocs.map((s: Document) => ({
+    id: s.id as string,
+    unit_id: s.unit_id as string,
+    name: s.name as string,
+    description: (s.description as string) ?? null,
+    amount: Number(s.amount),
+    is_active: Boolean(s.is_active),
+  }));
 
   const memberMiscDebits = new Map<string, typeof miscDebits>();
   for (const md of miscDebits) {
@@ -375,6 +383,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       messingAmount = messing.total;
       for (const item of messing.items) {
         lineItemsToInsert.push({
+          id: crypto.randomUUID(),
           bill_id: currentBillId,
           category: 'messing',
           item_date: item.date,
@@ -390,6 +399,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     for (const c of chits) {
       barAmount += c.amount;
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'bar',
         item_date: c.date,
@@ -409,6 +419,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       roomAmount += rb.amount;
       roomBillsToMark.push(rb.id);
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'room',
         item_date: rb.date,
@@ -425,6 +436,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       guestMealAmount += Number(gm.total_amount);
       guestMealsToMark.push(gm.id);
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'guest_meal',
         item_date: gm.meal_date,
@@ -440,6 +452,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       const subAmt = Number(sub.amount);
       subscriptionsAmount += subAmt;
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'subscription',
         item_date: end_date,
@@ -457,6 +470,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       miscAmount += amt;
       miscDebitsToMark.push(md.id);
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'misc',
         item_date: md.charge_date,
@@ -474,6 +488,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
       partyAmount += amt;
       partyChargesToMark.push(pc.id);
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'party',
         item_date: pc.party_date,
@@ -488,6 +503,7 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     const arrearsAmount = memberArrears.get(member.id) ?? 0;
     if (arrearsAmount > 0) {
       lineItemsToInsert.push({
+        id: crypto.randomUUID(),
         bill_id: currentBillId,
         category: 'arrear',
         item_date: start_date,
@@ -529,33 +545,37 @@ export async function runMonthlyBillingAction(input: unknown): Promise<ActionRes
     });
   }
 
-  await supabase.from('mess_bills').delete().eq('billing_period_id', billing_period_id);
+  await db.collection('mess_bills').deleteMany({ billing_period_id });
 
   if (billsToInsert.length > 0) {
-    const { error: bErr } = await supabase.from('mess_bills').insert(billsToInsert);
-    if (bErr) {
-      return { error: `Failed to insert bills: ${bErr.message}` };
+    try {
+      await db.collection('mess_bills').insertMany(billsToInsert);
+    } catch (bErr) {
+      return { error: `Failed to insert bills: ${bErr instanceof Error ? bErr.message : String(bErr)}` };
     }
   }
 
   if (lineItemsToInsert.length > 0) {
-    const { error: liErr } = await supabase.from('mess_bill_line_items').insert(lineItemsToInsert);
-    if (liErr) {
-      return { error: `Failed to insert line items: ${liErr.message}` };
+    try {
+      await db.collection('mess_bill_line_items').insertMany(lineItemsToInsert);
+    } catch (liErr) {
+      return { error: `Failed to insert line items: ${liErr instanceof Error ? liErr.message : String(liErr)}` };
     }
   }
 
   await Promise.all([
-    markChargesBilled(supabase, 'guest_meals', guestMealsToMark, billing_period_id),
-    markChargesBilled(supabase, 'mess_misc_debits', miscDebitsToMark, billing_period_id),
-    markChargesBilled(supabase, 'mess_party_charges', partyChargesToMark, billing_period_id),
-    markChargesBilled(supabase, 'room_bills', roomBillsToMark, billing_period_id),
+    markChargesBilled('guest_meals', guestMealsToMark, billing_period_id),
+    markChargesBilled('mess_misc_debits', miscDebitsToMark, billing_period_id),
+    markChargesBilled('mess_party_charges', partyChargesToMark, billing_period_id),
+    markChargesBilled('room_bills', roomBillsToMark, billing_period_id),
   ]);
 
-  await supabase
-    .from('mess_billing_periods')
-    .update({ status: 'draft', updated_at: new Date().toISOString() })
-    .eq('id', billing_period_id);
+  await db
+    .collection('mess_billing_periods')
+    .updateOne(
+      { id: billing_period_id },
+      { $set: { status: 'draft', updated_at: new Date().toISOString() } }
+    );
 
   revalidatePath('/billing');
   return { ok: true, data: { generatedBillsCount: billsToInsert.length } };
@@ -571,37 +591,43 @@ export async function publishBillingPeriodAction(input: unknown): Promise<Action
   }
 
   const { billing_period_id } = parsed.data;
-  const supabase = await createClient();
+  const db = await getDb();
 
-  const { data: period } = await supabase
-    .from('mess_billing_periods')
-    .select('unit_id')
-    .eq('id', billing_period_id)
-    .single();
+  const period = await db
+    .collection('mess_billing_periods')
+    .findOne({ id: billing_period_id });
 
   if (!period) return { error: 'Billing period not found' };
 
-  const user = await requireCapability('billing.finalize', period.unit_id);
+  const user = await requireCapability('billing.finalize', period.unit_id as string);
 
   // Update bills to published
-  await supabase
-    .from('mess_bills')
-    .update({
-      status: 'published',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('billing_period_id', billing_period_id);
+  await db
+    .collection('mess_bills')
+    .updateMany(
+      { billing_period_id },
+      {
+        $set: {
+          status: 'published',
+          updated_at: new Date().toISOString(),
+        },
+      }
+    );
 
   // Update period to published
-  await supabase
-    .from('mess_billing_periods')
-    .update({
-      status: 'published',
-      published_at: new Date().toISOString(),
-      published_by: user.id,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', billing_period_id);
+  await db
+    .collection('mess_billing_periods')
+    .updateOne(
+      { id: billing_period_id },
+      {
+        $set: {
+          status: 'published',
+          published_at: new Date().toISOString(),
+          published_by: user.id,
+          updated_at: new Date().toISOString(),
+        },
+      }
+    );
 
   revalidatePath('/billing');
   try {
@@ -622,33 +648,35 @@ export async function markBillPaidAction(input: unknown): Promise<ActionResult> 
   }
 
   const { bill_id, paid_amount, payment_method, payment_reference, notes } = parsed.data;
-  const supabase = await createClient();
+  const db = await getDb();
 
-  const { data: bill } = await supabase
-    .from('mess_bills')
-    .select('unit_id, total_amount')
-    .eq('id', bill_id)
-    .single();
+  const bill = await db
+    .collection('mess_bills')
+    .findOne({ id: bill_id });
 
   if (!bill) return { error: 'Bill not found' };
 
-  await requireCapability('billing.finalize', bill.unit_id);
+  await requireCapability('billing.finalize', bill.unit_id as string);
 
-  const { error } = await supabase
-    .from('mess_bills')
-    .update({
-      status: 'paid',
-      paid_amount,
-      paid_at: new Date().toISOString(),
-      payment_method,
-      payment_reference: payment_reference ?? null,
-      notes: notes ?? null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', bill_id);
-
-  if (error) {
-    return { error: `Failed to record payment: ${error.message}` };
+  try {
+    await db
+      .collection('mess_bills')
+      .updateOne(
+        { id: bill_id },
+        {
+          $set: {
+            status: 'paid',
+            paid_amount,
+            paid_at: new Date().toISOString(),
+            payment_method,
+            payment_reference: payment_reference ?? null,
+            notes: notes ?? null,
+            updated_at: new Date().toISOString(),
+          },
+        }
+      );
+  } catch (error) {
+    return { error: `Failed to record payment: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   revalidatePath('/billing');
@@ -665,17 +693,22 @@ export async function createSubscriptionAction(input: unknown): Promise<ActionRe
   }
 
   await requireCapability('billing.finalize', parsed.data.unit_id);
-  const supabase = await createClient();
+  const db = await getDb();
+  const now = new Date().toISOString();
 
-  const { error } = await supabase.from('mess_subscriptions').insert({
-    unit_id: parsed.data.unit_id,
-    name: parsed.data.name,
-    description: parsed.data.description ?? null,
-    amount: parsed.data.amount,
-  });
-
-  if (error) {
-    return { error: `Failed to add subscription: ${error.message}` };
+  try {
+    await db.collection('mess_subscriptions').insertOne({
+      id: crypto.randomUUID(),
+      unit_id: parsed.data.unit_id,
+      name: parsed.data.name,
+      description: parsed.data.description ?? null,
+      amount: parsed.data.amount,
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    });
+  } catch (error) {
+    return { error: `Failed to add subscription: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   revalidatePath('/billing');
@@ -692,21 +725,26 @@ export async function createMiscDebitAction(input: unknown): Promise<ActionResul
   }
 
   const user = await requireCapability('billing.draft', parsed.data.unit_id);
-  const supabase = await createClient();
+  const db = await getDb();
+  const now = new Date().toISOString();
 
-  const { error } = await supabase.from('mess_misc_debits').insert({
-    unit_id: parsed.data.unit_id,
-    profile_id: parsed.data.profile_id,
-    charge_date: parsed.data.charge_date,
-    category: parsed.data.category,
-    description: parsed.data.description,
-    amount: parsed.data.amount,
-    receipt_ref: parsed.data.receipt_ref ?? null,
-    created_by: user.id,
-  });
-
-  if (error) {
-    return { error: `Failed to record misc debit: ${error.message}` };
+  try {
+    await db.collection('mess_misc_debits').insertOne({
+      id: crypto.randomUUID(),
+      unit_id: parsed.data.unit_id,
+      profile_id: parsed.data.profile_id,
+      charge_date: parsed.data.charge_date,
+      category: parsed.data.category,
+      description: parsed.data.description,
+      amount: parsed.data.amount,
+      receipt_ref: parsed.data.receipt_ref ?? null,
+      is_billed: false,
+      billed_period_id: null,
+      created_by: user.id,
+      created_at: now,
+    });
+  } catch (error) {
+    return { error: `Failed to record misc debit: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   revalidatePath('/billing');
@@ -740,24 +778,24 @@ export async function deactivateSubscriptionAction(
     return { error: 'Invalid subscription id' };
   }
 
-  const supabase = await createClient();
-  const { data: sub } = await supabase
-    .from('mess_subscriptions')
-    .select('id, unit_id')
-    .eq('id', subscriptionId)
-    .maybeSingle();
+  const db = await getDb();
+  const sub = await db
+    .collection('mess_subscriptions')
+    .findOne({ id: subscriptionId });
 
   if (!sub) return { error: 'Subscription not found' };
 
-  await requireCapability('billing.draft', sub.unit_id);
+  await requireCapability('billing.draft', sub.unit_id as string);
 
-  const { error } = await supabase
-    .from('mess_subscriptions')
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq('id', subscriptionId);
-
-  if (error) {
-    return { error: `Failed to deactivate subscription: ${error.message}` };
+  try {
+    await db
+      .collection('mess_subscriptions')
+      .updateOne(
+        { id: subscriptionId },
+        { $set: { is_active: false, updated_at: new Date().toISOString() } }
+      );
+  } catch (error) {
+    return { error: `Failed to deactivate subscription: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   revalidatePath('/billing');
@@ -782,35 +820,24 @@ export async function createPartyChargeAction(input: unknown): Promise<ActionRes
   }
 
   const user = await requireCapability('billing.draft', parsed.data.unit_id);
-  const supabase = await createClient();
+  const db = await getDb();
+  const now = new Date().toISOString();
 
-  // Table exists in 20260910080100; generated Database types may lag.
-  const { error } = await (
-    supabase as unknown as {
-      from: (relation: 'mess_party_charges') => {
-        insert: (values: {
-          unit_id: string;
-          profile_id: string;
-          party_date: string;
-          description: string;
-          amount: number;
-          created_by: string;
-        }) => PromiseLike<{ error: { message: string } | null }>;
-      };
-    }
-  )
-    .from('mess_party_charges')
-    .insert({
+  try {
+    await db.collection('mess_party_charges').insertOne({
+      id: crypto.randomUUID(),
       unit_id: parsed.data.unit_id,
       profile_id: parsed.data.profile_id,
       party_date: parsed.data.party_date,
       description: parsed.data.description,
       amount: parsed.data.amount,
+      is_billed: false,
+      billed_period_id: null,
       created_by: user.id,
+      created_at: now,
     });
-
-  if (error) {
-    return { error: `Failed to record party charge: ${error.message}` };
+  } catch (error) {
+    return { error: `Failed to record party charge: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   revalidatePath('/billing');

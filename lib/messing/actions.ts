@@ -126,14 +126,14 @@ export async function updateUnitFlatRatesAction(input: unknown): Promise<ActionR
           updated_at: now,
         };
 
-        await ratesCol.insertOne(doc as Record<string, unknown>);
+        await ratesCol.insertOne(doc);
         await writeAudit({
           table_name: 'messing_flat_rates',
           row_pk: newId,
           op: 'INSERT',
           active_unit_id: unit_id,
           changed_by: user.id,
-          new_data: doc as unknown,
+          new_data: doc as unknown as Record<string, unknown>,
         });
       }
     }
@@ -212,7 +212,7 @@ export async function recordDailyKitchenExpenditureAction(input: unknown): Promi
       op: 'UPDATE',
       active_unit_id: unit_id,
       changed_by: user.id,
-      old_data: existing as unknown,
+      old_data: existing as unknown as Record<string, unknown>,
       new_data: patch,
     });
   } else {
@@ -243,14 +243,14 @@ export async function recordDailyKitchenExpenditureAction(input: unknown): Promi
       updated_at: now,
     };
 
-    await expCol.insertOne(doc as Record<string, unknown>);
+    await expCol.insertOne(doc);
     await writeAudit({
       table_name: 'mess_daily_expenditures',
       row_pk: newId,
       op: 'INSERT',
       active_unit_id: unit_id,
       changed_by: user.id,
-      new_data: doc as unknown,
+      new_data: doc as unknown as Record<string, unknown>,
     });
   }
 
@@ -470,7 +470,7 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
       op: 'UPDATE',
       active_unit_id: parsed.data.unit_id,
       changed_by: currentUser.id,
-      old_data: existing as unknown,
+      old_data: existing as unknown as Record<string, unknown>,
       new_data: patch,
     });
   } else {
@@ -486,14 +486,14 @@ export async function recordMealCutAction(input: unknown): Promise<ActionResult>
       created_at: now,
       updated_at: now,
     };
-    await cutsCol.insertOne(doc as Record<string, unknown>);
+    await cutsCol.insertOne(doc);
     await writeAudit({
       table_name: 'mess_meal_cuts',
       row_pk: newId,
       op: 'INSERT',
       active_unit_id: parsed.data.unit_id,
       changed_by: currentUser.id,
-      new_data: doc as unknown,
+      new_data: doc as unknown as Record<string, unknown>,
     });
   }
 
@@ -626,7 +626,7 @@ export async function cancelMealCutAction(input: {
       op: 'DELETE',
       active_unit_id: input.unit_id,
       changed_by: currentUser.id,
-      old_data: existing as unknown,
+      old_data: existing as unknown as Record<string, unknown>,
     });
   }
 
@@ -674,14 +674,14 @@ export async function recordGuestMealAction(input: unknown): Promise<ActionResul
     created_at: now,
   };
 
-  await guestCol.insertOne(doc as Record<string, unknown>);
+  await guestCol.insertOne(doc);
   await writeAudit({
     table_name: 'guest_meals',
     row_pk: newId,
     op: 'INSERT',
     active_unit_id: parsed.data.unit_id,
     changed_by: user.id,
-    new_data: doc as unknown,
+    new_data: doc as unknown as Record<string, unknown>,
   });
 
   revalidateMessing();

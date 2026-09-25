@@ -35,9 +35,10 @@ async function runInTransactionOrFallback(
       });
       return;
     } catch (txnError: unknown) {
+      const msg = txnError instanceof Error ? txnError.message : '';
       if (
-        txnError?.message?.includes('replica set') ||
-        txnError?.message?.includes('Transaction numbers')
+        msg.includes('replica set') ||
+        msg.includes('Transaction numbers')
       ) {
         await fn();
         return;
@@ -45,9 +46,10 @@ async function runInTransactionOrFallback(
       throw txnError;
     }
   } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : '';
     if (
-      err?.message?.includes('replica set') ||
-      err?.message?.includes('Transaction numbers') ||
+      msg.includes('replica set') ||
+      msg.includes('Transaction numbers') ||
       !session
     ) {
       await fn();
@@ -271,7 +273,7 @@ async function isRoomAvailable(
   excludeBookingId?: string,
 ): Promise<boolean> {
   const bookingsCol = await getCollection('bookings');
-  const query: Filter<Booking> = {
+  const query: Filter<Document> = {
     room_id: roomId,
     status: { $ne: 'cancelled' },
     check_in_date: { $lt: checkOut },
@@ -449,7 +451,8 @@ export async function checkInAction(bookingId: string) {
   try {
     await executeCheckInBooking(bookingId);
   } catch (error: unknown) {
-    const msg = error?.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-in failed';
+    const rawMsg = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Check-in failed';
+    const msg = rawMsg.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-in failed';
     return { error: msg };
   }
 
@@ -718,7 +721,8 @@ export async function checkOutAction(input: string | CheckOutBookingInput) {
       paymentRef: options.payment_reference ?? null,
     });
   } catch (err: unknown) {
-    const msg = err?.message?.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-out failed';
+    const rawMsg = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Check-out failed';
+    const msg = rawMsg.replace(/^[A-Z0-9]+:\s*/, '') || 'Check-out failed';
     return { error: msg };
   }
 

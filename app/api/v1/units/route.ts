@@ -57,7 +57,7 @@ export const POST = withRoute(async (req: NextRequest) => {
 
   const parsed = createUnitSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
-  const { admin_email, admin_full_name, ...unitFields } = parsed.data as { admin_email: string; admin_full_name: string; [key: string]: unknown };
+  const { admin_email, admin_full_name, ...unitFields } = parsed.data;
   
   const newId = crypto.randomUUID();
   const now = new Date();
@@ -86,21 +86,21 @@ export const POST = withRoute(async (req: NextRequest) => {
   try {
     await cloneMasterRationScales(data.id, ctx.user.id);
   } catch (cloneErr: unknown) {
-    const err = cloneErr as Error;
+    const errMsg = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
     const rollback = await rollbackNewUnit(data.id);
     if (rollback.error) {
       throw Errors.internal(
-        `Unit created but ration scales could not be cloned, and cleanup failed: ${(err instanceof Error ? err.message : String(err))}`,
+        `Unit created but ration scales could not be cloned, and cleanup failed: ${errMsg}`,
       );
     }
-    throw Errors.internal(`Could not finish onboarding: ${(err instanceof Error ? err.message : String(err))}`);
+    throw Errors.internal(`Could not finish onboarding: ${errMsg}`);
   }
 
-  const invited = await inviteFirstUnitAdmin(null as unknown, {
-    email: admin_email as string,
-    fullName: admin_full_name as string,
+  const invited = await inviteFirstUnitAdmin({
+    email: admin_email,
+    fullName: admin_full_name,
     unitId: data.id,
-    unitName: data.name as string,
+    unitName: data.name,
   });
   if ('error' in invited) {
     throw Errors.internal(`Unit created, but the unit admin could not be invited: ${invited.error}`);

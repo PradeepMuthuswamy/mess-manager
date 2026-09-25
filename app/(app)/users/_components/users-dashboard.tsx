@@ -105,10 +105,10 @@ export function UsersDashboard({
     });
   };
 
-  const handleDeleteUser = async (userId: string, email: string) => {
+  const handleDeleteUser = async (userId: string, email: string | null) => {
     if (
       !confirm(
-        `Are you sure you want to permanently delete user ${email}? This action cannot be undone.`
+        `Are you sure you want to permanently delete user ${email || 'this user'}? This action cannot be undone.`
       )
     ) {
       return;
@@ -297,7 +297,7 @@ export function UsersDashboard({
                   new Set(capabilityList.map((uc) => capabilityDomainLabel(uc.capability)))
                 );
 
-                const displayName = u.display_name || u.full_name || u.email;
+                const displayName = u.display_name || u.full_name || u.email || 'User';
                 const initials = displayName
                   .split(' ')
                   .map((n: string) => n[0])

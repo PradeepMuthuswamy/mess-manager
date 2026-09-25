@@ -18,12 +18,12 @@ vi.mock('@/lib/auth/require-role', () => ({
 }));
 
 const mockDbState: {
-  productVariants: Record<string, unknown>[];
-  unitInventory: Record<string, unknown>[];
-  barChits: Record<string, unknown>[];
-  barChitItems: Record<string, unknown>[];
-  unitCatalog: Record<string, unknown>[];
-  unitMenuRates: Record<string, unknown>[];
+  productVariants: Record<string, any>[];
+  unitInventory: Record<string, any>[];
+  barChits: Record<string, any>[];
+  barChitItems: Record<string, any>[];
+  unitCatalog: Record<string, any>[];
+  unitMenuRates: Record<string, any>[];
 } = {
   productVariants: [],
   unitInventory: [],
@@ -64,7 +64,7 @@ vi.mock('@/lib/mongo', () => ({
               (r) =>
                 r.unit_id === query.unit_id &&
                 r.variant_id === query.variant_id &&
-                (!query.effective_from?.$lte || r.effective_from <= query.effective_from.$lte),
+                (!query.effective_from?.$lte || (r.effective_from as string) <= query.effective_from.$lte),
             );
             return {
               sort: vi.fn().mockReturnValue({

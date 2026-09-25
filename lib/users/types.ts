@@ -93,6 +93,6 @@ export interface MemberRow {
 }
 
 export type UnitOption = { id: string; name: string; code?: string };
-export type TemplateOption = { id: string; name: string; description: string | null };
+export type TemplateOption = { id: string; name: string; description: string | null; capabilities?: Capability[] };
 
 export type MemberWithDependants = MemberRow & { dependants: DependantRow[] };

@@ -149,9 +149,12 @@ export async function listDiningCandidates(
       .toArray(),
   ]);
 
+type ProfileCandidateRow = ProfileRow & { dining_in?: boolean | null };
+type DependantCandidateRow = DependantRow & { dining_in?: boolean | null };
+
   const out: DiningCandidate[] = [];
 
-  for (const p of profiles as Record<string, unknown>[]) {
+  for (const p of profiles as unknown as ProfileCandidateRow[]) {
     out.push({
       person_type: 'profile',
       person_id: p.id,
@@ -162,14 +165,14 @@ export async function listDiningCandidates(
     });
   }
 
-  const depRows = deps as Record<string, unknown>[];
+  const depRows = deps as unknown as DependantCandidateRow[];
   const sponsorIds = [...new Set(depRows.map((d) => d.primary_profile_id).filter(Boolean))];
   let sponsorName = new Map<string, string>();
   if (sponsorIds.length > 0) {
     const sponsors = (await db
       .collection('profiles')
       .find({ id: { $in: sponsorIds } })
-      .toArray()) as Record<string, unknown>[];
+      .toArray()) as unknown as ProfileRow[];
     sponsorName = new Map(
       sponsors.map((s) => [
         s.id,

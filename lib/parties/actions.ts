@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
+import { writeAudit } from '@/lib/audit/write-audit';
 import { requireUser } from '@/lib/auth/require-role';
 import { requireCapability } from '@/lib/auth/require-capability';
 import { userHasCapability } from '@/lib/auth/capabilities';
@@ -14,6 +15,7 @@ import {
   submitPartyBudgetSchema,
 } from '@/lib/schemas/parties';
 import type { AuthUser } from '@/lib/auth/types';
+import type { Db } from 'mongodb';
 
 type ActionResult = { ok: true } | { error: string };
 
@@ -27,21 +29,6 @@ type PartyRow = {
   status: string;
   budget_status: string;
 };
-
-type FilterBuilder<T> = {
-  select: (columns: string) => FilterBuilder<T>;
-  insert: (values: Record<string, unknown>) => FilterBuilder<T>;
-  update: (values: Record<string, unknown>) => FilterBuilder<T>;
-  eq: (column: string, value: string | number | boolean) => FilterBuilder<T>;
-  maybeSingle: () => PromiseLike<{ data: T | null; error: { message: string } | null }>;
-} & PromiseLike<{ data: T[] | null; error: { message: string } | null }>;
-
-/** Party lifecycle columns/tables are ahead of generated Database types. */
-function asDb(supabase: Awaited<ReturnType<typeof createClient>>) {
-  return supabase as unknown as {
-    from: (relation: string) => FilterBuilder<Record<string, unknown>>;
-  };
-}
 
 function isUserUnit(user: AuthUser, unitId: string) {
   return unitId === user.homeUnitId || unitId === user.activeUnitId;
@@ -88,17 +75,10 @@ function asParty(row: Record<string, unknown> | null): PartyRow | null {
 async function loadParty(
   partyId: string,
 ): Promise<{ ok: true; party: PartyRow } | { ok: false; error: string }> {
-  const supabase = await createClient();
-  const { data, error } = await asDb(supabase)
-    .from('mess_parties')
-    .select(
-      'id, unit_id, title, party_date, party_type, host_profile_id, status, budget_status',
-    )
-    .eq('id', partyId)
-    .maybeSingle();
-
-  if (error) return { ok: false, error: error.message };
-  const party = asParty(data);
+  const db = await getDb();
+  const data = await db.collection('mess_parties').findOne({ id: partyId });
+  if (!data) return { ok: false, error: 'Party not found.' };
+  const party = asParty(data as unknown as Record<string, unknown>);
   if (!party) return { ok: false, error: 'Party not found.' };
   return { ok: true, party };
 }
@@ -132,8 +112,12 @@ export async function createPartyAction(input: unknown): Promise<ActionResult> {
       ? (parsed.data.host_profile_id ?? user.id)
       : null;
 
-  const supabase = await createClient();
-  const { error } = await asDb(supabase).from('mess_parties').insert({
+  const db = await getDb();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  const partyDoc = {
+    id,
     unit_id: parsed.data.unit_id,
     title: parsed.data.title,
     party_date: parsed.data.party_date,
@@ -142,11 +126,25 @@ export async function createPartyAction(input: unknown): Promise<ActionResult> {
     host_profile_id: hostProfileId,
     expected_headcount: parsed.data.expected_headcount ?? null,
     budget_amount: parsed.data.budget_amount ?? 0,
+    budget_status: 'draft',
+    status: 'scheduled',
     notes: parsed.data.notes ?? null,
     created_by: user.id,
+    created_at: now,
+    updated_at: now,
+  };
+
+  await db.collection('mess_parties').insertOne(partyDoc);
+
+  await writeAudit({
+    table_name: 'mess_parties',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: user.id,
+    active_unit_id: parsed.data.unit_id,
+    new_data: partyDoc,
   });
 
-  if (error) return { error: error.message };
   revalidatePartySurfaces();
   return { ok: true };
 }
@@ -174,15 +172,24 @@ export async function submitPartyBudgetAction(input: unknown): Promise<ActionRes
   if (parsed.data.budget_amount != null) {
     patch.budget_amount = parsed.data.budget_amount;
   }
+  const now = new Date().toISOString();
+  patch.updated_at = now;
 
-  const supabase = await createClient();
-  const { error } = await asDb(supabase)
-    .from('mess_parties')
-    .update(patch)
-    .eq('id', owned.party.id)
-    .eq('unit_id', owned.party.unit_id);
+  const db = await getDb();
+  await db.collection('mess_parties').updateOne(
+    { id: owned.party.id, unit_id: owned.party.unit_id },
+    { $set: patch },
+  );
 
-  if (error) return { error: error.message };
+  await writeAudit({
+    table_name: 'mess_parties',
+    row_pk: owned.party.id,
+    op: 'UPDATE',
+    changed_by: owned.user.id,
+    active_unit_id: owned.party.unit_id,
+    new_data: patch,
+  });
+
   revalidatePartySurfaces();
   return { ok: true };
 }
@@ -205,19 +212,37 @@ export async function approvePartyBudgetAction(input: unknown): Promise<ActionRe
     return { error: 'Submit the budget before approving it.' };
   }
 
-  const supabase = await createClient();
-  const { error } = await asDb(supabase)
-    .from('mess_parties')
-    .update({
-      budget_status: 'approved',
-      approved_at: new Date().toISOString(),
-      approved_by: owned.user.id,
-    })
-    .eq('id', owned.party.id)
-    .eq('unit_id', owned.party.unit_id)
-    .eq('budget_status', 'submitted');
+  const now = new Date().toISOString();
+  const patch = {
+    budget_status: 'approved',
+    approved_at: now,
+    approved_by: owned.user.id,
+    updated_at: now,
+  };
 
-  if (error) return { error: error.message };
+  const db = await getDb();
+  const res = await db.collection('mess_parties').updateOne(
+    {
+      id: owned.party.id,
+      unit_id: owned.party.unit_id,
+      budget_status: 'submitted',
+    },
+    { $set: patch },
+  );
+
+  if (res.matchedCount === 0) {
+    return { error: 'Party budget could not be approved.' };
+  }
+
+  await writeAudit({
+    table_name: 'mess_parties',
+    row_pk: owned.party.id,
+    op: 'UPDATE',
+    changed_by: owned.user.id,
+    active_unit_id: owned.party.unit_id,
+    new_data: patch,
+  });
+
   revalidatePartySurfaces();
   return { ok: true };
 }
@@ -235,15 +260,30 @@ export async function addPartyGuestAction(input: unknown): Promise<ActionResult>
     return { error: 'Guests can only be added to a scheduled party.' };
   }
 
-  const supabase = await createClient();
-  const { error } = await asDb(supabase).from('mess_party_guests').insert({
+  const db = await getDb();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  const guestDoc = {
+    id,
     party_id: owned.party.id,
     guest_name: parsed.data.guest_name,
     notes: parsed.data.notes ?? null,
     created_by: owned.user.id,
+    created_at: now,
+  };
+
+  await db.collection('mess_party_guests').insertOne(guestDoc);
+
+  await writeAudit({
+    table_name: 'mess_party_guests',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: owned.user.id,
+    active_unit_id: owned.party.unit_id,
+    new_data: guestDoc,
   });
 
-  if (error) return { error: error.message };
   revalidatePartySurfaces();
   return { ok: true };
 }
@@ -261,8 +301,12 @@ export async function addPartyCostLineAction(input: unknown): Promise<ActionResu
     return { error: 'Cost lines can only be added to a scheduled party.' };
   }
 
-  const supabase = await createClient();
-  const { error } = await asDb(supabase).from('mess_party_cost_lines').insert({
+  const db = await getDb();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  const costLineDoc = {
+    id,
     party_id: owned.party.id,
     unit_id: owned.party.unit_id,
     category: parsed.data.category,
@@ -270,9 +314,20 @@ export async function addPartyCostLineAction(input: unknown): Promise<ActionResu
     description: parsed.data.description,
     amount: roundMoney(parsed.data.amount),
     created_by: owned.user.id,
+    created_at: now,
+  };
+
+  await db.collection('mess_party_cost_lines').insertOne(costLineDoc);
+
+  await writeAudit({
+    table_name: 'mess_party_cost_lines',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: owned.user.id,
+    active_unit_id: owned.party.unit_id,
+    new_data: costLineDoc,
   });
 
-  if (error) return { error: error.message };
   revalidatePartySurfaces();
   return { ok: true };
 }
@@ -295,7 +350,7 @@ export async function finalizePartyAction(input: unknown): Promise<ActionResult>
     return { error: 'A cancelled party cannot be finalised.' };
   }
 
-  const supabase = await createClient();
+  const db = await getDb();
   const now = new Date().toISOString();
 
   if (owned.party.party_type === 'individual') {
@@ -304,23 +359,23 @@ export async function finalizePartyAction(input: unknown): Promise<ActionResult>
       return { error: 'Individual parties need a host before they can be finalised.' };
     }
 
-    const { data: lines, error: linesError } = await asDb(supabase)
-      .from('mess_party_cost_lines')
-      .select('amount, funding')
-      .eq('party_id', owned.party.id)
-      .eq('unit_id', owned.party.unit_id);
-
-    if (linesError) return { error: linesError.message };
+    const lines = await db
+      .collection('mess_party_cost_lines')
+      .find({
+        party_id: owned.party.id,
+        unit_id: owned.party.unit_id,
+      })
+      .toArray();
 
     const hostTotal = roundMoney(
       (lines ?? [])
-        .filter((line) => String(line.funding) === 'host')
-        .reduce((sum, line) => sum + Number(line.amount ?? 0), 0),
+        .filter((line: any) => String(line.funding) === 'host')
+        .reduce((sum: number, line: any) => sum + Number(line.amount ?? 0), 0),
     );
 
     if (hostTotal > 0) {
       const charged = await upsertHostPartyCharge({
-        supabase,
+        db,
         unitId: owned.party.unit_id,
         profileId: hostId,
         partyDate: owned.party.party_date,
@@ -332,28 +387,39 @@ export async function finalizePartyAction(input: unknown): Promise<ActionResult>
     }
   }
 
-  const { data: updated, error } = await asDb(supabase)
-    .from('mess_parties')
-    .update({
-      status: 'completed',
-      finalized_at: now,
-      finalized_by: owned.user.id,
-    })
-    .eq('id', owned.party.id)
-    .eq('unit_id', owned.party.unit_id)
-    .eq('status', 'scheduled')
-    .select('id')
-    .maybeSingle();
+  const patch = {
+    status: 'completed',
+    finalized_at: now,
+    finalized_by: owned.user.id,
+    updated_at: now,
+  };
 
-  if (error) return { error: error.message };
-  if (!updated) return { error: 'Party could not be finalised.' };
+  const res = await db.collection('mess_parties').updateOne(
+    {
+      id: owned.party.id,
+      unit_id: owned.party.unit_id,
+      status: 'scheduled',
+    },
+    { $set: patch },
+  );
+
+  if (res.matchedCount === 0) return { error: 'Party could not be finalised.' };
+
+  await writeAudit({
+    table_name: 'mess_parties',
+    row_pk: owned.party.id,
+    op: 'UPDATE',
+    changed_by: owned.user.id,
+    active_unit_id: owned.party.unit_id,
+    new_data: patch,
+  });
 
   revalidatePartySurfaces();
   return { ok: true };
 }
 
 async function upsertHostPartyCharge(args: {
-  supabase: Awaited<ReturnType<typeof createClient>>;
+  db: Db;
   unitId: string;
   profileId: string;
   partyDate: string;
@@ -361,41 +427,60 @@ async function upsertHostPartyCharge(args: {
   amount: number;
   createdBy: string;
 }): Promise<ActionResult> {
-  const { supabase, unitId, profileId, partyDate, description, amount, createdBy } = args;
+  const { db, unitId, profileId, partyDate, description, amount, createdBy } = args;
 
-  const { data: existing, error: findError } = await supabase
-    .from('mess_party_charges')
-    .select('id, is_billed')
-    .eq('unit_id', unitId)
-    .eq('profile_id', profileId)
-    .eq('party_date', partyDate)
-    .eq('description', description)
-    .maybeSingle();
-
-  if (findError) return { error: findError.message };
+  const existing = await db.collection('mess_party_charges').findOne({
+    unit_id: unitId,
+    profile_id: profileId,
+    party_date: partyDate,
+    description,
+  });
 
   if (existing?.is_billed) {
     return { error: 'This host charge is already on a published bill.' };
   }
 
+  const now = new Date().toISOString();
   if (existing) {
-    const { error } = await supabase
-      .from('mess_party_charges')
-      .update({ amount })
-      .eq('id', existing.id)
-      .eq('is_billed', false);
-    if (error) return { error: error.message };
+    await db.collection('mess_party_charges').updateOne(
+      { id: existing.id, is_billed: { $ne: true } },
+      { $set: { amount, updated_at: now } },
+    );
+    await writeAudit({
+      table_name: 'mess_party_charges',
+      row_pk: String(existing.id),
+      op: 'UPDATE',
+      changed_by: createdBy,
+      active_unit_id: unitId,
+      new_data: { amount, updated_at: now },
+    });
     return { ok: true };
   }
 
-  const { error } = await supabase.from('mess_party_charges').insert({
+  const id = crypto.randomUUID();
+  const chargeDoc = {
+    id,
     unit_id: unitId,
     profile_id: profileId,
     party_date: partyDate,
     description,
     amount,
+    is_billed: false,
     created_by: createdBy,
+    created_at: now,
+    updated_at: now,
+  };
+
+  await db.collection('mess_party_charges').insertOne(chargeDoc);
+
+  await writeAudit({
+    table_name: 'mess_party_charges',
+    row_pk: id,
+    op: 'INSERT',
+    changed_by: createdBy,
+    active_unit_id: unitId,
+    new_data: chargeDoc,
   });
-  if (error) return { error: error.message };
+
   return { ok: true };
 }

@@ -11,12 +11,12 @@ export async function listUnitBulletins(unitId: string, limit = 20): Promise<Uni
     .limit(limit)
     .toArray();
 
-  return docs.map((doc: Record<string, unknown>) => ({
+  return docs.map((doc: any) => ({
     id: String(doc.id),
     unit_id: String(doc.unit_id),
     title: String(doc.title),
     body: String(doc.body),
     published_at: String(doc.published_at),
-    created_by: doc.created_by ?? null,
+    created_by: doc.created_by ? String(doc.created_by) : null,
   }));
 }

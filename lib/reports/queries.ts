@@ -72,18 +72,35 @@ export async function getUnitReport(
     rate: Number(row.rate_per_diner),
   }));
 
-  const barSalesTotal = barDocs.reduce(
-    (sum: number, row: unknown) => sum + Number(row.total_amount ?? 0),
+type BarChitDoc = {
+  total_amount?: number | null;
+};
+
+type RoomBillDoc = {
+  total_amount?: number | null;
+  payment_status?: string | null;
+  status?: string | null;
+  paid_at?: string | null;
+  updated_at?: string | null;
+};
+
+  const barSalesTotal = (barDocs as unknown as BarChitDoc[]).reduce(
+    (sum: number, row: BarChitDoc) => sum + Number(row.total_amount ?? 0),
     0,
   );
 
   const settled = new Set<string>(SETTLED_ROOM_STATUSES);
-  const guestRoomRevenue = roomsDocs.reduce((sum: number, row: unknown) => {
-    if (!settled.has(row.payment_status) && !settled.has(row.status)) return sum;
-    const settledOn = isoDatePrefix(row.paid_at) ?? isoDatePrefix(row.updated_at);
-    if (!inInclusiveRange(settledOn, start, end)) return sum;
-    return sum + Number(row.total_amount ?? 0);
-  }, 0);
+  const guestRoomRevenue = (roomsDocs as unknown as RoomBillDoc[]).reduce(
+    (sum: number, row: RoomBillDoc) => {
+      const paymentStatus = row.payment_status ?? '';
+      const status = row.status ?? '';
+      if (!settled.has(paymentStatus) && !settled.has(status)) return sum;
+      const settledOn = isoDatePrefix(row.paid_at) ?? isoDatePrefix(row.updated_at);
+      if (!inInclusiveRange(settledOn, start, end)) return sum;
+      return sum + Number(row.total_amount ?? 0);
+    },
+    0,
+  );
 
   // Issued − returned in the window, valued at each variant's last receipt rate
   // as of `end` (receipts before the window still set the rate).

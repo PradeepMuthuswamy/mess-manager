@@ -34,7 +34,7 @@ export default async function AcceptInvitePage({
       </div>
       <AcceptInviteForm
         token={token}
-        initialFullName={verification.metadata?.fullName}
+        initialFullName={typeof verification.metadata?.fullName === 'string' ? verification.metadata.fullName : undefined}
       />
     </div>
   );

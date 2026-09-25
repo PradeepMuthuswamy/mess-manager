@@ -108,7 +108,7 @@ export default async function CalendarPage({
           <CardContent>
             <EventForm
               unitId={unitId}
-              members={(members ?? []).map((member) => ({
+              members={(members ?? []).map((member: { id: string; full_name: string | null; email: string | null; service_no: string | null }) => ({
                 id: member.id,
                 name: member.full_name ?? member.email ?? 'Member',
                 email: member.email,

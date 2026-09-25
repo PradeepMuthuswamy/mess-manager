@@ -8,6 +8,7 @@ import {
   CATEGORY_META,
   slugFromCategory,
   type Category,
+  type InventoryCategory,
 } from '@/lib/masters/categories';
 import type { MasterItemPick } from '@/lib/stock/types';
 
@@ -15,7 +16,7 @@ export const dynamic = 'force-dynamic';
 
 // Grocery stock is hard-locked to the `grocery` stockable category — this
 // module's own nav replaces the shared /stock category tab strip.
-const GROCERY_CATEGORY: Category = 'grocery';
+const GROCERY_CATEGORY: InventoryCategory = 'grocery';
 
 const INVENTORY_READ = 'inventory.read';
 const INVENTORY_WRITE = 'inventory.write';

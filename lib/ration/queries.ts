@@ -6,6 +6,9 @@ import { rankClassForMessType } from './mess-type';
 import type {
   RationScale,
   RationScaleRow,
+  RationScaleItemVersion,
+  RationConsumption,
+  RationStockTransaction,
   RationScaleItemCurrentRow,
   RationScaleListItem,
   RationClass,
@@ -200,8 +203,8 @@ export async function listScales(opts: ListScalesOpts): Promise<RationScaleListI
   const scales = await col.find(filter).sort({ rank_class: 1, terrain: 1, name: 1 }).toArray();
   if (!scales || scales.length === 0) return [];
 
-  const scaleIds = scales.map((s) => s.id);
-  const versionsCol = await getCollection('ration_scale_item_versions');
+  const scaleIds = scales.map((s: { id: string }) => s.id);
+  const versionsCol = await getCollection<RationScaleItemVersion>('ration_scale_item_versions');
   const currentItems = await versionsCol
     .find({
       scale_id: { $in: scaleIds },
@@ -216,7 +219,7 @@ export async function listScales(opts: ListScalesOpts): Promise<RationScaleListI
     counts.set(String(row.scale_id), (counts.get(String(row.scale_id)) ?? 0) + 1);
   }
 
-  return scales.map((s) => ({
+  return scales.map((s: RationScale) => ({
     id: s.id,
     unit_id: s.unit_id ?? null,
     name: s.name,
@@ -328,7 +331,7 @@ export async function listScaleItemsCurrent(
     { $sort: { 'product.name': 1 } },
   ];
 
-  const rows = await db.collection('ration_scale_item_versions').aggregate(pipeline).toArray();
+  const rows = (await db.collection('ration_scale_item_versions').aggregate(pipeline).toArray()) as unknown as PipelineDoc[];
 
   return rows.map((doc: PipelineDoc) => ({
     version_id: String(doc.id),
@@ -360,7 +363,7 @@ export async function listEligibleItems(unitId: string, q?: string): Promise<Eli
     '00000000-0000-0000-0000-000000000005', // ration
     '00000000-0000-0000-0000-000000000006', // grocery
   ];
-  const matchedCats = await categoriesCol
+  const matchedCats = (await categoriesCol
     .find({
       $or: [
         { id: { $in: catIds } },
@@ -370,7 +373,7 @@ export async function listEligibleItems(unitId: string, q?: string): Promise<Eli
       ],
     })
     .project({ id: 1, name: 1, slug: 1 })
-    .toArray();
+    .toArray()) as unknown as MatchedCatDoc[];
 
   const allowedCatIds = matchedCats.map((c: MatchedCatDoc) => String(c.id));
   const finalCatIds = allowedCatIds.length > 0 ? allowedCatIds : catIds;
@@ -408,7 +411,7 @@ export async function listEligibleItems(unitId: string, q?: string): Promise<Eli
     { $limit: 200 },
   ];
 
-  const items = await db.collection('products').aggregate(pipeline).toArray();
+  const items = (await db.collection('products').aggregate(pipeline).toArray()) as unknown as EligibleItemDoc[];
 
   return items.map((r: EligibleItemDoc) => ({
     id: String(r.variants.id),
@@ -446,7 +449,7 @@ export async function getDailyRationConsumption(
 
   const scaleItems = await listScaleItemsCurrent(scale.id);
 
-  const consCol = await getCollection('ration_consumptions');
+  const consCol = await getCollection<RationConsumption>('ration_consumptions');
   const consumptions = await consCol
     .find({ unit_id: unitId, consumption_date: date })
     .toArray();
@@ -486,7 +489,7 @@ export async function getDailyRationConsumption(
 
 export async function getRationStockReport(unitId: string): Promise<RationStockReportRow[]> {
   const eligibleItems = await listEligibleItems(unitId);
-  const txCol = await getCollection('ration_stock_transactions');
+  const txCol = await getCollection<RationStockTransaction>('ration_stock_transactions');
   const txs = await txCol.find({ unit_id: unitId }).toArray();
 
   const txMap = new Map<string, LedgerAgg>();
@@ -542,7 +545,7 @@ export async function listRationStockTransactions(
     { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
   ];
 
-  const txs = await db.collection('ration_stock_transactions').aggregate(pipeline).toArray();
+  const txs = (await db.collection('ration_stock_transactions').aggregate(pipeline).toArray()) as unknown as TxDoc[];
 
   return txs.map((d: TxDoc) => ({
     id: String(d.id),

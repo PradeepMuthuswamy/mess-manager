@@ -1,5 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { Role, Capability } from '@/lib/auth/types';
+import type { UserRow } from '@/lib/users/types';
 import type { RootState } from '../store';
 
 export type UserFormFields = {
@@ -16,7 +17,7 @@ export type UserFormFields = {
 export type UsersUiState = {
   isFormOpen: boolean;
   isEditing: boolean;
-  editingUser: unknown | null;
+  editingUser: UserRow | null;
   form: UserFormFields;
   error: string | null;
 };
@@ -60,7 +61,7 @@ export const usersSlice = createSlice({
         unitId: action.payload.activeUnitId,
       };
     },
-    openEdit: (state, action: PayloadAction<{ user: unknown }>) => {
+    openEdit: (state, action: PayloadAction<{ user: UserRow }>) => {
       const { user } = action.payload;
       state.ui.isFormOpen = true;
       state.ui.isEditing = true;
@@ -73,7 +74,7 @@ export const usersSlice = createSlice({
         serviceNo: user.service_no || '',
         role: user.role as Role,
         unitId: user.unit_id,
-        selectedCapabilities: (user.user_capabilities || []).map((uc: Record<string, unknown>) => uc.capability as Capability),
+        selectedCapabilities: (user.user_capabilities || []).map((uc) => uc.capability as Capability),
         selectedTemplateId: '',
       };
     },

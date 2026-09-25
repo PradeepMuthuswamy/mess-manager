@@ -89,8 +89,9 @@ export type GrantedCapability = { capability: Capability; unitId: string | null 
 import type { CurrentUser } from './get-current-user';
 
 export type AuthUser = CurrentUser;
+export type AppUser = CurrentUser;
 export type { CurrentUser };
 
 export const ACTIVE_UNIT_COOKIE = 'active_unit_id';
 export type Session = typeof import('./auth').auth.$Infer.Session;
-export type User = typeof import('./auth').auth.$Infer.User;
+export type User = typeof import('./auth').auth.$Infer.Session.user;

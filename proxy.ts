@@ -3,7 +3,6 @@ import { auth } from '@/lib/auth/auth';
 import { AUTH_FLOW_GATE_COOKIE, isGatePath } from '@/lib/auth/flow-gate';
 
 export const config = {
-  runtime: 'nodejs',
   matcher: [
     // Skip Next internals + static assets + the auth callback/confirm/signout endpoints
     '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|auth/callback|auth/confirm|auth/signout).*)',

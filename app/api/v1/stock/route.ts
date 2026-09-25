@@ -5,7 +5,7 @@ import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
 import { createLotSchema, listInventoryQuerySchema } from '@/lib/schemas/inventory';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
-import { listInventory } from '@/lib/inventory/queries';
+import { listInventory } from '@/lib/stock/queries';
 import { getCollection } from '@/lib/mongo';
 import { writeAudit } from '@/lib/audit/write-audit';
 

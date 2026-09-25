@@ -23,9 +23,9 @@ async function listAdoptedVariantIds(unitId: string): Promise<CatalogAdoption[]>
     .project({ variant_id: 1, local_sku: 1 })
     .toArray();
 
-  return docs.map((doc: import("mongodb").Document) => ({
-    variant_id: doc.variant_id,
-    local_sku: doc.local_sku ?? null,
+  return docs.map((doc: any) => ({
+    variant_id: String(doc.variant_id),
+    local_sku: doc.local_sku ? String(doc.local_sku) : null,
   }));
 }
 
@@ -307,7 +307,15 @@ export async function listBarChits(unitId: string): Promise<BarChitRow[]> {
   })) as unknown as BarChitRow[];
 }
 
-export async function listUnitMembers(unitId: string) {
+export type UnitMember = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  rank: string | null;
+  service_no: string | null;
+};
+
+export async function listUnitMembers(unitId: string): Promise<UnitMember[]> {
   const db = await getDb();
   const members = await db
     .collection('profiles')
@@ -316,12 +324,12 @@ export async function listUnitMembers(unitId: string) {
     .sort({ full_name: 1 })
     .toArray();
 
-  return members.map((m: import("mongodb").Document) => ({
-    id: m.id,
-    full_name: m.full_name ?? null,
-    email: m.email ?? null,
-    rank: m.rank ?? null,
-    service_no: m.service_no ?? null,
+  return members.map((m: any) => ({
+    id: String(m.id),
+    full_name: m.full_name ? String(m.full_name) : null,
+    email: m.email ? String(m.email) : null,
+    rank: m.rank ? String(m.rank) : null,
+    service_no: m.service_no ? String(m.service_no) : null,
   }));
 }
 

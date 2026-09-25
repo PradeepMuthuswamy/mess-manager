@@ -95,7 +95,7 @@ export interface MongoCategory {
   _id?: unknown;
   id: string;
   name: string;
-  parent_id?: string | null;
+  parent_id: string | null;
   slug?: string;
 }
 

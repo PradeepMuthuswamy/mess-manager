@@ -1,14 +1,15 @@
 #!/usr/bin/env tsx
 /**
- * Bootstrap the first admin user.
+ * Bootstrap the first admin user in MongoDB.
  *
  * Usage:
  *   npm run bootstrap-admin -- <email> <password> [full_name]
  *
- * Reads NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from .env.local.
- * Re-running with the same email is a no-op (idempotent).
+ * Reads MONGODB_URI from .env.local.
+ * Re-running with the same email updates password & role to super_admin (idempotent).
  */
-import { createClient } from '@supabase/supabase-js';
+import { MongoClient } from 'mongodb';
+import { hashPassword } from 'better-auth/crypto';
 
 async function main() {
   const [, , email, password, ...nameParts] = process.argv;
@@ -19,60 +20,84 @@ async function main() {
     process.exit(1);
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url) {
-    console.error('NEXT_PUBLIC_SUPABASE_URL is not set');
-    process.exit(1);
-  }
-  if (!serviceKey) {
-    console.error('SUPABASE_SERVICE_ROLE_KEY is not set. Required to create users via the admin API.');
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) {
+    console.error('MONGODB_URI is not set in environment.');
     process.exit(1);
   }
 
-  const admin = createClient(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
+  const client = new MongoClient(mongoUri);
+  await client.connect();
+  const db = client.db();
+
+  const now = new Date();
+  const normalizedEmail = email.toLowerCase().trim();
+  const hashedPassword = await hashPassword(password);
+
+  const existingUser = await db.collection('users').findOne({ email: normalizedEmail });
 
   let userId: string;
 
-  const { data: existing } = await admin.auth.admin.listUsers();
-  const match = existing?.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
-  if (match) {
-    userId = match.id;
-    console.log(`User ${email} already exists (${userId}). Promoting to admin...`);
+  if (existingUser) {
+    userId = existingUser.id || existingUser._id.toString();
+    console.log(`User ${email} already exists (${userId}). Promoting to super_admin...`);
+    await db.collection('users').updateOne(
+      { email: normalizedEmail },
+      {
+        $set: {
+          role: 'super_admin',
+          unit_id: null,
+          home_unit_id: null,
+          full_name: fullName || existingUser.full_name || existingUser.name,
+          status: 'active',
+          emailVerified: true,
+          updated_at: now.toISOString(),
+          updatedAt: now,
+        },
+      }
+    );
   } else {
-    const { data: created, error: cErr } = await admin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: {
-        role: 'super_admin',
-        ...(fullName ? { full_name: fullName } : {}),
-      },
-    });
-    if (cErr || !created.user) {
-      console.error('Could not create user:', cErr?.message);
-      process.exit(1);
-    }
-    userId = created.user.id;
-    console.log(`Created user ${email} (${userId}).`);
-  }
-
-  const { error: upErr } = await admin
-    .from('profiles')
-    .update({
+    userId = crypto.randomUUID();
+    console.log(`Creating user ${email} (${userId})...`);
+    await db.collection('users').insertOne({
+      id: userId,
+      email: normalizedEmail,
+      name: fullName || email.split('@')[0],
+      full_name: fullName,
       role: 'super_admin',
       unit_id: null,
-      full_name: fullName ?? undefined,
-    })
-    .eq('id', userId);
-  if (upErr) {
-    console.error('Could not promote profile to admin:', upErr.message);
-    process.exit(1);
+      home_unit_id: null,
+      status: 'active',
+      emailVerified: true,
+      capabilities: ['*'],
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
-  console.log(`✓ ${email} is now admin.`);
+  // Also upsert credential account for Better Auth
+  await db.collection('accounts').updateOne(
+    { userId, providerId: 'credential' },
+    {
+      $set: {
+        userId,
+        accountId: normalizedEmail,
+        providerId: 'credential',
+        password: hashedPassword,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        id: crypto.randomUUID(),
+        createdAt: now,
+      },
+    },
+    { upsert: true }
+  );
+
+  console.log(`✓ ${email} is now super_admin.`);
+  await client.close();
 }
 
 main().catch((err) => {

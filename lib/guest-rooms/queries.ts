@@ -34,10 +34,12 @@ import type {
   RoomCurrentStatus,
 } from './types';
 
-function cleanDoc<T>(doc: Document | null | undefined): T {
-  if (!doc) return doc;
+function cleanDoc<T>(doc: Document): T;
+function cleanDoc<T>(doc: Document | null | undefined): T | null;
+function cleanDoc<T>(doc: Document | null | undefined): T | null {
+  if (!doc) return null;
   const { _id, ...rest } = doc;
-  return { ...rest, id: rest.id || _id?.toString() } as T;
+  return { ...rest, id: rest.id || _id?.toString() } as unknown as T;
 }
 
 type RawBillLines = {

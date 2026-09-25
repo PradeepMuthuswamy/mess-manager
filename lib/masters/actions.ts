@@ -1,9 +1,9 @@
 'use server';
 
-
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/mongo';
 import { requireCapability, userHasCapability } from '@/lib/auth/require-capability';
+import { directSetRationScaleItem } from '@/lib/ration/actions';
 import {
   updateProductSchema,
   updateVariantSchema,
@@ -16,10 +16,22 @@ import {
 import { bulkImportRowSchema, type BulkImportRow } from './bulk-import';
 import type { Category } from './categories';
 import type { AuthUser } from '@/lib/auth/types';
-import type { Database } from '@/lib/supabase/database.types';
 
-type ProductUpdate = Database['public']['Tables']['products']['Update'];
-type VariantUpdate = Database['public']['Tables']['product_variants']['Update'];
+type ProductUpdate = {
+  name?: string;
+  name_normalized?: string;
+  description?: string | null;
+  updated_at?: string;
+};
+
+type VariantUpdate = {
+  sku?: string | null;
+  is_active?: boolean;
+  unit_value?: number;
+  unit_type?: 'ML' | 'LITRE' | 'GRAM' | 'KG' | 'PIECE';
+  package_type?: 'BOTTLE' | 'CAN' | 'PACKET' | 'BOX' | 'LOOSE';
+  updated_at?: string;
+};
 
 type ActionResult = {
   ok?: boolean;
@@ -113,131 +125,153 @@ type VariantShape = {
 };
 
 async function findGlobalProduct(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   categoryId: string,
   name: string,
 ): Promise<{ id: string } | null> {
-  const { data } = await supabase
-    .from('products')
-    .select('id')
-    .eq('category_id', categoryId)
-    .eq('name_normalized', name.trim().toLowerCase())
-    .maybeSingle();
-  return data ?? null;
+  const db = await getDb();
+  const data = await db.collection('products').findOne({
+    category_id: categoryId,
+    name_normalized: name.trim().toLowerCase(),
+  });
+  if (!data) return null;
+  return { id: String(data.id || data._id) };
 }
 
 async function findMatchingVariant(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   productId: string,
   shape: VariantShape,
 ): Promise<{ id: string } | null> {
+  const db = await getDb();
   if (shape.sku) {
-    const { data: bySku } = await supabase
-      .from('product_variants')
-      .select('id')
-      .eq('product_id', productId)
-      .eq('sku', shape.sku)
-      .maybeSingle();
-    if (bySku) return bySku;
+    const bySku = await db.collection('product_variants').findOne({
+      product_id: productId,
+      sku: shape.sku,
+    });
+    if (bySku) return { id: String(bySku.id || bySku._id) };
   }
 
-  const { data: byIdentity } = await supabase
-    .from('product_variants')
-    .select('id')
-    .eq('product_id', productId)
-    .eq('unit_value', shape.unit_value)
-    .eq('unit_type', shape.unit_type)
-    .eq('package_type', shape.package_type)
-    .maybeSingle();
-  if (byIdentity) return byIdentity;
+  const byIdentity = await db.collection('product_variants').findOne({
+    product_id: productId,
+    unit_value: shape.unit_value,
+    unit_type: shape.unit_type,
+    package_type: shape.package_type,
+  });
+  if (byIdentity) return { id: String(byIdentity.id || byIdentity._id) };
 
-  const { data: only } = await supabase
-    .from('product_variants')
-    .select('id')
-    .eq('product_id', productId);
-  if (only?.length === 1) return only[0];
+  const only = await db.collection('product_variants').find({ product_id: productId }).toArray();
+  if (only?.length === 1) return { id: String(only[0].id || only[0]._id) };
   return null;
 }
 
 async function insertGlobalProduct(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   input: { category_id: string; name: string; description?: string | null },
 ): Promise<{ id: string } | { error: string }> {
-  const { data, error } = await supabase
-    .from('products')
-    .insert({
+  const db = await getDb();
+  const nameNormalized = input.name.trim().toLowerCase();
+  const existing = await db.collection('products').findOne({
+    category_id: input.category_id,
+    name_normalized: nameNormalized,
+  });
+  if (existing) {
+    return { id: String(existing.id || existing._id) };
+  }
+
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  try {
+    await db.collection('products').insertOne({
+      id,
       category_id: input.category_id,
       name: input.name,
+      name_normalized: nameNormalized,
       description: input.description ?? null,
-    })
-    .select('id')
-    .single();
-
-  if (error?.code === '23505') {
-    const existing = await findGlobalProduct(supabase, input.category_id, input.name);
-    if (existing) return existing;
+      created_at: now,
+      updated_at: now,
+    });
+    return { id };
+  } catch (err: unknown) {
+    const existingAfter = await findGlobalProduct(input.category_id, input.name);
+    if (existingAfter) return existingAfter;
+    return { error: err instanceof Error ? err.message : 'Could not create product' };
   }
-  if (error || !data) return { error: error?.message ?? 'Could not create product' };
-  return data;
 }
 
 async function insertGlobalVariant(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   productId: string,
   shape: VariantShape,
 ): Promise<{ id: string } | { error: string }> {
-  const { data, error } = await supabase
-    .from('product_variants')
-    .insert({
+  const db = await getDb();
+  const existing = await findMatchingVariant(productId, shape);
+  if (existing) return existing;
+
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  try {
+    await db.collection('product_variants').insertOne({
+      id,
       product_id: productId,
       unit_value: shape.unit_value,
       unit_type: shape.unit_type,
       package_type: shape.package_type,
       sku: shape.sku ?? null,
-    })
-    .select('id')
-    .single();
-
-  if (error?.code === '23505') {
-    const existing = await findMatchingVariant(supabase, productId, shape);
-    if (existing) return existing;
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    });
+    return { id };
+  } catch (err: unknown) {
+    const existingAfter = await findMatchingVariant(productId, shape);
+    if (existingAfter) return existingAfter;
+    return { error: err instanceof Error ? err.message : 'Could not create variant' };
   }
-  if (error || !data) return { error: error?.message ?? 'Could not create variant' };
-  return data;
 }
 
 async function upsertUnitCatalog(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   input: { unit_id: string; variant_id: string; local_sku?: string | null; is_enabled?: boolean },
 ): Promise<{ error?: string }> {
-  const { error } = await supabase.from('unit_catalog').upsert(
-    {
-      unit_id: input.unit_id,
-      variant_id: input.variant_id,
-      is_enabled: input.is_enabled ?? true,
-      local_sku: input.local_sku ?? null,
-    },
-    { onConflict: 'unit_id,variant_id' },
-  );
-  return error ? { error: error.message } : {};
+  try {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    await db.collection('unit_catalog').updateOne(
+      { unit_id: input.unit_id, variant_id: input.variant_id },
+      {
+        $set: {
+          is_enabled: input.is_enabled ?? true,
+          local_sku: input.local_sku ?? null,
+          updated_at: now,
+        },
+        $setOnInsert: {
+          id: crypto.randomUUID(),
+          unit_id: input.unit_id,
+          variant_id: input.variant_id,
+          created_at: now,
+        },
+      },
+      { upsert: true },
+    );
+    return {};
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : 'Failed to update unit catalog' };
+  }
 }
 
 async function persistImportRate(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   input: {
     unitId: string;
     variantId: string;
     category: Category;
     row: BulkImportRow;
+    userId?: string;
   },
 ): Promise<{ error?: string }> {
+  const db = await getDb();
+
   if (input.category === 'ration') {
-    const { data: scales, error: scaleErr } = await supabase
-      .from('ration_scales')
-      .select('id')
-      .eq('unit_id', input.unitId)
-      .eq('is_active', true);
-    if (scaleErr) return { error: scaleErr.message };
+    const scales = await db.collection('ration_scales').find({
+      unit_id: input.unitId,
+      is_active: true,
+    }).toArray();
+
     if (!scales || scales.length === 0) {
       return { error: 'No active ration scale for this unit' };
     }
@@ -245,15 +279,19 @@ async function persistImportRate(
     const qty = input.row.ration_scale ?? input.row.rate;
     const effective = new Date().toISOString();
     for (const scale of scales) {
-      const { error: rpcErr } = await supabase.rpc('set_ration_scale_item', {
-        p_scale_id: scale.id,
-        p_variant_id: input.variantId,
-        p_auth_qty: qty,
-        p_uom: input.row.uom,
-        ...(input.row.notes ? { p_notes: input.row.notes } : {}),
-        p_effective_at: effective,
-      });
-      if (rpcErr) return { error: rpcErr.message };
+      try {
+        await directSetRationScaleItem({
+          scaleId: String(scale.id || scale._id),
+          variantId: input.variantId,
+          authQty: qty,
+          uom: input.row.uom,
+          notes: input.row.notes ?? undefined,
+          effectiveAt: effective,
+          userId: input.userId || 'system',
+        });
+      } catch (err: unknown) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
     }
     return {};
   }
@@ -262,15 +300,20 @@ async function persistImportRate(
     return { error: `Cannot persist rate for category ${input.category}` };
   }
 
-  const { error } = await supabase.from('unit_inventory').insert({
+  const now = new Date().toISOString();
+  await db.collection('unit_inventory').insertOne({
+    id: crypto.randomUUID(),
     unit_id: input.unitId,
     variant_id: input.variantId,
     qty_packs: 0,
     rate: input.row.rate,
     acquired_on: todayIsoDate(),
     source: 'bulk_import',
+    is_active: true,
+    created_at: now,
+    updated_at: now,
   });
-  return error ? { error: error.message } : {};
+  return {};
 }
 
 export async function createGlobalProductAction(input: unknown): Promise<ActionResult> {
@@ -281,17 +324,17 @@ export async function createGlobalProductAction(input: unknown): Promise<ActionR
 
   await requireCapability('masters.write.global', null);
 
-  const supabase = await createClient();
-  const product = await insertGlobalProduct(supabase, {
+  const product = await insertGlobalProduct({
     category_id: parsed.data.category_id,
     name: parsed.data.name,
     description: parsed.data.description ?? null,
   });
   if ('error' in product) return { error: product.error };
 
-  const variant = await insertGlobalVariant(supabase, product.id, parsed.data.variant);
+  const variant = await insertGlobalVariant(product.id, parsed.data.variant);
   if ('error' in variant) {
-    await supabase.from('products').delete().eq('id', product.id);
+    const db = await getDb();
+    await db.collection('products').deleteOne({ id: product.id });
     return { error: variant.error };
   }
 
@@ -307,16 +350,11 @@ export async function adoptVariantAction(input: unknown): Promise<ActionResult> 
 
   await requireCapability('masters.write', parsed.data.unit_id);
 
-  const supabase = await createClient();
-  const { data: variant, error: varErr } = await supabase
-    .from('product_variants')
-    .select('id')
-    .eq('id', parsed.data.variant_id)
-    .maybeSingle();
-  if (varErr) return { error: varErr.message };
+  const db = await getDb();
+  const variant = await db.collection('product_variants').findOne({ id: parsed.data.variant_id });
   if (!variant) return { error: 'Variant not found' };
 
-  const adopted = await upsertUnitCatalog(supabase, parsed.data);
+  const adopted = await upsertUnitCatalog(parsed.data);
   if (adopted.error) return { error: adopted.error };
 
   revalidateMasters();
@@ -331,24 +369,18 @@ export async function unadoptVariantAction(input: unknown): Promise<ActionResult
 
   await requireCapability('masters.write', parsed.data.unit_id);
 
-  const supabase = await createClient();
+  const db = await getDb();
   if (parsed.data.hard) {
-    const { error } = await supabase
-      .from('unit_catalog')
-      .delete()
-      .eq('unit_id', parsed.data.unit_id)
-      .eq('variant_id', parsed.data.variant_id);
-    if (error) return { error: error.message };
+    await db.collection('unit_catalog').deleteOne({
+      unit_id: parsed.data.unit_id,
+      variant_id: parsed.data.variant_id,
+    });
   } else {
-    const { data, error } = await supabase
-      .from('unit_catalog')
-      .update({ is_enabled: false })
-      .eq('unit_id', parsed.data.unit_id)
-      .eq('variant_id', parsed.data.variant_id)
-      .select('id')
-      .maybeSingle();
-    if (error) return { error: error.message };
-    if (!data) return { error: 'Adoption not found' };
+    const res = await db.collection('unit_catalog').updateOne(
+      { unit_id: parsed.data.unit_id, variant_id: parsed.data.variant_id },
+      { $set: { is_enabled: false, updated_at: new Date().toISOString() } },
+    );
+    if (res.matchedCount === 0) return { error: 'Adoption not found' };
   }
 
   revalidateMasters();
@@ -363,17 +395,29 @@ export async function setUnitMenuRateAction(input: unknown): Promise<ActionResul
 
   await requireCapability('masters.write', parsed.data.unit_id);
 
-  const supabase = await createClient();
-  const { error } = await supabase.from('unit_menu_rates').upsert(
+  const db = await getDb();
+  const now = new Date().toISOString();
+  await db.collection('unit_menu_rates').updateOne(
     {
       unit_id: parsed.data.unit_id,
       variant_id: parsed.data.variant_id,
-      rate: parsed.data.rate,
       effective_from: parsed.data.effective_from,
     },
-    { onConflict: 'unit_id,variant_id,effective_from' },
+    {
+      $set: {
+        rate: parsed.data.rate,
+        updated_at: now,
+      },
+      $setOnInsert: {
+        id: crypto.randomUUID(),
+        unit_id: parsed.data.unit_id,
+        variant_id: parsed.data.variant_id,
+        effective_from: parsed.data.effective_from,
+        created_at: now,
+      },
+    },
+    { upsert: true },
   );
-  if (error) return { error: error.message };
 
   revalidateMasters();
   return { ok: true };
@@ -399,8 +443,7 @@ export async function createMasterItemAction(_prev: unknown, formData: FormData)
         return { error: 'variant_id is required to adopt a catalog item' };
       }
 
-      const supabase = await createClient();
-      const product = await findGlobalProduct(supabase, category_id, name);
+      const product = await findGlobalProduct(category_id, name);
       if (!product) {
         return {
           error: `No global product named "${name}". Ops cannot create products — ask Admin to add it, then adopt.`,
@@ -417,7 +460,7 @@ export async function createMasterItemAction(_prev: unknown, formData: FormData)
             sku: formString(formData, 'sku'),
           };
 
-      const variant = await findMatchingVariant(supabase, product.id, shape);
+      const variant = await findMatchingVariant(product.id, shape);
       if (!variant) {
         return {
           error: `No matching variant for "${name}". Ops cannot create variants — ask Admin to add it, then adopt.`,
@@ -445,8 +488,8 @@ export async function createMasterItemAction(_prev: unknown, formData: FormData)
     ? mapUomToVariant(uom)
     : {
         unit_value: Number(formData.get('unit_value') ?? 1.0),
-        unit_type: String(formData.get('unit_type') ?? 'PIECE'),
-        package_type: String(formData.get('package_type') ?? 'LOOSE'),
+        unit_type: String(formData.get('unit_type') ?? 'PIECE') as VariantShape['unit_type'],
+        package_type: String(formData.get('package_type') ?? 'LOOSE') as VariantShape['package_type'],
       };
 
   return createGlobalProductAction({
@@ -471,19 +514,11 @@ export async function updateMasterItemAction(_prev: unknown, formData: FormData)
   const globalWrite = canWriteGlobal(user);
   const effectiveUnit = resolveActorUnit(user, unit_id);
 
-  const supabase = await createClient();
-  const { data: variantRow } = await supabase
-    .from('product_variants')
-    .select('id, product_id')
-    .eq('id', id)
-    .single();
+  const db = await getDb();
+  const variantRow = await db.collection('product_variants').findOne({ id });
   if (!variantRow) return { error: 'Variant not found' };
 
-  const { data: productRow } = await supabase
-    .from('products')
-    .select('id, category_id')
-    .eq('id', variantRow.product_id)
-    .single();
+  const productRow = await db.collection('products').findOne({ id: variantRow.product_id });
   if (!productRow) return { error: 'Product not found' };
 
   if (effectiveUnit) {
@@ -497,26 +532,12 @@ export async function updateMasterItemAction(_prev: unknown, formData: FormData)
     if (is_enabled !== undefined) catalogPatch.is_enabled = is_enabled;
 
     if (Object.keys(catalogPatch).length > 0) {
-      const { data: existing } = await supabase
-        .from('unit_catalog')
-        .select('id')
-        .eq('unit_id', effectiveUnit)
-        .eq('variant_id', variantRow.id)
-        .maybeSingle();
-      if (existing) {
-        const { error: catErr } = await supabase
-          .from('unit_catalog')
-          .update(catalogPatch)
-          .eq('id', existing.id);
-        if (catErr) return { error: catErr.message };
-      } else {
-        const adopted = await upsertUnitCatalog(supabase, {
-          unit_id: effectiveUnit,
-          variant_id: variantRow.id,
-          ...catalogPatch,
-        });
-        if (adopted.error) return { error: adopted.error };
-      }
+      const adopted = await upsertUnitCatalog({
+        unit_id: effectiveUnit,
+        variant_id: variantRow.id,
+        ...catalogPatch,
+      });
+      if (adopted.error) return { error: adopted.error };
     }
 
     const rateRaw = formString(formData, 'rate');
@@ -558,8 +579,12 @@ export async function updateMasterItemAction(_prev: unknown, formData: FormData)
     return { ok: true };
   }
 
+  const now = new Date().toISOString();
   const productUpdate: ProductUpdate = {};
-  if (name !== undefined) productUpdate.name = name;
+  if (name !== undefined) {
+    productUpdate.name = name;
+    productUpdate.name_normalized = name.trim().toLowerCase();
+  }
   if (description !== undefined) productUpdate.description = description;
 
   const productParsed = updateProductSchema.safeParse(productUpdate);
@@ -568,11 +593,8 @@ export async function updateMasterItemAction(_prev: unknown, formData: FormData)
   }
 
   if (Object.keys(productUpdate).length > 0) {
-    const { error: prodUpErr } = await supabase
-      .from('products')
-      .update(productUpdate)
-      .eq('id', productRow.id);
-    if (prodUpErr) return { error: prodUpErr.message };
+    productUpdate.updated_at = now;
+    await db.collection('products').updateOne({ id: productRow.id }, { $set: productUpdate });
   }
 
   const sku = formData.get('sku') !== null && formData.get('sku') !== undefined
@@ -609,11 +631,8 @@ export async function updateMasterItemAction(_prev: unknown, formData: FormData)
   }
 
   if (Object.keys(variantUpdate).length > 0) {
-    const { error: varUpErr } = await supabase
-      .from('product_variants')
-      .update(variantUpdate)
-      .eq('id', variantRow.id);
-    if (varUpErr) return { error: varUpErr.message };
+    variantUpdate.updated_at = now;
+    await db.collection('product_variants').updateOne({ id: variantRow.id }, { $set: variantUpdate });
   }
 
   revalidateMasters();
@@ -635,7 +654,6 @@ export async function bulkImportMasterItemsAction(input: {
     : await requireCapability('masters.write.global', null);
   const globalWrite = canWriteGlobal(user);
 
-  const supabase = await createClient();
   const result: BulkImportResult = {
     total: input.rows.length,
     inserted: 0,
@@ -661,7 +679,7 @@ export async function bulkImportMasterItemsAction(input: {
     const row: BulkImportRow = parsed.data;
     const variantShape: VariantShape = { ...mapUomToVariant(row.uom), sku: row.sku ?? null };
 
-    let product = await findGlobalProduct(supabase, categoryId, row.name);
+    let product = await findGlobalProduct(categoryId, row.name);
     if (!product) {
       if (!globalWrite) {
         result.failed++;
@@ -672,7 +690,7 @@ export async function bulkImportMasterItemsAction(input: {
         });
         continue;
       }
-      const created = await insertGlobalProduct(supabase, {
+      const created = await insertGlobalProduct({
         category_id: categoryId,
         name: row.name,
         description: row.notes ?? null,
@@ -685,7 +703,7 @@ export async function bulkImportMasterItemsAction(input: {
       product = created;
     }
 
-    let variant = await findMatchingVariant(supabase, product.id, variantShape);
+    let variant = await findMatchingVariant(product.id, variantShape);
     if (!variant) {
       if (!globalWrite) {
         result.failed++;
@@ -696,7 +714,7 @@ export async function bulkImportMasterItemsAction(input: {
         });
         continue;
       }
-      const created = await insertGlobalVariant(supabase, product.id, variantShape);
+      const created = await insertGlobalVariant(product.id, variantShape);
       if ('error' in created) {
         result.failed++;
         result.errors.push({ rowNumber, name: row.name, message: created.error });
@@ -706,7 +724,7 @@ export async function bulkImportMasterItemsAction(input: {
     }
 
     if (unitId) {
-      const adopted = await upsertUnitCatalog(supabase, {
+      const adopted = await upsertUnitCatalog({
         unit_id: unitId,
         variant_id: variant.id,
         local_sku: row.sku ?? null,
@@ -717,11 +735,12 @@ export async function bulkImportMasterItemsAction(input: {
         continue;
       }
 
-      const rateWrite = await persistImportRate(supabase, {
+      const rateWrite = await persistImportRate({
         unitId,
         variantId: variant.id,
         category,
         row,
+        userId: user.id,
       });
       if (rateWrite.error) {
         result.failed++;
@@ -773,22 +792,20 @@ export async function bulkUpdateMasterItemsAction(input: {
   const globalWrite = canWriteGlobal(user);
   const effectiveUnit = resolveActorUnit(user, unitId);
 
-  const supabase = await createClient();
-
+  const db = await getDb();
   const ids = Array.from(new Set(patches.map((p) => p.id)));
-  const { data: existingVariants, error: lookupErr } = await supabase
-    .from('product_variants')
-    .select('id, product_id')
-    .in('id', ids);
-  if (lookupErr) return { error: lookupErr.message };
+
+  const existingVariants = await db
+    .collection('product_variants')
+    .find({ id: { $in: ids } })
+    .toArray();
   if (!existingVariants || existingVariants.length === 0) return { error: 'No matching variants' };
 
   const productIds = Array.from(new Set(existingVariants.map((v) => v.product_id)));
-  const { data: existingProducts, error: prodLookupErr } = await supabase
-    .from('products')
-    .select('id, category_id')
-    .in('id', productIds);
-  if (prodLookupErr) return { error: prodLookupErr.message };
+  const existingProducts = await db
+    .collection('products')
+    .find({ id: { $in: productIds } })
+    .toArray();
 
   const productMap = new Map<string, { category_id: string }>();
   for (const p of existingProducts ?? []) {
@@ -818,6 +835,8 @@ export async function bulkUpdateMasterItemsAction(input: {
     errors: [],
   };
 
+  const now = new Date().toISOString();
+
   for (const patch of patches) {
     const row = byId.get(patch.id);
     if (!row) {
@@ -832,25 +851,33 @@ export async function bulkUpdateMasterItemsAction(input: {
         result.errors.push({ id: patch.id, message: 'Cannot rename global products without masters.write.global' });
         continue;
       }
-      const { error: prodErr } = await supabase
-        .from('products')
-        .update({ name: patch.name })
-        .eq('id', row.product_id);
-      if (prodErr) {
+      try {
+        await db.collection('products').updateOne(
+          { id: row.product_id },
+          {
+            $set: {
+              name: patch.name,
+              name_normalized: patch.name.trim().toLowerCase(),
+              updated_at: now,
+            },
+          },
+        );
+      } catch (prodErr: unknown) {
         result.failed++;
-        result.errors.push({ id: patch.id, message: prodErr.message });
+        result.errors.push({ id: patch.id, message: prodErr instanceof Error ? prodErr.message : String(prodErr) });
         continue;
       }
     }
 
     if (patch.notes !== undefined && globalWrite) {
-      const { error: notesErr } = await supabase
-        .from('products')
-        .update({ description: patch.notes })
-        .eq('id', row.product_id);
-      if (notesErr) {
+      try {
+        await db.collection('products').updateOne(
+          { id: row.product_id },
+          { $set: { description: patch.notes, updated_at: now } },
+        );
+      } catch (notesErr: unknown) {
         result.failed++;
-        result.errors.push({ id: patch.id, message: notesErr.message });
+        result.errors.push({ id: patch.id, message: notesErr instanceof Error ? notesErr.message : String(notesErr) });
         continue;
       }
     }
@@ -868,13 +895,15 @@ export async function bulkUpdateMasterItemsAction(input: {
         varPatch.package_type = mapped.package_type;
       }
       if (Object.keys(varPatch).length > 0) {
-        const { error: varErr } = await supabase
-          .from('product_variants')
-          .update(varPatch)
-          .eq('id', patch.id);
-        if (varErr) {
+        varPatch.updated_at = now;
+        try {
+          await db.collection('product_variants').updateOne(
+            { id: patch.id },
+            { $set: varPatch },
+          );
+        } catch (varErr: unknown) {
           result.failed++;
-          result.errors.push({ id: patch.id, message: varErr.message });
+          result.errors.push({ id: patch.id, message: varErr instanceof Error ? varErr.message : String(varErr) });
           continue;
         }
       }
@@ -891,33 +920,16 @@ export async function bulkUpdateMasterItemsAction(input: {
         const catalogPatch: { local_sku?: string | null; is_enabled?: boolean } = {};
         if (localSku !== undefined) catalogPatch.local_sku = localSku;
         if (isEnabled !== undefined) catalogPatch.is_enabled = isEnabled;
-        const { data: existing } = await supabase
-          .from('unit_catalog')
-          .select('id')
-          .eq('unit_id', effectiveUnit)
-          .eq('variant_id', patch.id)
-          .maybeSingle();
-        if (existing) {
-          const { error: catErr } = await supabase
-            .from('unit_catalog')
-            .update(catalogPatch)
-            .eq('id', existing.id);
-          if (catErr) {
-            result.failed++;
-            result.errors.push({ id: patch.id, message: catErr.message });
-            continue;
-          }
-        } else {
-          const adopted = await upsertUnitCatalog(supabase, {
-            unit_id: effectiveUnit,
-            variant_id: patch.id,
-            ...catalogPatch,
-          });
-          if (adopted.error) {
-            result.failed++;
-            result.errors.push({ id: patch.id, message: adopted.error });
-            continue;
-          }
+
+        const adopted = await upsertUnitCatalog({
+          unit_id: effectiveUnit,
+          variant_id: patch.id,
+          ...catalogPatch,
+        });
+        if (adopted.error) {
+          result.failed++;
+          result.errors.push({ id: patch.id, message: adopted.error });
+          continue;
         }
       }
 
@@ -965,9 +977,11 @@ export async function deactivateMasterItemAction(_prev: unknown, formData: FormD
 
   await requireCapability('masters.write.global', null);
 
-  const supabase = await createClient();
-  const { error } = await supabase.from('product_variants').update({ is_active: false }).eq('id', id);
-  if (error) return { error: error.message };
+  const db = await getDb();
+  await db.collection('product_variants').updateOne(
+    { id },
+    { $set: { is_active: false, updated_at: new Date().toISOString() } },
+  );
 
   revalidateMasters();
   return { ok: true };

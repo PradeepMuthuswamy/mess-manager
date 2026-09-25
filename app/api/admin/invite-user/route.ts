@@ -65,7 +65,9 @@ export const POST = withRoute(async (req: NextRequest) => {
 
   const callerRole = caller.role;
   const callerCaps: string[] = Array.isArray(caller.capabilities)
-    ? caller.capabilities.map((c: Record<string, unknown>) => (typeof c === 'string' ? c : c.capability))
+    ? caller.capabilities
+        .map((c: unknown) => (typeof c === 'string' ? c : String((c as Record<string, unknown>)?.capability ?? '')))
+        .filter(Boolean)
     : [];
 
   const hasPermission =

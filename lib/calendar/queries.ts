@@ -17,7 +17,7 @@ type RawEventDoc = {
   created_by?: string | null;
 };
 
-function mapEvent(doc: RawEventDoc): SocialCalendarEvent {
+function mapEvent(doc: any): SocialCalendarEvent {
   return {
     id: String(doc.id),
     unit_id: String(doc.unit_id),

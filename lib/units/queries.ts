@@ -3,11 +3,12 @@ import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { getDb } from '@/lib/mongo';
 import { ACTIVE_UNIT_COOKIE } from '@/lib/auth/types';
-import type { Unit, UnitRow, UnitSwitcherOption, UnitWithUserCount } from './types';
+import type { Unit, UnitDoc, UnitRow, UnitSwitcherOption, UnitWithUserCount } from './types';
 import type { Filter } from 'mongodb';
 
-function formatUnit(doc: any): Unit {
-  const { _id, ...rest } = doc;
+function formatUnit(doc: UnitDoc | Record<string, unknown>): Unit {
+  const raw = doc as UnitDoc;
+  const { _id, ...rest } = raw;
   return {
     ...rest,
     id: String(rest.id || _id?.toString() || ''),
@@ -24,8 +25,8 @@ function formatUnit(doc: any): Unit {
     mess_type: rest.mess_type ?? '',
     terrain_type: rest.terrain_type ?? rest.terrain ?? '',
     catering_type: rest.catering_type ?? 'unit',
-    settings: rest.settings ?? {},
-    check_in_tariff: rest.check_in_tariff,
+    settings: (rest.settings as Record<string, unknown>) ?? {},
+    check_in_tariff: rest.check_in_tariff ?? null,
     is_active: rest.is_active ?? true,
     created_at: rest.created_at ?? new Date().toISOString(),
     updated_at: rest.updated_at ?? new Date().toISOString(),
@@ -43,7 +44,7 @@ function formatUnit(doc: any): Unit {
 export const listUnits = cache(
   async (options?: { activeOnly?: boolean; search?: string }): Promise<Unit[]> => {
     const db = await getDb();
-    const query: Filter<any> = {};
+    const query: Filter<unknown> = {};
 
     if (options?.activeOnly) {
       query.is_active = true;

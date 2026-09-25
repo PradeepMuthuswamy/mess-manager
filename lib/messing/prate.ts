@@ -79,14 +79,14 @@ export async function recalculateDailyPRate(
       calculated_at: now,
       calculated_by: calculatedBy,
     };
-    await db.collection<MessDailyPRate>('mess_daily_p_rates').insertOne(doc as Record<string, unknown>);
+    await db.collection<MessDailyPRate>('mess_daily_p_rates').insertOne(doc);
     await writeAudit({
       table_name: 'mess_daily_p_rates',
       row_pk: newId,
       op: 'INSERT',
       active_unit_id: unitId,
       changed_by: calculatedBy,
-      new_data: doc as unknown,
+      new_data: doc as unknown as Record<string, unknown>,
     });
   }
 

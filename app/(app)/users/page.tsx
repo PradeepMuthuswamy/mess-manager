@@ -3,6 +3,7 @@ import { requireCapability } from '@/lib/auth/require-capability';
 import { getCollection } from '@/lib/mongo';
 import { fetchUnitUsersAction, fetchCapabilityTemplatesAction } from '@/lib/users/actions';
 import { UsersDashboard } from './_components/users-dashboard';
+import type { UserRow, UnitOption, TemplateOption } from '@/lib/users/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,16 +11,16 @@ export default async function UsersPage() {
   const user = await requireUser();
   await requireCapability('users.read', user.activeUnitId);
 
-  const unitsCol = await getCollection('units');
+  const unitsCol = await getCollection<{ id: string; name: string }>('units');
   const [usersRes, templatesRes, rawUnits] = await Promise.all([
     fetchUnitUsersAction(user.activeUnitId),
     fetchCapabilityTemplatesAction(),
     unitsCol.find({ is_active: { $ne: false } }).sort({ name: 1 }).toArray(),
   ]);
 
-  const initialUsers = usersRes.ok && usersRes.data ? usersRes.data : [];
-  const templates = templatesRes.ok && templatesRes.data ? templatesRes.data : [];
-  const units = rawUnits.map((u: Record<string, unknown>) => ({ id: u.id, name: u.name }));
+  const initialUsers: UserRow[] = usersRes.ok && usersRes.data ? usersRes.data : [];
+  const templates: TemplateOption[] = templatesRes.ok && templatesRes.data ? templatesRes.data : [];
+  const units: UnitOption[] = rawUnits.map((u: { id: string; name: string }) => ({ id: u.id, name: u.name }));
 
   return (
     <section className="space-y-6">
@@ -33,9 +34,9 @@ export default async function UsersPage() {
       </div>
 
       <UsersDashboard
-        initialUsers={initialUsers as Record<string, unknown>[]}
+        initialUsers={initialUsers}
         initialUnits={units}
-        initialTemplates={templates as Record<string, unknown>[]}
+        initialTemplates={templates}
       />
     </section>
   );

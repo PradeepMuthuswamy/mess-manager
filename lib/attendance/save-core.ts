@@ -48,14 +48,14 @@ export async function applyAttendanceSave(
       created_by: uid,
       updated_by: uid,
     };
-    await daysCol.insertOne(newDay as Record<string, unknown>);
+    await daysCol.insertOne(newDay);
     await writeAudit({
       table_name: 'attendance_days',
       row_pk: dayId,
       op: 'INSERT',
       active_unit_id: input.unit_id,
       changed_by: uid,
-      new_data: newDay as unknown,
+      new_data: newDay as unknown as Record<string, unknown>,
     });
   }
 
@@ -117,13 +117,13 @@ export async function applyAttendanceSave(
         op: 'DELETE',
         active_unit_id: input.unit_id,
         changed_by: uid,
-        old_data: d.row as unknown,
+        old_data: d.row as unknown as Record<string, unknown>,
       });
     }
   }
 
   if (toInsert.length > 0) {
-    await absencesCol.insertMany(toInsert as Record<string, unknown>);
+    await absencesCol.insertMany(toInsert);
     for (const item of toInsert) {
       await writeAudit({
         table_name: 'attendance_absences',
@@ -131,7 +131,7 @@ export async function applyAttendanceSave(
         op: 'INSERT',
         active_unit_id: input.unit_id,
         changed_by: uid,
-        new_data: item as unknown,
+        new_data: item as unknown as Record<string, unknown>,
       });
     }
   }
@@ -205,14 +205,14 @@ export async function applyFinalize(
       created_by: uid,
       updated_by: uid,
     };
-    await daysCol.insertOne(newDay as Record<string, unknown>);
+    await daysCol.insertOne(newDay);
     await writeAudit({
       table_name: 'attendance_days',
       row_pk: newDayId,
       op: 'INSERT',
       active_unit_id: input.unit_id,
       changed_by: uid,
-      new_data: newDay as unknown,
+      new_data: newDay as unknown as Record<string, unknown>,
     });
   }
 

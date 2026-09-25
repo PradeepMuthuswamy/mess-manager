@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { withRoute, ok } from '@/lib/api/handler';
 import { requireApiUser } from '@/lib/api/auth';
 import { checkRateLimit } from '@/lib/api/rate-limit';
+import type { GrantedCapability } from '@/lib/auth/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,10 +18,10 @@ export const GET = withRoute(async (req: NextRequest) => {
     active_unit_id: ctx.user.activeUnitId,
     is_all_units: ctx.user.isAllUnits,
     display_name: ctx.user.displayName,
-    capabilities: ctx.user.capabilities.map((c) =>
+    capabilities: (ctx.user.capabilities as (string | GrantedCapability)[]).map((c) =>
       typeof c === 'string'
         ? { capability: c, unit_id: null }
-        : { capability: (c as never).capability, unit_id: (c as never).unitId ?? null }
+        : { capability: c.capability, unit_id: c.unitId ?? null }
     ),
   });
 });

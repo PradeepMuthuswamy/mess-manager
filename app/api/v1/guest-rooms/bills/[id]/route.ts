@@ -8,17 +8,24 @@ import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempoten
 import { patchRoomBillSchema } from '@/lib/schemas/guest-rooms';
 import { getDb } from '@/lib/mongo';
 
+import type { Document } from 'mongodb';
+
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 type Ctx = { params: Promise<{ id: string }> };
 
-async function loadBill(id: string) {
+type LoadedBill = Document & {
+  unit_id: string;
+  items: Array<Document & { id: string; amount?: number; description?: string }>;
+};
+
+async function loadBill(id: string): Promise<LoadedBill> {
   const db = await getDb();
   const bill = await db.collection('room_bills').findOne({ id });
   if (!bill) throw Errors.notFound();
   const items = await db.collection('room_bill_items').find({ bill_id: id }).toArray();
-  return { ...bill, items } as never;
+  return { ...bill, items } as unknown as LoadedBill;
 }
 
 export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {

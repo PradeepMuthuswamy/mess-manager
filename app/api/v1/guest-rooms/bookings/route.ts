@@ -60,15 +60,16 @@ export const POST = withRoute(async (req: NextRequest) => {
   const replay = await tryReplay(idemKey, ctx.user.id, bodyText);
   if (replay) return replay;
 
-  const result = await createBookingAction(parsed.data as never);
-  if ('error' in result && result.error) {
-    if (result.error.toLowerCase().includes('not available') || result.error.toLowerCase().includes('conflict')) {
-      throw Errors.conflict(result.error);
+  const result = await createBookingAction(parsed.data);
+  if ('error' in result) {
+    const errorMsg = result.error || 'Failed to create booking';
+    if (errorMsg.toLowerCase().includes('not available') || errorMsg.toLowerCase().includes('conflict')) {
+      throw Errors.conflict(errorMsg);
     }
-    throw Errors.badRequest(result.error);
+    throw Errors.badRequest(errorMsg);
   }
 
-  const bookingId = (result as never).booking?.id || (result as never).id;
+  const bookingId = result.data.id;
   const data = await getBookingSummaryById(bookingId);
   const response = created({ data }, `/api/v1/guest-rooms/bookings/${data?.id ?? bookingId}`);
   await storeResponse(idemKey, ctx.user.id, response.status, await response.clone().text(), bodyText);

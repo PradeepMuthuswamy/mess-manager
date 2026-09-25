@@ -44,8 +44,8 @@ export const POST = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const replay = await tryReplay(idemKey, ctx.user.id, bodyText);
   if (replay) return replay;
 
-  const result = await checkOutAction(parsed.data as never);
-  if (result.error) {
+  const result = await checkOutAction(parsed.data);
+  if ('error' in result && result.error) {
     throw Errors.badRequest(result.error);
   }
 

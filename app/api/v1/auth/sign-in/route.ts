@@ -36,6 +36,12 @@ export const POST = withRoute(async (req: NextRequest) => {
       },
     });
   } catch (err: unknown) {
-    throw Errors.unauthenticated(err?.message || 'Invalid email or password');
+    const message =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : 'Invalid email or password';
+    throw Errors.unauthenticated(message);
   }
 });

@@ -21,7 +21,8 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
   const tpl = await db.collection<CapabilityTemplateDoc>('capability_templates').findOne({ id });
   if (!tpl) throw Errors.notFound();
 
-  const { _id, ...clean } = tpl as never;
+  const clean = { ...tpl };
+  delete (clean as Record<string, unknown>)._id;
   return ok(clean);
 });
 
@@ -55,8 +56,9 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
 
   await col.updateOne({ id }, { $set: update });
 
-  const updated = { ...existing, ...update };
-  delete (updated as never)._id;
+  const cleanExisting = { ...existing };
+  delete (cleanExisting as Record<string, unknown>)._id;
+  const updated: CapabilityTemplateDoc = { ...cleanExisting, ...update };
 
   await writeAudit({
     table_name: 'capability_templates',

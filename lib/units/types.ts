@@ -6,8 +6,8 @@ export interface Unit {
   mess_type: string;
   terrain_type: string;
   catering_type: string;
-  settings: Record<string, any>;
-  check_in_tariff?: any;
+  settings: Record<string, unknown>;
+  check_in_tariff?: Record<string, unknown> | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -15,6 +15,30 @@ export interface Unit {
   // Supplementary fields for platform UI compatibility
   description?: string | null;
   terrain?: string | null;
+  enabled_modules?: string[] | null;
+  bill_format_template?: string | null;
+  room_bill_format_template?: string | null;
+  created_by?: string | null;
+  updated_by?: string | null;
+  [key: string]: unknown;
+}
+
+export interface UnitDoc {
+  _id?: unknown;
+  id?: string;
+  name?: string;
+  code?: string;
+  slug?: string;
+  mess_type?: string;
+  terrain_type?: string;
+  terrain?: string | null;
+  catering_type?: string;
+  settings?: Record<string, unknown>;
+  check_in_tariff?: Record<string, unknown> | null;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  description?: string | null;
   enabled_modules?: string[] | null;
   bill_format_template?: string | null;
   room_bill_format_template?: string | null;

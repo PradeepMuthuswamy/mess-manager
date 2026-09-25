@@ -44,7 +44,11 @@ export const POST = withRoute(async (req: NextRequest) => {
     if (replay) return replay;
   }
 
-  const chitId = await createBarChitCore(ctx.user.id, parsed.data);
+  const res = await createBarChitCore(ctx.user.id, parsed.data);
+  if (!res.ok || !res.id) {
+    throw Errors.badRequest(res.error ?? 'Failed to create bar chit');
+  }
+  const chitId = res.id;
 
   const barChits = await getCollection('bar_chits');
   const barChitItems = await getCollection('bar_chit_items');

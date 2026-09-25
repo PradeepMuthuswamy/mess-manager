@@ -160,7 +160,7 @@ export function UnitSettingsCard({
         toast.error(res.error ?? 'Failed to update flat rates');
       }
     } catch (err: unknown) {
-      toast.error(err?.message || 'An unexpected error occurred');
+      toast.error(err instanceof Error ? err.message : 'An unexpected error occurred');
     } finally {
       setIsUpdatingRates(false);
     }

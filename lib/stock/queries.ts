@@ -139,7 +139,7 @@ export async function listInventory(
       rate: Number(doc.rate ?? 0),
       acquired_on: doc.acquired_on || '',
       source: doc.source ?? null,
-      uom: (uomMap[doc.variant.unit_type] || 'piece') as unknown,
+      uom: (doc.variant?.unit_type && uomMap[doc.variant.unit_type]) || doc.variant?.uom || 'piece',
       is_active: Boolean(doc.is_active !== false),
       created_at: doc.created_at || '',
       created_by: doc.created_by ?? null,
@@ -170,9 +170,9 @@ export async function listMasterItemsForPicker(
       name: i.name,
       category: i.category as InventoryCategory,
       uom: i.uom,
-      pack_label: i.pack_label,
-      pack_kind: i.pack_kind,
-      volume_ml: i.volume_ml,
-      unit_count: i.unit_count,
+      pack_label: i.pack_label || i.uom,
+      pack_kind: i.pack_kind ?? null,
+      volume_ml: i.volume_ml ?? null,
+      unit_count: i.unit_count ?? null,
     }));
 }

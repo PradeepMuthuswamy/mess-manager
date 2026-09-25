@@ -8,6 +8,7 @@ import { writeAudit } from '@/lib/audit/write-audit';
 import type { Role, Capability } from '@/lib/auth/types';
 import type {
   UserDoc,
+  UserRow,
   UserCapabilityDoc,
   CapabilityTemplateDoc,
   DependantDoc,
@@ -36,7 +37,7 @@ export async function fetchUnitUsersAction(unitId?: string | null) {
   }
 
   const users = await usersCol.find(filter).sort({ full_name: 1 }).toArray();
-  const userIds = users.map((u) => u.id);
+  const userIds = users.map((u: UserDoc) => u.id);
 
   const capsCol = await getCollection<UserCapabilityDoc>('user_capabilities');
   const caps = await capsCol.find({ user_id: { $in: userIds } }).toArray();
@@ -48,7 +49,7 @@ export async function fetchUnitUsersAction(unitId?: string | null) {
     capsByUser.set(c.user_id, list);
   }
 
-  const data = users.map((u) => ({
+  const data: UserRow[] = users.map((u: UserDoc) => ({
     id: u.id,
     email: u.email ?? null,
     full_name: u.full_name ?? null,
@@ -73,7 +74,7 @@ export async function fetchCapabilityTemplatesAction() {
 
   return {
     ok: true,
-    data: data.map((t) => ({
+    data: data.map((t: CapabilityTemplateDoc) => ({
       id: t.id,
       name: t.name,
       description: t.description ?? null,
@@ -143,7 +144,7 @@ export async function inviteUserAction(input: {
     const tplCol = await getCollection<CapabilityTemplateDoc>('capability_templates');
     const tpl = await tplCol.findOne({ id: input.capability_template_id });
     if (tpl?.capabilities && tpl.capabilities.length) {
-      const rows: UserCapabilityDoc[] = tpl.capabilities.map((c) => ({
+      const rows: UserCapabilityDoc[] = tpl.capabilities.map((c: string) => ({
         id: crypto.randomUUID(),
         user_id: invitedUserId,
         capability: c as Capability,
@@ -157,7 +158,7 @@ export async function inviteUserAction(input: {
 
   // Provision explicit capabilities if provided
   if (input.capabilities && input.capabilities.length && targetUnit) {
-    const rows: UserCapabilityDoc[] = input.capabilities.map((c) => ({
+    const rows: UserCapabilityDoc[] = input.capabilities.map((c: string) => ({
       id: crypto.randomUUID(),
       user_id: invitedUserId,
       capability: c as Capability,
@@ -308,7 +309,7 @@ export async function updateUserCapabilitiesAction(
 
   const now = new Date().toISOString();
   if (capabilities.length) {
-    const rows: UserCapabilityDoc[] = capabilities.map((c) => ({
+    const rows: UserCapabilityDoc[] = capabilities.map((c: { capability: Capability; unitId: string }) => ({
       id: crypto.randomUUID(),
       user_id: userId,
       capability: c.capability,

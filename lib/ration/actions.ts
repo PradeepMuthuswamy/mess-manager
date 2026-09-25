@@ -63,7 +63,8 @@ async function assertAttendanceFinalized(
       };
     }
   } catch (err: unknown) {
-    return { error: err.message ?? 'Failed to check attendance status' };
+    const msg = err instanceof Error ? err.message : String(err);
+    return { error: msg || 'Failed to check attendance status' };
   }
   return null;
 }
@@ -110,7 +111,7 @@ async function deleteConsumptionStockTxs(
  * Direct replacement for Postgres RPC `set_ration_scale_item`.
  * Manages SCD-2 versioning directly in `ration_scale_item_versions` collection.
  */
-async function directSetRationScaleItem(params: {
+export async function directSetRationScaleItem(params: {
   scaleId: string;
   variantId: string;
   authQty: number;
@@ -166,6 +167,8 @@ async function directSetRationScaleItem(params: {
 
   return newId;
 }
+
+export const setRationScaleItem = directSetRationScaleItem;
 
 export async function createScaleAction(_prev: unknown, formData: FormData) {
   const parsed = createScaleSchema.safeParse({
@@ -245,7 +248,7 @@ export async function bulkUpdateScaleItemsAction(input: {
   await requireCapability('ration.adjust', scale.unit_id);
   const user = await requireUser();
 
-  const versionsCol = await getCollection('ration_scale_item_versions');
+  const versionsCol = await getCollection<RationScaleItemVersionRow>('ration_scale_item_versions');
   const current = await versionsCol
     .find({
       scale_id: parsed.data.scale_id,
@@ -304,7 +307,8 @@ export async function bulkUpdateScaleItemsAction(input: {
       result.updated++;
     } catch (err: unknown) {
       result.failed++;
-      result.errors.push({ item_id: itemId, message: err.message || 'Update failed' });
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push({ item_id: itemId, message: msg || 'Update failed' });
     }
   }
 
@@ -572,7 +576,8 @@ export async function bulkImportScaleItemsAction(input: {
       result.inserted++;
     } catch (err: unknown) {
       result.failed++;
-      result.errors.push({ rowNumber, name: row.item_name, message: err.message || 'Import failed' });
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push({ rowNumber, name: row.item_name, message: msg || 'Import failed' });
     }
   }
 

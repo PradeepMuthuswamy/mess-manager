@@ -163,13 +163,19 @@ export async function issueAuthConfirmLink(
       error: null,
       link,
       token,
-      userId: opts.data?.userId ?? opts.data?.id ?? null,
+      userId: (opts.data?.userId as string | undefined) ?? (opts.data?.id as string | undefined) ?? null,
       email: opts.email,
     };
   } catch (err: unknown) {
     console.error('Error issuing auth confirm link:', err);
+    const message =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : 'Failed to issue auth confirmation link';
     return {
-      error: { message: err?.message ?? 'Failed to issue auth confirmation link' },
+      error: { message },
       link: null,
       token: null,
       userId: null,

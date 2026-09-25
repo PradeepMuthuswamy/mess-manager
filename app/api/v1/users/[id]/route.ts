@@ -29,7 +29,7 @@ export const GET = withRoute(async (req: NextRequest, { params }: Ctx) => {
     }
   }
 
-  const { _id, ...cleanUser } = user as never;
+  const { _id, ...cleanUser } = (user ?? {}) as Record<string, unknown>;
   return ok(cleanUser);
 });
 
@@ -76,7 +76,7 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
   await usersCol.updateOne({ id }, { $set: update });
 
   const updated = { ...target, ...update };
-  delete (updated as never)._id;
+  delete (updated as Record<string, unknown>)._id;
 
   await writeAudit({
     table_name: 'users',
@@ -84,8 +84,8 @@ export const PATCH = withRoute(async (req: NextRequest, { params }: Ctx) => {
     op: 'UPDATE',
     changed_by: ctx.user.id,
     active_unit_id: target.unit_id,
-    old_data: target as never,
-    new_data: updated as never,
+    old_data: target as unknown as Record<string, unknown>,
+    new_data: updated as unknown as Record<string, unknown>,
   });
 
   return ok(updated);

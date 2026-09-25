@@ -112,7 +112,10 @@ export async function createBarChitCore(
       })
       .toArray();
 
-    const totalAvailable = lots.reduce((sum, lot) => sum + Number(lot.qty_packs ?? 0), 0);
+    const totalAvailable = lots.reduce(
+      (sum: number, lot: Record<string, any>) => sum + Number(lot.qty_packs ?? 0),
+      0,
+    );
     // Allow slight floating point tolerance on stock checks
     if (totalAvailable + 0.0001 < item.quantity) {
       return {

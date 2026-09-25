@@ -1,4 +1,4 @@
-import type { AuthUser, Capability, Role } from './types';
+import type { AuthUser, Capability, Role, GrantedCapability } from './types';
 
 export const ROLE_CAPABILITIES: Record<Role, readonly Capability[] | '*'> = {
   super_admin: '*',

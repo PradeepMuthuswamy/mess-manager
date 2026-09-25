@@ -18,10 +18,10 @@ import type {
   MessingFlatRateRow,
 } from './types';
 
-function cleanDoc<T>(doc: Record<string, unknown>): T {
-  if (!doc) return doc as T;
-  const { _id, ...rest } = doc as Record<string, unknown>;
-  return rest as T;
+function cleanDoc<T>(doc: Record<string, unknown> | null | undefined): T {
+  if (!doc) return doc as unknown as T;
+  const { _id, ...rest } = doc;
+  return rest as unknown as T;
 }
 
 /**

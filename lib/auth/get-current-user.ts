@@ -120,7 +120,7 @@ export const getCurrentUser = cache(async (customHeaders?: Headers | NextRequest
     }
   }
 
-  const rawDoc = userDoc || sessionUser;
+  const rawDoc: UserDoc = userDoc || (sessionUser as unknown as UserDoc);
 
   // Resolve AAL
   const isAal2 = Boolean(

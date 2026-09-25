@@ -77,10 +77,11 @@ export async function signInAction(
       }
     }
   } catch (error: unknown) {
-    if (error?.digest?.startsWith('NEXT_REDIRECT') || error?.name === 'NEXT_REDIRECT') {
+    const err = error as { digest?: string; name?: string; message?: string } | null | undefined;
+    if (err?.digest?.startsWith('NEXT_REDIRECT') || err?.name === 'NEXT_REDIRECT') {
       throw error;
     }
-    return { error: error.message || 'Invalid email or password.' };
+    return { error: err?.message || 'Invalid email or password.' };
   }
 
   redirect(next);

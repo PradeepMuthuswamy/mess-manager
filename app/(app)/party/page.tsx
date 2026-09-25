@@ -7,7 +7,7 @@ import {
   listPartyGuestsByPartyIds,
   listUpcomingParties,
 } from '@/lib/parties/queries';
-import type { MessPartyCostLine, MessPartyGuest, PartyBudgetStatus } from '@/lib/parties/types';
+import type { MessParty, MessPartyCostLine, MessPartyGuest, PartyBudgetStatus } from '@/lib/parties/types';
 import { CreatePartyForm } from './_components/create-party-form';
 import { PartyCostsForm } from './_components/party-costs-form';
 import { PartyGuestsForm } from './_components/party-guests-form';
@@ -74,7 +74,7 @@ export default async function PartyPage() {
     canWrite ? listUnitMembers(unitId).catch(() => []) : Promise.resolve([]),
   ]);
 
-  const partyIds = parties.map((party) => party.id);
+  const partyIds = parties.map((party: MessParty) => party.id);
   const [allGuests, allCostLines] = await Promise.all([
     listPartyGuestsByPartyIds(partyIds).catch((): MessPartyGuest[] => []),
     listPartyCostLinesByPartyIds(partyIds).catch((): MessPartyCostLine[] => []),
