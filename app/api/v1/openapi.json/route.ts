@@ -4,7 +4,7 @@ import {
 } from '@asteasolutions/zod-to-openapi';
 import { withRoute, ok } from '@/lib/api/handler';
 import {
-  signInSchema, forgotPasswordSchema, resetPasswordSchema,
+  signInSchema,
   createUnitSchema, updateUnitSchema,
   inviteUserSchema, updateUserSchema,
   createItemApiSchema, updateProductSchema, updateVariantSchema,
@@ -21,8 +21,6 @@ let cached: ReturnType<OpenApiGeneratorV31['generateDocument']> | null = null;
 function build() {
   const r = new OpenAPIRegistry();
   r.register('SignInInput', signInSchema);
-  r.register('ForgotPasswordInput', forgotPasswordSchema);
-  r.register('ResetPasswordInput', resetPasswordSchema);
   r.register('CreateUnitInput', createUnitSchema);
   r.register('UpdateUnitInput', updateUnitSchema);
   r.register('InviteUserInput', inviteUserSchema);

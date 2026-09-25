@@ -158,7 +158,7 @@ export function UserFormDialog({
         });
 
         if (res.ok) {
-          toast.success('Invitation email sent.');
+          toast.success('User record saved.');
           onClose();
         } else {
           dispatch(reduxSetError(res.error || 'Failed to send invitation.'));

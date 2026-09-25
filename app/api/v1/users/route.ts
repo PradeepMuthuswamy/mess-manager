@@ -6,9 +6,6 @@ import { requireApiUser, requireApiCapability } from '@/lib/api/auth';
 import { inviteUserSchema, listUsersQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
-import { sendInvitationEmail } from '@/lib/email/resend';
-import { issueAuthConfirmLink } from '@/lib/auth/email-links';
-import { inviteLinkBaseUrl } from '@/lib/auth/invite-destination';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -66,26 +63,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
 
   const targetUnit = parsed.data.unit_id ?? null;
-  const destination = inviteLinkBaseUrl(parsed.data.role, process.env.NEXT_PUBLIC_OPS_APP_URL);
-  if ('error' in destination) throw Errors.internal(destination.error);
-
-  const newUserId = crypto.randomUUID();
-  const invited = await issueAuthConfirmLink({
-    type: 'invite',
-    email: parsed.data.email,
-    next: '/accept-invite',
-    data: {
-      userId: newUserId,
-      ...(parsed.data.full_name ? { full_name: parsed.data.full_name } : {}),
-      role: parsed.data.role,
-      unit_id: targetUnit,
-    },
-    baseUrl: destination.baseUrl,
-  });
-  if (invited.error || !invited.link) {
-    throw Errors.conflict(invited.error?.message ?? 'Could not invite');
-  }
-  const invitedUserId = invited.userId || newUserId;
+  const invitedUserId = crypto.randomUUID();
 
   const profilesCol = await getCollection('profiles');
   await profilesCol.updateOne(
@@ -97,27 +75,6 @@ export const POST = withRoute(async (req: NextRequest) => {
       updated_at: new Date()
     }}
   );
-
-  // Get unit name for custom invite email
-  let unitName = 'Officers\' Mess';
-  if (targetUnit) {
-    const unitsCol = await getCollection('units');
-    const unitData = await unitsCol.findOne({ id: targetUnit }, { projection: { name: 1 } });
-    if (unitData?.name) unitName = unitData.name;
-  }
-
-  try {
-    await sendInvitationEmail({
-      email: parsed.data.email,
-      fullName: parsed.data.full_name || undefined,
-      inviteLink: invited.link,
-      unitName,
-      role: parsed.data.role,
-    });
-  } catch (err) {
-    console.error('Failed to send invitation email via Resend in API:', err);
-    throw Errors.internal('Could not send the invitation email.');
-  }
 
   const capsCol = await getCollection('user_capabilities');
   // Apply capability template if provided
@@ -147,7 +104,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     }
   }
 
-  const body = { id: invitedUserId, email: invited.email };
+  const body = { id: invitedUserId, email: parsed.data.email };
   if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, body);
   return created(body, `/api/v1/users/${invitedUserId}`);
 });

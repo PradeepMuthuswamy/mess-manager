@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth/auth';
-import { AUTH_FLOW_GATE_COOKIE, isGatePath } from '@/lib/auth/flow-gate';
 
 export const config = {
   matcher: [
@@ -12,31 +11,12 @@ export const config = {
 const PUBLIC_PATHS = [
   '/',
   '/sign-in',
-  '/forgot-password',
-  '/reset-password',
-  '/accept-invite',
 ];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const session = await auth.api.getSession({ headers: request.headers });
   const user = session?.user;
-
-  const response = NextResponse.next();
-
-  // Confinement for partially-trusted sessions created by recovery/invite email links
-  const gate = request.cookies.get(AUTH_FLOW_GATE_COOKIE)?.value;
-  if (gate && isGatePath(gate)) {
-    if (user && pathname !== gate && pathname !== '/mfa/verify' && pathname !== '/mfa/enroll') {
-      const url = request.nextUrl.clone();
-      url.pathname = gate;
-      url.search = '';
-      return NextResponse.redirect(url);
-    }
-    if (!user) {
-      response.cookies.delete(AUTH_FLOW_GATE_COOKIE);
-    }
-  }
 
   // Public paths and any /api route bypass the redirect gate
   const isApi = pathname.startsWith('/api/');
@@ -68,13 +48,12 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(url);
     }
 
-    // Logged-in users shouldn't see /sign-in or /forgot-password
-    if (pathname === '/sign-in' || pathname === '/forgot-password') {
+    if (pathname === '/sign-in') {
       const url = request.nextUrl.clone();
       url.pathname = '/dashboard';
       return NextResponse.redirect(url);
     }
   }
 
-  return response;
+  return NextResponse.next();
 }

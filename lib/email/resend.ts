@@ -31,20 +31,6 @@ const C = {
   noteBg: '#f6f7f9',
 } as const;
 
-interface SendInvitationEmailOpts {
-  email: string;
-  fullName?: string;
-  inviteLink: string;
-  unitName: string;
-  role: string;
-}
-
-interface SendPasswordResetEmailOpts {
-  email: string;
-  fullName?: string;
-  resetLink: string;
-}
-
 interface SendMagicLinkEmailOpts {
   email: string;
   fullName?: string;
@@ -200,86 +186,6 @@ function getEmailLayout(opts: {
 
 function paragraph(html: string): string {
   return `<p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:${C.body};">${html}</p>`;
-}
-
-/**
- * Sends an invite email to a user.
- */
-export async function sendInvitationEmail(opts: SendInvitationEmailOpts) {
-  const name = opts.fullName || 'Officer';
-  const roleLabel =
-    opts.role === 'admin'
-      ? 'Super Admin'
-      : opts.role === 'unit_admin'
-        ? 'Unit Administrator'
-        : opts.role === 'manager'
-          ? 'Manager'
-          : 'Member';
-
-  const html = getEmailLayout({
-    title: "Your Officers' Mess invitation",
-    preheader: `You have been invited to join ${opts.unitName} on the Officers' Mess platform.`,
-    eyebrow: 'Official invitation',
-    heading: `Join ${opts.unitName}`,
-    bodyHtml: `
-      ${paragraph(`Dear ${esc(name)},`)}
-      ${paragraph(`An administrator has invited you to the <strong>Officers&rsquo; Mess</strong> platform — the system of record for messing, bar accounts, guest rooms, parties and monthly billing in your unit.`)}
-      ${detailRows([
-        ['Unit', opts.unitName],
-        ['Appointment', roleLabel],
-        ['Account', opts.email],
-      ])}
-      ${paragraph(`To activate your account, set your password using the secure button below:`)}
-      ${button(opts.inviteLink, 'Set up account')}
-      ${securityNote(`<strong>Security notice:</strong> This invitation was initiated by an administrator and carries a one-time credential. It can only be used once and expires after a short period. If you were not expecting it, ignore this email.`)}
-      ${fallbackLink(opts.inviteLink)}
-    `,
-  });
-
-  const { error } = await getResend().emails.send({
-    from: FROM_EMAIL,
-    to: opts.email,
-    subject: `Invitation to join ${opts.unitName} — Officers' Mess`,
-    html,
-  });
-
-  if (error) {
-    console.error('Resend error sending invitation:', error);
-    throw new Error(error.message);
-  }
-}
-
-/**
- * Sends a password reset email.
- */
-export async function sendPasswordResetEmail(opts: SendPasswordResetEmailOpts) {
-  const name = opts.fullName || 'Officer';
-  const html = getEmailLayout({
-    title: "Reset your Officers' Mess password",
-    preheader: 'Use this secure one-time link to choose a new password. It expires in 60 minutes.',
-    eyebrow: 'Account recovery',
-    heading: 'Reset your password',
-    bodyHtml: `
-      ${paragraph(`Dear ${esc(name)},`)}
-      ${paragraph(`We received a request to reset the password for the account <strong>${esc(opts.email)}</strong> on the Officers&rsquo; Mess platform.`)}
-      ${paragraph(`If you made this request, choose a new password using the secure button below:`)}
-      ${button(opts.resetLink, 'Reset password')}
-      ${securityNote(`<strong>Security notice:</strong> If you did not request this, you can safely ignore this email — your current password remains active. This link can only be used once and expires in <strong>60 minutes</strong>.`)}
-      ${fallbackLink(opts.resetLink)}
-    `,
-  });
-
-  const { error } = await getResend().emails.send({
-    from: FROM_EMAIL,
-    to: opts.email,
-    subject: "Reset your password — Officers' Mess",
-    html,
-  });
-
-  if (error) {
-    console.error('Resend error sending password reset:', error);
-    throw new Error(error.message);
-  }
 }
 
 /**

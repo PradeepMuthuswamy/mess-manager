@@ -42,7 +42,7 @@ Open http://localhost:3000, click **Sign in**, log in as the admin you just crea
 ```
 app/
 ├── (marketing)/         public landing page
-├── (auth)/              sign-in, forgot-password, reset-password, accept-invite, mfa
+├── (auth)/              sign-in
 ├── (app)/               authenticated ops app (messing, attendance, ration, bar, guest-rooms, billing, etc.)
 │   ├── dashboard/
 │   ├── messing/         daily messing sheets & cuts
@@ -88,7 +88,7 @@ Admins switch their active unit from the navbar combobox; non-admins are pinned 
 ## Database & Authentication
 
 - **Database:** MongoDB documents store domain entities (`units`, `users`, `accounts`, `sessions`, `items`, `item_versions`, `audit_log`, `bookings`, `bills`, etc.).
-- **Better Auth:** Authentication is powered by Better Auth using the MongoDB adapter (`@better-auth/mongo-adapter`), featuring session cookies, bearer token authentication for mobile/API clients, and TOTP two-factor authentication (MFA).
+- **Better Auth:** Authentication is powered by Better Auth using the MongoDB adapter (`@better-auth/mongo-adapter`), featuring session cookies and bearer token authentication for mobile/API clients. `BETTER_AUTH_SECRET` is required.
 - **Audit:** `audit_log` collection records mutations across units, users, masters, and operational modules.
 - **Item Versioning:** Master items are versioned via `item_versions` (SCD Type 2). Historical bills reference the version that was current at issue time, ensuring rate changes don't rewrite history.
 - **Session & Capability Claims:** Role, `unit_id`, and `capabilities` are stored directly on the user record and cached in Better Auth session context for high-performance authorization checks across server components and API routes.

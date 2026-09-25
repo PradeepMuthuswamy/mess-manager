@@ -14,8 +14,6 @@ export interface UserDoc {
   _id?: ObjectId;
   id?: string;
   email?: string;
-  twoFactorEnabled?: boolean;
-  mfa_enabled?: boolean;
   role?: string;
   home_unit_id?: string;
   unit_id?: string;
@@ -34,7 +32,6 @@ export interface CurrentUser {
   home_unit_id: string | null;
   active_unit_id: string | null;
   capabilities: string[];
-  aal: 'aal1' | 'aal2';
   status: string;
   rank: string | null;
   service_number: string | null;
@@ -122,14 +119,6 @@ export const getCurrentUser = cache(async (customHeaders?: Headers | NextRequest
 
   const rawDoc: UserDoc = userDoc || (sessionUser as unknown as UserDoc);
 
-  // Resolve AAL
-  const isAal2 = Boolean(
-    sessionUser.twoFactorEnabled ||
-    rawDoc.twoFactorEnabled ||
-    rawDoc.mfa_enabled
-  );
-  const aal: 'aal1' | 'aal2' = isAal2 ? 'aal2' : 'aal1';
-
   const role = (rawDoc.role as string) || (sessionUser.role as string) || 'user';
   const home_unit_id = rawDoc.home_unit_id || rawDoc.unit_id || (sessionUser.unit_id as string) || null;
 
@@ -172,7 +161,6 @@ export const getCurrentUser = cache(async (customHeaders?: Headers | NextRequest
     home_unit_id,
     active_unit_id,
     capabilities,
-    aal,
     status: rawDoc.status || 'active',
     rank: rawDoc.rank || null,
     service_number: rawDoc.service_number || null,
@@ -188,7 +176,7 @@ export const getCurrentUser = cache(async (customHeaders?: Headers | NextRequest
   return currentUser;
 });
 
-export async function requireUser(options?: { allowMfaPending?: boolean }): Promise<CurrentUser> {
+export async function requireUser(): Promise<CurrentUser> {
   const user = await getCurrentUser();
   if (!user) {
     redirect('/sign-in');
@@ -204,9 +192,8 @@ export async function requireUser(options?: { allowMfaPending?: boolean }): Prom
 
 export async function requireRole(
   allowed: (Role | string)[],
-  options?: { allowMfaPending?: boolean }
 ): Promise<CurrentUser> {
-  const user = await requireUser(options);
+  const user = await requireUser();
   if (!allowed.includes(user.role)) {
     redirect('/dashboard');
   }

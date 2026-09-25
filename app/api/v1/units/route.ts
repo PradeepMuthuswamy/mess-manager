@@ -6,7 +6,6 @@ import { createUnitSchema, listUnitsQuerySchema } from '@/lib/schemas';
 import { checkRateLimit } from '@/lib/api/rate-limit';
 import { getIdempotencyKey, tryReplay, storeResponse } from '@/lib/api/idempotency';
 import { rollbackNewUnit, cloneMasterRationScales } from '@/lib/units/onboard';
-import { inviteFirstUnitAdmin } from '@/lib/units/invite-unit-admin';
 import { getCollection } from '@/lib/mongo';
 
 export const dynamic = 'force-dynamic';
@@ -58,6 +57,8 @@ export const POST = withRoute(async (req: NextRequest) => {
   const parsed = createUnitSchema.safeParse(JSON.parse(bodyText || 'null'));
   if (!parsed.success) throw Errors.validation(parsed.error.flatten());
   const { admin_email, admin_full_name, ...unitFields } = parsed.data;
+  void admin_email;
+  void admin_full_name;
   
   const newId = crypto.randomUUID();
   const now = new Date();
@@ -94,16 +95,6 @@ export const POST = withRoute(async (req: NextRequest) => {
       );
     }
     throw Errors.internal(`Could not finish onboarding: ${errMsg}`);
-  }
-
-  const invited = await inviteFirstUnitAdmin({
-    email: admin_email,
-    fullName: admin_full_name,
-    unitId: data.id,
-    unitName: data.name,
-  });
-  if ('error' in invited) {
-    throw Errors.internal(`Unit created, but the unit admin could not be invited: ${invited.error}`);
   }
 
   if (idemKey) await storeResponse(idemKey, ctx.user.id, bodyText, 201, data);

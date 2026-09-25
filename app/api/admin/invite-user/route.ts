@@ -3,8 +3,6 @@ import { NextRequest } from 'next/server';
 import { withRoute, created } from '@/lib/api/handler';
 import { Errors } from '@/lib/api/errors';
 import { inviteUserSchema } from '@/lib/schemas';
-import { sendInvitationEmail } from '@/lib/email/resend';
-import { generateVerificationToken, buildAuthConfirmLink } from '@/lib/auth/email-links';
 import { opsInviteBlock } from '@/lib/users/invite-rules';
 import { getCollection } from '@/lib/mongo';
 
@@ -139,47 +137,6 @@ export const POST = withRoute(async (req: NextRequest) => {
     },
     { upsert: true }
   );
-
-  const { token } = await generateVerificationToken({
-    identifier: normalizedEmail,
-    type: 'invite',
-    metadata: {
-      userId,
-      role: mappedRole,
-      unit_id: targetUnit,
-      fullName: parsed.data.full_name,
-    },
-    expiresInMs: 24 * 60 * 60 * 1000, // 24 hours
-  });
-
-  const inviteLink = buildAuthConfirmLink({
-    type: 'invite',
-    token,
-    next: '/accept-invite',
-  });
-
-  let unitName = "Officers' Mess";
-  if (targetUnit) {
-    const unitsCol = await getCollection('units');
-    const unitQuery: Record<string, unknown> = {
-      $or: [{ id: targetUnit }, { _id: targetUnit }],
-    };
-    const unitData = await unitsCol.findOne(unitQuery);
-    if (unitData?.name) unitName = unitData.name;
-  }
-
-  try {
-    await sendInvitationEmail({
-      email: normalizedEmail,
-      fullName: parsed.data.full_name || undefined,
-      inviteLink,
-      unitName,
-      role: mappedRole,
-    });
-  } catch (err) {
-    console.error('Failed to send invitation email via Resend in Admin API:', err);
-    throw Errors.internal('Could not send the invitation email.');
-  }
 
   return created({ id: userId, email: normalizedEmail });
 });

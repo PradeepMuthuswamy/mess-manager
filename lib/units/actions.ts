@@ -11,7 +11,6 @@ import {
   type UnitModuleId,
 } from '@/lib/schemas/units';
 import { rollbackNewUnit, cloneMasterRationScales } from '@/lib/units/onboard';
-import { inviteFirstUnitAdmin } from '@/lib/units/invite-unit-admin';
 import type { Unit } from '@/lib/units/types';
 
 export type UnitActionState = {
@@ -77,7 +76,11 @@ export async function createUnitAction(
     };
   }
 
+  // admin_email and admin_full_name stay on the schema. Accept-invite no longer
+  // writes a credential that sign-in reads, so they are not stored.
   const { admin_email, admin_full_name, ...unitFields } = parsed.data;
+  void admin_email;
+  void admin_full_name;
   const db = await getDb();
   const unitsCol = db.collection('units');
 
@@ -151,20 +154,7 @@ export async function createUnitAction(
     return { error: `Could not finish onboarding: ${errMsg}` };
   }
 
-  const invited = await inviteFirstUnitAdmin({
-    email: admin_email,
-    fullName: admin_full_name,
-    unitId,
-    unitName: newUnitDoc.name,
-  });
-
   revalidateUnits(unitId);
-
-  if ('error' in invited) {
-    return {
-      error: `Unit created, but the unit admin could not be invited: ${invited.error}`,
-    };
-  }
 
   return { ok: true };
 }

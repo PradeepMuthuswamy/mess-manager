@@ -13,7 +13,6 @@ import type {
   CapabilityTemplateDoc,
   DependantDoc,
 } from '@/lib/users/types';
-import { sendInvitationEmail } from '@/lib/email/resend';
 import { inviteUserSchema, roleEnum } from '@/lib/schemas/users';
 import { opsInviteBlock } from '@/lib/users/invite-rules';
 
@@ -177,31 +176,6 @@ export async function inviteUserAction(input: {
     active_unit_id: targetUnit,
     new_data: userDoc as unknown as Record<string, unknown>,
   });
-
-  // Get unit name for custom invite email
-  let unitName = "Officers' Mess";
-  if (targetUnit) {
-    const unitsCol = await getCollection('units');
-    const unitData = await unitsCol.findOne({ id: targetUnit });
-    if (unitData?.name) unitName = unitData.name;
-  }
-
-  const token = crypto.randomUUID();
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
-  const inviteLink = `${siteUrl}/accept-invite?token=${token}&email=${encodeURIComponent(normalizedEmail)}`;
-
-  try {
-    await sendInvitationEmail({
-      email: input.email,
-      fullName: input.full_name,
-      inviteLink,
-      unitName,
-      role: targetRole,
-    });
-  } catch (err) {
-    console.error('Failed to send invitation email via Resend:', err);
-    return { error: 'Could not send the invitation email.' };
-  }
 
   revalidatePath(USERS_PATH);
   return { ok: true, data: { id: invitedUserId, email: input.email } };

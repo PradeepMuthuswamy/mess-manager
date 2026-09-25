@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth/auth';
-import { AUTH_FLOW_GATE_COOKIE } from '@/lib/auth/flow-gate';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +25,6 @@ export async function GET(req: NextRequest) {
     target.searchParams.set('error', error);
   }
   const res = NextResponse.redirect(target);
-  res.cookies.delete(AUTH_FLOW_GATE_COOKIE);
+  res.cookies.delete('om-flow-gate');
   return res;
 }

@@ -45,18 +45,12 @@ Better Auth reads the session cookie from request headers and resolves the authe
 
 ## 4. Gating & Security Policies
 
-### 4.1 Flow-Gate Cookie Confinement
-For multi-step or sensitive flows (such as password reset and invitation acceptance):
-- The `AUTH_FLOW_GATE_COOKIE` (`om-flow-gate`) confines partially-trusted sessions to permitted paths (e.g., `/reset-password`, `/accept-invite`, `/mfa/verify`, `/mfa/enroll`).
-- Any attempt by a confined session to navigate to other application routes is intercepted and redirected back to the gated target.
-- When unauthenticated, the gate cookie is deleted from the response.
-
-### 4.2 Route Categorization & Redirection
-- **Public Paths:** `/`, `/sign-in`, `/forgot-password`, `/reset-password`, `/accept-invite`, and all `/api/*` endpoints.
+### 4.1 Route Categorization & Redirection
+- **Public Paths:** `/`, `/sign-in`, and all `/api/*` endpoints.
 - **Protected Paths:** All operational routes (e.g., `/dashboard`, `/messing`, `/attendance`, `/ration`, `/bar`, `/guest-rooms`, `/billing`, `/settings`) require an active session. Unauthenticated users attempting to access protected routes are redirected to `/sign-in?next=${pathname}`.
-- **Signed-in Redirection:** Authenticated users navigating to `/sign-in` or `/forgot-password` are redirected to `/dashboard`.
+- **Signed-in Redirection:** Authenticated users navigating to `/sign-in` are redirected to `/dashboard`.
 
-### 4.3 App Segregation
+### 4.2 App Segregation
 The client application (`mess-manager`) is segregated from the administrative console (`mess-admin`):
 - Operational roles (`user`, `manager`, `unit_admin`) operate in `mess-manager`.
 - If a platform administrator (`super_admin` or `admin`) attempts to sign in or access `mess-manager`, `proxy.ts` redirects them to the Admin Console (`NEXT_PUBLIC_ADMIN_APP_URL` or `/auth/signout?error=admin_console`).
@@ -74,12 +68,10 @@ Request Arrives at proxy.ts
           ▼
    Fetch Better Auth Session
           │
-          ├── Flow Gate Active? ──► Restrict to allowed gated paths
-          │
           ├── Unauthenticated & Private? ──► Redirect to /sign-in?next=...
           │
           └── Authenticated User:
                 ├── Role is super_admin/admin? ──(Yes)──► Redirect to Admin Console / Signout
-                ├── Accessing /sign-in or /forgot-password? ──(Yes)──► Redirect /dashboard
+                ├── Accessing /sign-in? ──(Yes)──► Redirect /dashboard
                 └── All checks pass ──────────────────────────────► NextResponse.next()
 ```
