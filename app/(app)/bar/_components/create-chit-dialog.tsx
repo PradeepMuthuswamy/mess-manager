@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useActionState, useState, useMemo } from 'react';
 import { useActionResult } from '@/hooks/use-action-result';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
@@ -25,7 +27,7 @@ import {
 import { FormError } from '@/components/shared/form-error';
 import { createBarChitAction } from '@/lib/bar/actions';
 import { toast } from 'sonner';
-import { Check, ChevronsUpDown, Loader2, Trash2, Search, ShoppingCart, ShoppingBag } from 'lucide-react';
+import { Check, ChevronsUpDown, Trash2, Search, ShoppingCart, ShoppingBag } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   Select,
@@ -701,14 +703,7 @@ export function CreateChitDialog({
                   Cancel
                 </Button>
                 <Button type="submit" size="sm" disabled={isPending || lines.length === 0 || lines.some(l => l.quantity <= 0)} className="h-8.5 text-xs">
-                  {isPending ? (
-                    <>
-                      <Loader2 className="size-3.5 animate-spin mr-1.5" />
-                      Creating...
-                    </>
-                  ) : (
-                    'Create Chit'
-                  )}
+                  {savingLabel(isPending, 'Create Chit')}
                 </Button>
               </div>
             </div>

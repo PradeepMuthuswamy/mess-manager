@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Repeat } from 'lucide-react';
@@ -39,8 +41,13 @@ export function GenerateRecurringButton({
       }}
       disabled={pending}
     >
-      <Repeat className="size-4" />
-      {pending ? 'Generating…' : `Generate ${year} birthdays`}
+      {savingLabel(
+        pending,
+        <>
+          <Repeat className="size-4" />
+          {`Generate ${year} birthdays`}
+        </>,
+      )}
     </Button>
   );
 }

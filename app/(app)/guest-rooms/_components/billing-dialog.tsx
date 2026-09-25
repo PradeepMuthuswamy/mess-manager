@@ -8,6 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { savingLabel } from '@/components/shared/save-submit';
 import {
   addBillItemAction,
   deleteBillItemAction,
@@ -200,23 +201,31 @@ function BillingDialogContent({
     startTransition(async () => {
       try {
         if (rent) {
-          await updateBillItemAction(
+          const rentRes = await updateBillItemAction(
             rent.id,
             Number(roomRentAmount) || 0,
             Number(roomRentQty) || 0,
           );
+          if ('error' in rentRes && rentRes.error) {
+            toast.error(rentRes.error);
+            return;
+          }
         }
         if (food) {
-          await updateBillItemAction(
+          const foodRes = await updateBillItemAction(
             food.id,
             Number(foodAmount) || 0,
             Number(foodQty) || 0,
           );
+          if ('error' in foodRes && foodRes.error) {
+            toast.error(foodRes.error);
+            return;
+          }
         }
         toast.success('Rates and quantities updated successfully');
         await refreshCurrent();
-      } catch {
-        toast.error('Failed to update rates');
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to update rates');
       }
     });
   };
@@ -359,7 +368,7 @@ function BillingDialogContent({
                     disabled={pending}
                     onClick={handleUpdatePermanentItems}
                   >
-                    {pending ? 'Updating...' : 'Save Rates & Stay'}
+                    {savingLabel(pending, 'Save Rates & Stay')}
                   </Button>
                 </div>
               )}
@@ -475,8 +484,13 @@ function BillingDialogContent({
                         }, 'Charge added')
                       }
                     >
-                      <Plus className="mr-1.5 h-4 w-4 shrink-0" />
-                      Add
+                      {savingLabel(
+                        pending,
+                        <>
+                          <Plus className="mr-1.5 h-4 w-4 shrink-0" />
+                          Add
+                        </>,
+                      )}
                     </Button>
                   </div>
                 </div>
@@ -531,8 +545,13 @@ function Row({
             disabled={pending}
             onClick={onDelete}
           >
-            <Trash2 className="h-3.5 w-3.5" />
-            <span className="sr-only">Remove {label}</span>
+            {savingLabel(
+              pending,
+              <>
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="sr-only">Remove {label}</span>
+              </>,
+            )}
           </Button>
         )}
       </div>

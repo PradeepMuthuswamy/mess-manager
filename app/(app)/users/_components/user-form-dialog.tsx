@@ -103,12 +103,17 @@ export function UserFormDialog({
     e.preventDefault();
     dispatch(reduxSetError(null));
 
+    const fail = (message: string) => {
+      dispatch(reduxSetError(message));
+      toast.error(message);
+    };
+
     if (!isEditing && !email) {
-      dispatch(reduxSetError('Email is required.'));
+      fail('Email is required.');
       return;
     }
     if (!isEditing && !unitId) {
-      dispatch(reduxSetError('Select a unit.'));
+      fail('Select a unit.');
       return;
     }
 
@@ -124,7 +129,7 @@ export function UserFormDialog({
         });
 
         if (profileRes.error) {
-          dispatch(reduxSetError(profileRes.error));
+          fail(profileRes.error);
           return;
         }
 
@@ -140,7 +145,7 @@ export function UserFormDialog({
           );
 
           if (capsRes.error) {
-            dispatch(reduxSetError(capsRes.error));
+            fail(capsRes.error);
             return;
           }
         }
@@ -161,7 +166,7 @@ export function UserFormDialog({
           toast.success('User record saved.');
           onClose();
         } else {
-          dispatch(reduxSetError(res.error || 'Failed to send invitation.'));
+          fail(res.error || 'Failed to send invitation.');
         }
       }
     });

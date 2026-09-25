@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
@@ -158,7 +159,7 @@ export function PartyCostsForm({
         </div>
         <div className="flex items-end">
           <Button type="submit" size="sm" disabled={pending}>
-            {pending ? 'Adding…' : 'Add cost'}
+            {savingLabel(pending, 'Add cost')}
           </Button>
         </div>
       </form>

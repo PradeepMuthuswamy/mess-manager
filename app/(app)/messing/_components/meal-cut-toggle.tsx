@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -69,8 +71,12 @@ export function MealCutToggle({ unitId, date, mealType, cutStatus }: MealCutTogg
           onClick={handleCancelCut}
           className="h-8 gap-1.5 text-xs"
         >
-          <Check className="size-3.5" />
-          Restore Meal
+          {savingLabel(isPending, (
+            <>
+              <Check className="size-3.5" />
+              Restore Meal
+            </>
+          ))}
         </Button>
       </div>
     );
@@ -93,8 +99,12 @@ export function MealCutToggle({ unitId, date, mealType, cutStatus }: MealCutTogg
         onClick={handleCut}
         className="h-8 gap-1.5 text-xs text-destructive border-destructive/20 hover:bg-destructive/5"
       >
-        <X className="size-3.5" />
-        Place messing
+        {savingLabel(isPending, (
+          <>
+            <X className="size-3.5" />
+            Mark absent
+          </>
+        ))}
       </Button>
     </div>
   );

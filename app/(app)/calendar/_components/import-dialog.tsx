@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileDown, Upload } from 'lucide-react';
@@ -152,9 +154,10 @@ export function ImportDialog({ unitId }: { unitId: string }) {
               onClick={handleImport}
               disabled={pending || validRows.length === 0 || missingColumns.length > 0}
             >
-              {pending
-                ? 'Importing…'
-                : `Import ${validRows.length} row${validRows.length === 1 ? '' : 's'}`}
+              {savingLabel(
+                pending,
+                `Import ${validRows.length} row${validRows.length === 1 ? '' : 's'}`,
+              )}
             </Button>
           </>
         }

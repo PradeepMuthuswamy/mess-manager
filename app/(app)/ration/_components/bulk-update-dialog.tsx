@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
@@ -107,7 +109,7 @@ export function BulkUpdateDialog({
             disabled={pending || !value}
             className="transition-ds press"
           >
-            {pending ? 'Applying…' : `Apply to ${itemIds.length}`}
+            {savingLabel(pending, `Apply to ${itemIds.length}`)}
           </Button>
         </>
       }

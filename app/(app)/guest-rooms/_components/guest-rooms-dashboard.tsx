@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { SAVING_LABEL } from '@/components/shared/save-submit';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppDispatch, useAppSelector } from '@/lib/redux/hooks';
@@ -624,7 +625,7 @@ function WorklistGroup({
                 </span>
               </button>
               {pending ? (
-                <span className="text-xs text-muted-foreground">Updating</span>
+                <span className="text-xs text-muted-foreground">{SAVING_LABEL}</span>
               ) : (
                 action(booking)
               )}

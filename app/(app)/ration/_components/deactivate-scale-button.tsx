@@ -1,5 +1,6 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -77,7 +78,7 @@ export function DeactivateScaleButton({
             }}
             disabled={pending}
           >
-            {pending ? 'Deactivating…' : 'Deactivate'}
+            {savingLabel(pending, 'Deactivate')}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

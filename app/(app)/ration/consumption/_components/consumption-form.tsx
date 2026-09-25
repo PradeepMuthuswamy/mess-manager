@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -16,7 +18,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AlertCircle, CheckCircle2, Trash2, ArrowDownRight, RefreshCw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Trash2, ArrowDownRight } from 'lucide-react';
 
 type ConsumptionItem = {
   variant_id: string;
@@ -205,12 +207,13 @@ export function ConsumptionForm({
                   disabled={isPending}
                   className="gap-2"
                 >
-                  {isPending ? (
-                    <RefreshCw className="size-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="size-4" />
+                  {savingLabel(
+                    isPending,
+                    <>
+                      <Trash2 className="size-4" />
+                      Rollback Post
+                    </>,
                   )}
-                  Rollback Post
                 </Button>
               ) : (
                 <>
@@ -220,12 +223,13 @@ export function ConsumptionForm({
                     title={postBlockedReason ?? undefined}
                     className="gap-2"
                   >
-                    {isPending ? (
-                      <RefreshCw className="size-4 animate-spin" />
-                    ) : (
-                      <ArrowDownRight className="size-4" />
+                    {savingLabel(
+                      isPending,
+                      <>
+                        <ArrowDownRight className="size-4" />
+                        Post Daily Consumption
+                      </>,
                     )}
-                    Post Daily Consumption
                   </Button>
                   {postBlockedReason ? (
                     <p className="max-w-xs text-right text-xs text-muted-foreground">

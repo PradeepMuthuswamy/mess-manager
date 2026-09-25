@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
@@ -129,7 +131,7 @@ export function BillTemplateCard({
       </CardContent>
       <CardFooter className="justify-end border-t bg-muted/20 px-6 py-4">
         <Button onClick={save} disabled={pending || !dirty} className="transition-ds">
-          Save changes
+          {savingLabel(pending, 'Save changes')}
         </Button>
       </CardFooter>
     </Card>

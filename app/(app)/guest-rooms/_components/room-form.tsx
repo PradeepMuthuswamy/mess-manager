@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { toast } from 'sonner';
@@ -229,13 +231,7 @@ export function RoomForm({
           disabled={pending || inventoryLoading}
           className="press"
         >
-          {pending
-            ? isEditing
-              ? 'Updating...'
-              : 'Creating...'
-            : isEditing
-              ? 'Save Changes'
-              : 'Create Room'}
+          {savingLabel(pending, isEditing ? 'Save Changes' : 'Create Room')}
         </Button>
       }
     >
@@ -479,7 +475,7 @@ export function RoomForm({
                 onClick={handleAddFurniture}
                 disabled={creatingFurniture || !newFurnName.trim()}
               >
-                {creatingFurniture ? 'Adding...' : 'Add'}
+                {savingLabel(creatingFurniture, 'Add')}
               </Button>
             </div>
           </div>

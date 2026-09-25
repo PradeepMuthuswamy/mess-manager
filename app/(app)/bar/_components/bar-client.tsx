@@ -4,6 +4,7 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { savingLabel } from '@/components/shared/save-submit';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -25,7 +26,6 @@ import {
   User, 
   GlassWater, 
   Users,
-  Loader2,
 } from 'lucide-react';
 import {
   finalizeBarChitAction,
@@ -283,11 +283,7 @@ export function BarClient({
                                   disabled={isPending}
                                   onClick={() => runChitAction(chit.id, 'finalize')}
                                 >
-                                  {busyChitId === chit.id ? (
-                                    <Loader2 className="size-3.5 animate-spin" />
-                                  ) : (
-                                    'Finalize'
-                                  )}
+                                  {savingLabel(busyChitId === chit.id, 'Finalize')}
                                 </Button>
                               ) : chit.status === 'finalized' ? (
                                 <Button
@@ -296,11 +292,7 @@ export function BarClient({
                                   disabled={isPending}
                                   onClick={() => runChitAction(chit.id, 'reopen')}
                                 >
-                                  {busyChitId === chit.id ? (
-                                    <Loader2 className="size-3.5 animate-spin" />
-                                  ) : (
-                                    'Reopen'
-                                  )}
+                                  {savingLabel(busyChitId === chit.id, 'Reopen')}
                                 </Button>
                               ) : null}
                             </TableCell>

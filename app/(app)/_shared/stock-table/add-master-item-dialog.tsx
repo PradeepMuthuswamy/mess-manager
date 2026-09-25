@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useActionState, useState } from 'react';
 import { useActionResult } from '@/hooks/use-action-result';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
@@ -24,7 +26,6 @@ import { createMasterItemAction } from '@/lib/masters/actions';
 import { CATEGORY_META, slugFromCategory } from '@/lib/masters/categories';
 import type { Category } from '@/lib/masters/categories';
 import { toast } from 'sonner';
-import { Loader2 } from 'lucide-react';
 import { useAppContext } from '@/lib/auth/context';
 
 type ActionState = {
@@ -110,14 +111,7 @@ export function AddMasterItemDialog({
             disabled={pending}
             className="transition-ds press"
           >
-            {pending ? (
-              <>
-                <Loader2 className="size-4 animate-spin" />
-                Adding...
-              </>
-            ) : (
-              'Add master item'
-            )}
+            {savingLabel(pending, 'Add master item')}
           </Button>
         </>
       }

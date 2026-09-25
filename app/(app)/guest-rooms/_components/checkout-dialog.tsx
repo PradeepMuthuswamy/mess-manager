@@ -1,5 +1,7 @@
 'use client';
 
+import { savingLabel } from '@/components/shared/save-submit';
+
 import { useEffect, useState } from 'react';
 import { AdaptiveModal } from '@/components/shared/adaptive-modal';
 import { Button } from '@/components/ui/button';
@@ -338,9 +340,9 @@ export function CheckoutDialog({
               disabled={pending || loading}
               className="gap-1.5 font-medium"
             >
-              {pending ? (
-                'Finalizing Check-out...'
-              ) : settlementType === 'DIRECT_SETTLEMENT' ? (
+              {savingLabel(
+                pending,
+                settlementType === 'DIRECT_SETTLEMENT' ? (
                 <>
                   <CreditCard className="size-4" />
                   Settle & Check-out ({inr(total)})
@@ -350,6 +352,7 @@ export function CheckoutDialog({
                   <ReceiptText className="size-4" />
                   Transfer to Mess Bill ({inr(total)})
                 </>
+              ),
               )}
             </Button>
           </div>
