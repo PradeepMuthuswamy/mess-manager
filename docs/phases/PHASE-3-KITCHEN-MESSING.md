@@ -3,7 +3,7 @@
 > **Audit date:** 2026-09-09  
 > **Foundation:** [`FOUNDATION.md`](../FOUNDATION.md) · **Master data:** tariff domain — not catalog-backed  
 > **Requirements:** [`requirements.md`](../requirements.md) §6 (REQ-MES-*), §3.3 (register approval), REQ-GOV-21  
-> **Schema:** `supabase/migrations/20260614000000_messing_kitchen_and_monthly_billing.sql` (on disk; **likely not applied to remote**)
+> **Schema:** MongoDB collections (`attendance_days`, `kitchen_expenditures`, `meal_cut_requests`, `unit_mess_tariffs`)
 
 ---
 
@@ -11,7 +11,7 @@
 
 | Area | Ready | Gaps |
 |------|-------|------|
-| **`/messing` page (read path)** | ~75% | Real Supabase queries; no date picker UI; no billing-cycle progress (REQ-MES-30) |
+| **`/messing` page (read path)** | ~75% | Real MongoDB queries; no date picker UI; no billing-cycle progress (REQ-MES-30) |
 | **Kitchen expenditure dialog** | ~70% | Wired to action; missing `receipt_ref`, `sourcing_category` UI; hardcoded `LOCAL_PURCHASE` |
 | **Meal cut toggle** | ~60% | Self-service wired; auto-`approved` (no request queue); no custom reason field |
 | **Casual guest dialog** | ~65% | Wired to action; **auth mismatch** (`attendance.write` required, button shown to all readers) |

@@ -13,7 +13,7 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     question: "Does it support multiple units?",
     answer:
-      "Yes. It is multi-tenant by design. Each unit's data is isolated at the database level with Postgres row-level security, so members only ever see their own unit. Admins can operate across units.",
+      "Yes. It is multi-tenant by design. Each unit's data is isolated through application-level tenant scoping and capability boundaries, so members only ever see their own unit. Admins can operate across units.",
   },
   {
     question: "Is there an API or a mobile app?",
@@ -28,7 +28,7 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     question: "Where is the data stored and is it audited?",
     answer:
-      "Data is stored in a managed Postgres database (Supabase). Every change to master lists, profiles, units, and capabilities is written to an immutable audit log, so every figure on a bill is traceable.",
+      "Data is stored in a MongoDB database with Better Auth. Every change to master lists, profiles, units, and capabilities is written to an immutable audit log, so every figure on a bill is traceable.",
   },
   {
     question: "How are rates and bills kept accurate over time?",

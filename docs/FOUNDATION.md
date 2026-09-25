@@ -1,23 +1,23 @@
 # Foundation — architecture, master data, phases
 
-> **Status:** September 2026 — Phase 0 schema **applied** (`20260909183414_catalog_foundation_reset.sql`: global products, `unit_catalog`, `unit_menu_rates`; `products.unit_id` dropped)  
+> **Status:** September 2026 — Phase 0 schema **applied** (global products, `unit_catalog`, `unit_menu_rates`; `products.unit_id` dropped)  
 > **Requirements:** [`requirements.md`](./requirements.md) · **Schema contract:** [`SHARED-DATA-MODEL.md`](./SHARED-DATA-MODEL.md)
 
 ---
 
 ## 1. What we are building
 
-Multi-tenant SaaS for Indian Officers' Messes. One **unit** = one mess. Two apps share one Supabase project:
+Multi-tenant SaaS for Indian Officers' Messes. One **unit** = one mess. Two apps share one MongoDB database cluster and Better Auth instance:
 
 | App | Role |
 |-----|------|
 | **Ops** (this repo) | Daily operations — bar, rooms, ration, messing, billing |
 | **Admin** (companion) | Platform catalog, multi-unit admin, global ration scales |
 
-**Hosted database (CommandHQ):** project **Mess**, ref `nwrjhxzlnvtubwjuzsxr`, region `ap-northeast-1`, API `https://nwrjhxzlnvtubwjuzsxr.supabase.co`.  
-Retired (do not use for this app): personal project `lscphcinsukrdaoytbsx`.
+**Hosted database:** MongoDB Atlas cluster (database: `mess`).  
+**Authentication & Sessions:** Better Auth (`better-auth`) backed by MongoDB adapter (`@better-auth/mongo-adapter`), supporting cookie sessions, bearer tokens for API access, and TOTP two-factor authentication (MFA).
 
-**Tenant isolation:** RLS on `unit_id` + `requireCapability()` on every server action.
+**Tenant isolation:** Collection-level filtering and index enforcement on `unit_id` + session validation via Better Auth + `requireCapability()` on every server action.
 
 ---
 
@@ -29,8 +29,8 @@ Industry MDM for multi-tenant product catalogs ([Claro MDM guide](https://getcla
 
 1. **Separate entities** — Product (identity) ≠ Variant (stockable unit) ≠ Lot (where/how much/cost) ≠ Sale price (snapshot or menu policy).
 2. **Global base + tenant adoption** — One canonical catalog; tenants enable items and override **local** attributes (SKU, menu rate), not product names.
-3. **Hybrid is OK** — Not everything is a catalog item. Tariffs (room rent, flat messing rate) belong in **unit config**, not the product table.
-4. **Keep it relational** — No separate PIM service until many tenants; Postgres + clear tables is enough.
+3. **Hybrid is OK** — Not everything is a catalog item. Tariffs (room rent, flat messing rate) belong in **unit config**, not the product collection.
+4. **Structured document model** — No separate PIM service until many tenants; MongoDB collections with clear document schemas and referenced keys is enough.
 
 ### 2.2 Target model (simple)
 
@@ -49,10 +49,10 @@ Transactions (immutable facts)
   ration_consumptions   ← variant_id + qty
 ```
 
-| Table | Purpose |
-|-------|---------|
+| Collection | Purpose |
+|------------|---------|
 | `products` | **Global only.** Canonical name (e.g. "Old Monk"). `name_normalized` for dedup. |
-| `product_variants` | Stockable/sellable unit (750 ML BOTTLE). **The join key** (`variant_id`) everywhere. |
+| `product_variants` | Stockable/sellable unit (750 ML BOTTLE). **The reference key** (`variant_id`) everywhere. |
 | `unit_catalog` | `(unit_id, variant_id, is_enabled, local_sku)`. Units **adopt**, never create products. |
 | `unit_menu_rates` | `(unit_id, variant_id, rate, effective_from)`. Committee peg rate; optional. |
 | `unit_inventory` | Lot cost + quantity; FIFO depletion (already implemented in bar). |
@@ -61,16 +61,16 @@ Transactions (immutable facts)
 
 - `products.unit_id` — **dropped** (Phase 0 applied). Products are global only.
 - Ops-app product creation — replace with search + adopt.
-- `v_items_current.current_rate = 0` — populate from `unit_menu_rates` or drop column from API.
+- `v_items_current.current_rate = 0` — populate from `unit_menu_rates` or drop field from API.
 
 ### 2.3 Two domains (do not merge)
 
 | Domain | Examples | Identity | Price |
 |--------|----------|----------|-------|
 | **Catalog** | Bar spirits, ration items, grocery stock | `variant_id` required | Lot rate + menu rate + sale snapshot |
-| **Tariff** | Room rent, guest food/night, flat messing, subscriptions | Unit config / room row | Fixed amounts on config tables |
+| **Tariff** | Room rent, guest food/night, flat messing, subscriptions | Unit config / room document | Fixed amounts on config documents/collections |
 
-**Rule:** Guest room folio lines for rent/food stay **tariff** (description + amount). Bar lines synced to folio use **`variant_id`**. Do not create fake catalog rows for "Room rent."
+**Rule:** Guest room folio lines for rent/food stay **tariff** (description + amount). Bar lines synced to folio use **`variant_id`**. Do not create fake catalog documents for "Room rent."
 
 ### 2.4 Old Monk end-to-end
 
@@ -83,14 +83,14 @@ Transactions (immutable facts)
 6. Analytics (later): GROUP BY variant_id, rank, unit — no string matching
 ```
 
-### 2.5 Foundation reset (migration 0)
+### 2.5 Foundation reset
 
 Approved approach: **purge operational data, fix catalog, re-seed.**
 
 | Step | Action |
 |------|--------|
 | 1 | ✅ Applied: `unit_catalog`, `unit_menu_rates`, `products.name_normalized`; `products.unit_id` dropped |
-| 2 | Truncate (per unit or full dev): `bar_chit_items`, `bar_chits`, `unit_inventory`, `ration_*` ops, `room_bill_items`, `mess_bills`, unit-scoped `products` |
+| 2 | Clear collections (per unit or full dev): `bar_chit_items`, `bar_chits`, `unit_inventory`, `ration_*` ops, `room_bill_items`, `mess_bills`, unit-scoped `products` |
 | 3 | Seed global catalog (top SKUs by category) from Admin app |
 | 4 | Unit re-adopts variants; bulk import → adopt + create lot with rate |
 | 5 | Code: ops masters UI = adopt only; admin = CRUD global catalog |
@@ -105,9 +105,9 @@ Approved approach: **purge operational data, fix catalog, re-seed.**
 |-------|-------------------|---------|-------------------|--------|
 | **Bar / stock** | ✅ Native | Lot + chit snapshot | Reference impl | Keep; default menu rate from `unit_menu_rates` |
 | **Phase 2 Ration** | ✅ Native | Scale qty; stock tx rate | Good | Bulk import → adopt + scale/lot |
-| **Phase 1 Guest rooms** | ⚠️ Partial | Tariff (rent, ₹900 food) | Bar FK OK; folio free-text | Bar sync sets `variant_id`; rent/food stay tariff |
+| **Phase 1 Guest rooms** | ⚠️ Partial | Tariff (rent, ₹900 food) | Bar reference OK; folio free-text | Bar sync sets `variant_id`; rent/food stay tariff |
 | **Phase 3 Messing** | ❌ N/A | P-register / flat rates | Correct — not catalog | Guest meal default from unit config |
-| **Phase 4 Billing** | ❌ On output | Sums source docs | Loses variant at sink | Optional `variant_id` on detail lines later; bar/ration analytics read source tables |
+| **Phase 4 Billing** | ❌ On output | Sums source docs | Loses variant at sink | Optional `variant_id` on detail lines later; bar/ration analytics read source collections |
 
 **Phase 2 + bar** = template for catalog modules. **Phases 1, 3, 4** = tariff aggregation — do not force catalog onto messing or room rent.
 
@@ -115,7 +115,7 @@ Approved approach: **purge operational data, fix catalog, re-seed.**
 
 ## 4. Money paths (schema)
 
-Three paths — sources never FK to `mess_bills`; engine reads and writes sink.
+Three paths — sources never reference `mess_bills`; engine reads and writes sink.
 
 ```
 A) STANDALONE     booking → room_bill → paid at checkout
@@ -186,26 +186,60 @@ flowchart LR
 | CP-05 | Guest meals `is_billed` / idempotent re-run |
 | CP-06 | P-register approval + attendance finalize hook |
 | CP-07 | `booked_by` → `host_profile_id` in billing actions |
-| CP-08 | Apply pending migrations on remote |
+| CP-08 | Initialize collections & indexes on remote MongoDB cluster |
 
 Details: phase gap registers in [`phases/`](./phases/).
 
 ---
 
-## 6. Hosted project & migrations
+## 6. Database & Better Auth specifications
+
+### 6.1 Database (MongoDB)
 
 | Field | Value |
 |-------|-------|
-| Organization | CommandHQ (`emelkfhaakjjsylxdyai`) |
-| Project name | Mess |
-| Project ref | `nwrjhxzlnvtubwjuzsxr` |
-| Region | `ap-northeast-1` |
-| API URL | `https://nwrjhxzlnvtubwjuzsxr.supabase.co` |
-| Postgres | `db.nwrjhxzlnvtubwjuzsxr.supabase.co` |
+| Database engine | MongoDB (v7+) |
+| Database name | `mess` |
+| Driver | Official Node.js MongoDB driver (`mongodb`) via `lib/mongo.ts` |
+| Connection caching | Cached `MongoClient` promise across Next.js SSR / Server Actions |
+| Tenant scoping | Explicit `{ unit_id }` filtering on all tenant queries & compound indexes |
 
-This project starts **empty**. Apply every file in `supabase/migrations/` in filename order (through `20260909183421_ration_ledger_foundation.sql`). Local Docker remains for offline work (`npm run db:start`).
+### 6.2 Authentication & Authorization (Better Auth)
 
-`.env.local` for hosted: `NEXT_PUBLIC_SUPABASE_URL=https://nwrjhxzlnvtubwjuzsxr.supabase.co` plus the project's anon and service-role keys from the CommandHQ dashboard.
+| Field | Value |
+|-------|-------|
+| Engine | Better Auth (`better-auth`) via `lib/auth/auth.ts` |
+| Adapter | MongoDB adapter (`@better-auth/mongo-adapter`) targeting `mess` database |
+| Session handling | HTTP cookies (`nextCookies()`) for SSR + Bearer token plugin (`bearer()`) for `/api/v1/*` |
+| Two-factor auth | TOTP MFA (`twoFactor()` plugin) for administrative actions |
+| Custom user fields | `role`, `unit_id`, `home_unit_id`, `rank`, `service_number`, `full_name`, `status`, `capabilities` |
+| Access control | RBAC + granular capabilities checked via `requireCapability(cap, unitId)` |
+
+### 6.3 Environment configuration
+
+`.env.local` required variables:
+
+```bash
+# Database & Auth
+MONGODB_URI=mongodb+srv://<user>:<password>@mess.xu3njzp.mongodb.net/?appName=mess&compressors=zlib
+BETTER_AUTH_SECRET=<32-character secret>
+BETTER_AUTH_URL=http://localhost:3000
+
+# App URLs
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_OPS_APP_URL=http://localhost:3001
+```
+
+### 6.4 Core collections
+
+- **Authentication:** `users`, `sessions`, `accounts`, `verifications`, `twoFactors` (managed by Better Auth)
+- **Tenancy & RBAC:** `units`, `profiles`, `capability_templates`
+- **Catalog & Inventory:** `categories`, `products`, `product_variants`, `unit_catalog`, `unit_menu_rates`, `unit_inventory`
+- **Bar Operations:** `bar_chits`, `bar_chit_items`
+- **Guest Rooms:** `rooms`, `bookings`, `room_bills`, `room_bill_items`
+- **Messing & Billing:** `mess_bills`, `mess_bill_line_items`, `messing_flat_rates`, `mess_daily_p_rates`
+- **Ration Ledger:** `ration_scales`, `ration_consumptions`, `ration_stock_transactions`
+- **Audit:** `audit_log`
 
 ---
 
@@ -214,6 +248,6 @@ This project starts **empty**. Apply every file in `supabase/migrations/` in fil
 | Need | Read |
 |------|------|
 | Business rules | [`requirements.md`](./requirements.md) |
-| Table/column contract | [`SHARED-DATA-MODEL.md`](./SHARED-DATA-MODEL.md) |
+| Collection/schema contract | [`SHARED-DATA-MODEL.md`](./SHARED-DATA-MODEL.md) |
 | Phase field matrices | [`phases/PHASE-1-GUEST-ROOMS.md`](./phases/PHASE-1-GUEST-ROOMS.md) … [`PHASE-4`](./phases/PHASE-4-MONTHLY-BILLING.md) |
 | UI tokens | [`design-system.md`](./design-system.md) |

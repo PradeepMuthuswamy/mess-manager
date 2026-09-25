@@ -34,9 +34,6 @@ yarn-error.log*
 .env*
 !.env.local.example
 
-# supabase
-/supabase/.temp/
-/supabase/.branches/
 
 # vercel
 .vercel

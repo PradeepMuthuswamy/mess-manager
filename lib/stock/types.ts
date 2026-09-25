@@ -1,4 +1,4 @@
-// Shared inventory and stock types decoupled from Supabase generated DB types.
+// Shared inventory and stock types decoupled from generated DB types.
 //
 // IMPORTANT: do NOT add `import 'server-only'` here. Client components must be
 // able to `import type { ... }` these shapes; a `server-only` module would
